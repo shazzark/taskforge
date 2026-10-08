@@ -34,6 +34,22 @@ function isValidMongoDBUri(value: string): boolean {
 
   const authorityAndPath = value.slice(scheme.length);
   const authority = authorityAndPath.split(/[/?#]/u, 1)[0] ?? "";
+  const suffix = authorityAndPath.slice(authority.length);
+  const pathAndQuery = suffix.split("?", 1)[0] ?? "";
+  const databaseName = pathAndQuery.startsWith("/") ? pathAndQuery.slice(1) : "";
+  if (databaseName.length === 0 || databaseName.includes("/")) {
+    return false;
+  }
+
+  try {
+    const decodedDatabaseName = decodeURIComponent(databaseName);
+    if (decodedDatabaseName.length === 0 || /[\u0000/\\]/u.test(decodedDatabaseName)) {
+      return false;
+    }
+  } catch {
+    return false;
+  }
+
   const userInfoSeparator = authority.indexOf("@");
   if (userInfoSeparator !== authority.lastIndexOf("@") || userInfoSeparator === 0) {
     return false;

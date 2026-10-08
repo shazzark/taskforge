@@ -59,6 +59,7 @@ test("rejects invalid input shapes and malformed URIs", () => {
     null,
     [],
     "mongodb://localhost",
+    { mongodbUri: "mongodb://localhost:27017" },
     { mongodbUri: 42 },
     { mongodbUri: "mongodb://" },
     { mongodbUri: "mongodb://one@two@localhost/taskforge_test" },
