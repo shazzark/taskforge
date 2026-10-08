@@ -42,11 +42,15 @@ This file is the execution status source. Statuses describe verified work only. 
 
 **Checks and evidence:** Clean `npm ci`, `npm run typecheck`, `npm run build`, and `npm test` passed on Windows. All 12 tests passed with no skips against a fresh disposable loopback MongoDB instance. Direct Windows CLI smoke checks passed for help, version, config summary, and doctor unavailable-server exit code 2/redaction. The integrated doctor test reported MongoDB available against the disposable instance, and missing/unavailable config paths remained deterministic. The package's `cli` npm script name conflicted with npm 11 command parsing, so it was removed; README commands invoke the built entry point with `node dist/cli.js`. No registered service was started, no existing connection value was reused, and no changes were pushed. `git diff --check` passed; independent review found no remaining findings.
 
-### Phase 2 — Providers and agent loop — NOT STARTED
+### Phase 2 — Providers and agent loop — BLOCKED
 
 **Goal:** Add interactive chat, local and free-tier provider adapters, validated tool calls, run budgets and cancellation.
 
 **Acceptance checks:** A real model completes a small read-only tool task; unsupported tool calling and provider quota errors are reported honestly. Verify mock contract/error cases and real provider runs. No arbitrary shell access.
+
+**Blocker:** The local Ollama command and loopback endpoint are unavailable. No common provider credential variable names were present in the process environment; no values were read. No free-tier online provider has been selected in the planning documents. No Phase 2 code or real model run has started.
+
+**Exact prerequisite:** Set up Ollama on Windows with a tool-capable model and provide the model tag plus loopback endpoint, or choose the free-tier online provider and configure its credential locally. Do not share secret values. After setup, verify provider tool calling against a small read-only task and continue implementing the remaining Phase 2 scope.
 
 ### Phase 3 — Permissions, events and resume — NOT STARTED
 
@@ -86,8 +90,8 @@ This file is the execution status source. Statuses describe verified work only. 
 
 ## Recovery
 
-- **Current phase/subphase:** Phase 1 COMPLETE; Phases 1.1–1.4 COMPLETE; Phase 2 NOT STARTED.
-- **Last completed work:** Phase 1.4 doctor, Windows CLI smoke checks, and integrated verification. Phase 1.3 checkpoint `805e5fc` is local; Phase 1.4 checkpoint is pending.
+- **Current phase/subphase:** Phase 1 COMPLETE; Phase 2 BLOCKED before implementation pending model setup and provider selection.
+- **Last completed work:** Phase 1.4 checkpoint `fda8566`; doctor, Windows CLI smoke checks, and integrated verification.
 - **Checks performed:** Phase 1.1: `npm ci`; typecheck/build; built CLI help/version; package version parity; invalid-argument error and no argument echo; packed Windows consumer and `taskforge.cmd`; review; `git diff --check`. Phase 1.2: `npm ci`; typecheck; tests (8 passed); missing/malformed config exit behavior and redaction; review; diff check. Phase 1.3: `npm ci`; typecheck/build; 10 tests passed against isolated disposable MongoDB; persistence and unavailable-server paths; review; diff check. Phase 1.4: clean `npm ci`; typecheck/build; Windows help/version/config/doctor smoke checks; all 12 tests passed with no skips against isolated disposable MongoDB; doctor success plus missing/unavailable failure paths and redaction; review; `git diff --check`. Registered MongoDB service remains stopped and untouched; no existing connection value was read or reused.
-- **Blockers:** None for Phase 1. The local `build-in-verified-phases` skill is unavailable; installed `engineering-workflow`, `debugging-workflow`, and `.system/review-agent` were read and applied.
-- **Exact next action:** Start Phase 2 by identifying a safe local or free-tier model setup and implementing the provider/chat contract. Inspect environment variable names only; do not read or print secret values. Do not push.
+- **Blockers:** No local Ollama executable or endpoint; no common online-provider credential variable name detected; no free-tier provider selected. The local `build-in-verified-phases` skill is unavailable; installed `engineering-workflow`, `debugging-workflow`, and `.system/review-agent` are available and were applied.
+- **Exact next action:** Set up Ollama with a tool-capable local model and share only its model tag/loopback endpoint, or select a free-tier provider and configure its credential locally. Then resume Phase 2. Do not push.
