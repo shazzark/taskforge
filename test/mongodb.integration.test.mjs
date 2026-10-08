@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
+import { spawnSync } from "node:child_process";
 import { MongoClient } from "mongodb";
+import { fileURLToPath } from "node:url";
 import test from "node:test";
 import {
   DatabaseConnectionError,
@@ -10,6 +12,7 @@ import {
 import { parseConfiguration } from "../dist/config.js";
 
 const testUri = process.env.TASKFORGE_TEST_MONGODB_URI;
+const cliPath = fileURLToPath(new URL("../dist/cli.js", import.meta.url));
 
 function createIsolatedTestUri(value) {
   if (typeof value !== "string" || value.length === 0) {
@@ -84,6 +87,23 @@ test(
         store.getRunSummary(malformedRunId),
         (error) => error instanceof DatabasePersistenceError,
       );
+      const doctorEnvironment = {};
+      for (const key of ["PATH", "SystemRoot", "WINDIR", "TEMP", "TMP"]) {
+        const value = process.env[key];
+        if (typeof value === "string") {
+          doctorEnvironment[key] = value;
+        }
+      }
+      doctorEnvironment.TASKFORGE_MONGODB_URI = isolatedUri;
+      const doctor = spawnSync(process.execPath, [cliPath, "doctor"], {
+        encoding: "utf8",
+        env: doctorEnvironment,
+      });
+      assert.equal(doctor.error, undefined);
+      assert.equal(doctor.status, 0);
+      assert.match(doctor.stdout, /MongoDB: available/u);
+      assert.match(doctor.stdout, /Model providers: not implemented yet/u);
+      assert.doesNotMatch(doctor.stdout, /mongodb:\/\//u);
     } finally {
       await store.close();
       await rawClient.close();

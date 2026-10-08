@@ -1,16 +1,16 @@
 # Implementation Plan
 
 ## Method and status
-Phase 0 inspection and document alignment are COMPLETE. Planning baseline commit `45c949e` is present and verified. Phase 1 is IN PROGRESS (subphase 1.3 complete; local checkpoint pending); phases 2-8 are NOT STARTED. Continue numbered phases in dependency order, verifying each subphase before advancing. Commit verified substantial subphases locally using their phase number. Never push without an explicit user request. Stop only for unresolved required verification failures, missing credentials/setup that cannot be safely resolved, or material decisions outside agreed scope. Record actual results in `task.md`; no date overrides checks. Dates below are planning windows, not commitments.
+Phase 0 inspection and document alignment are COMPLETE. Planning baseline commit `45c949e` is present and verified. Phase 1 is COMPLETE; phases 2-8 are NOT STARTED. Continue numbered phases in dependency order, verifying each subphase before advancing. Commit verified substantial subphases locally using their phase number. Never push without an explicit user request. Stop only for unresolved required verification failures, missing credentials/setup that cannot be safely resolved, or material decisions outside agreed scope. Record actual results in `task.md`; no date overrides checks. Dates below are planning windows, not commitments.
 
 ## Phase 0 - Baseline and Windows setup (8-9 October)
 Goal: reviewed documents, public repository, local folder and skills/tool inventory. Scope: README, MIT, Node ignore rules, root planning Markdown files and phase tracker. Repository: https://github.com/shazzark/taskforge (origin URL verified). Acceptance: requirements and unresolved proposals visible; local Git baseline is recorded. Checks: planning baseline commit `45c949e` exists; Node/npm/Git and Codex versions, skills and current AGENTS instructions inspected; no secrets printed. No runtime implementation.
 
 ## Phase 1 - CLI, configuration and MongoDB (9-10 October)
-Goal: commands/chat shell, validated settings, MongoDB connection, doctor and errors. Dependencies: Phase 0. Acceptance: clean Windows setup, redacted logs and deterministic failure when DB unavailable. Verify typecheck, CLI smoke tests and disposable DB integration. No browser or mutation tools.
+Goal: CLI command shell, validated settings, MongoDB connection, doctor and errors. Dependencies: Phase 0. Acceptance: clean Windows setup, redacted logs and deterministic failure when DB unavailable. Verify typecheck, CLI smoke tests and disposable DB integration. No browser or mutation tools.
 
 ## Phase 2 - Providers and agent loop (10-12 October)
-Goal: local/free-tier adapters, validated tool calls, budgets, cancellation. Dependencies: Phase 1. Acceptance: real model completes a small read-only tool task; unsupported tools/provider quota errors are honest. Verify mock contract/error cases plus real provider runs. No arbitrary shell access.
+Goal: interactive chat, local/free-tier adapters, validated tool calls, budgets, cancellation. Dependencies: Phase 1. Acceptance: real model completes a small read-only tool task; unsupported tools/provider quota errors are honest. Verify mock contract/error cases plus real provider runs. No arbitrary shell access.
 
 ## Phase 3 - Permissions, events and resume (12-13 October)
 Goal: roots, denied secrets, batch previews, bounded events/checkpoints and state revalidation. Dependencies: Phase 2. Acceptance: escape/changed-target/denial tests, cancel/resume and DB-failure checks pass. No new task family until boundary checks pass.

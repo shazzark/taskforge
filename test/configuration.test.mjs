@@ -35,6 +35,13 @@ function runConfigCommand(mongodbUri) {
   });
 }
 
+function runDoctorCommand(mongodbUri) {
+  return spawnSync(process.execPath, [cliPath, "doctor"], {
+    encoding: "utf8",
+    env: isolatedEnvironment(mongodbUri),
+  });
+}
+
 test("accepts a valid local MongoDB URI", () => {
   const configuration = parseConfiguration({ mongodbUri: localMongoUri });
   assert.equal(configuration.mongodbUri, localMongoUri);
@@ -100,4 +107,23 @@ test("CLI config rejects malformed values without revealing them", () => {
   assert.equal(result.status, 2);
   assert.match(result.stderr, /valid mongodb:\/\//u);
   assert.doesNotMatch(result.stderr, /invalid host/u);
+});
+
+test("CLI doctor reports missing MongoDB configuration without a connection value", () => {
+  const result = runDoctorCommand(undefined);
+  assert.equal(result.error, undefined);
+  assert.equal(result.status, 2);
+  assert.match(result.stdout, /MongoDB: not configured/u);
+  assert.match(result.stdout, /Model providers: not implemented yet/u);
+  assert.match(result.stdout, /Browser tooling: not implemented yet/u);
+  assert.equal(result.stdout.includes("mongodb://"), false);
+});
+
+test("CLI doctor reports unavailable MongoDB without echoing the endpoint", () => {
+  const unavailableUri = "mongodb://127.0.0.1:1/taskforge_test";
+  const result = runDoctorCommand(unavailableUri);
+  assert.equal(result.error, undefined);
+  assert.equal(result.status, 2);
+  assert.match(result.stdout, /MongoDB: unavailable/u);
+  assert.doesNotMatch(result.stdout, /127\.0\.0\.1:1/u);
 });
