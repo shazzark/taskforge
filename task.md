@@ -12,17 +12,17 @@ This file is the execution status source. Statuses describe verified work only. 
 
 **Evidence:** Inspection and document alignment are complete. Planning baseline commit `45c949e` exists. The origin URL was verified as `https://github.com/shazzark/taskforge`. Environment and skill findings are recorded in `local-codex-setup.md`. No runtime implementation was done.
 
-### Phase 1 — CLI, configuration and MongoDB — NOT STARTED
+### Phase 1 — CLI, configuration and MongoDB — IN PROGRESS
 
 **Goal:** Build command/chat shell, validated settings, MongoDB connection, doctor checks and deterministic setup errors.
 
 **Acceptance checks:** Clean Windows setup; redacted diagnostics; deterministic failure when the database is unavailable. Run typecheck, CLI smoke tests and disposable database integration checks. No browser or mutation tools.
 
-#### Phase 1.1 — TypeScript/package foundation and CLI help — NOT STARTED
+#### Phase 1.1 — TypeScript/package foundation and CLI help — COMPLETE
 
 **Acceptance:** Establish the TypeScript project, package metadata, pinned dependencies and lockfile. The project builds and typechecks; CLI help exits successfully without requiring a database or model.
 
-**Checks:** `npm ci`; `npm run typecheck`; `npm run build`; invoke the built CLI help command and confirm success. Add/adjust script names to the actual package manifest when it is created.
+**Checks and evidence:** `npm ci`, `npm run typecheck`, and `npm run build` passed on Node.js v22.13.0. Built CLI help and version commands passed; CLI version `0.1.0` matches `package.json`. An invalid argument returned exit code 1 with a clear error and did not echo the supplied argument text. Packed the project, installed it in a temporary Windows consumer, and verified the generated `taskforge.cmd` shim ran and returned the matching version. `git diff --check` passed. The read-only review-agent review found no remaining defects after fixes.
 
 #### Phase 1.2 — Validated configuration and redacted diagnostics — NOT STARTED
 
@@ -86,8 +86,8 @@ This file is the execution status source. Statuses describe verified work only. 
 
 ## Recovery
 
-- **Current phase/subphase:** Phase 1 / 1.1 is next; Phase 1 is NOT STARTED and no subphase is active.
-- **Last completed work:** Phase 0 planning and Windows setup inspection; planning baseline documentation committed as `45c949e`.
-- **Checks performed:** `git status --short --branch`; `git log -5 --oneline --decorate`; `git show --stat --oneline -1`; `git remote get-url origin`; `git cat-file -e 45c949e^{commit}`; Phase 0 Node.js/npm/Git/Codex and skill inventory. Planning documents were read for alignment. No application tests or runtime checks have been run.
-- **Blockers:** MongoDB server command is unavailable and its Windows service was stopped during inspection; MongoDB version/setup must be selected for integration work. TypeScript package files and lockfile do not exist yet. The local `build-in-verified-phases` skill is unavailable; the installed `engineering-workflow` skill is used for this work.
-- **Exact next action:** Begin Phase 1.1 by creating the TypeScript/package foundation and a database-independent CLI help path. Do not proceed until Phase 1 implementation is authorized.
+- **Current phase/subphase:** Phase 1 is IN PROGRESS; Phase 1.1 is COMPLETE; Phase 1.2 is next and NOT STARTED.
+- **Last completed work:** Phase 0 planning and Windows setup inspection (`45c949e`); Phase 1.1 TypeScript/package foundation and help/version CLI.
+- **Checks performed:** `git status --short --branch`; `git log -5 --oneline --decorate`; required planning documents read; `npm ci`; `npm run typecheck`; `npm run build`; built CLI help/version; package-version parity; invalid-argument message/exit behavior and no argument echo; packed Windows consumer install and `taskforge.cmd` invocation; independent review-agent review; `git diff --check`. No chat, model, database, task execution or other later-phase behavior was implemented or tested.
+- **Blockers:** MongoDB server command is unavailable and its Windows service was stopped during inspection; MongoDB version/setup must be selected before Phase 1.3. No blocker for Phase 1.2. The local `build-in-verified-phases` skill is unavailable; installed `engineering-workflow` and `review-agent` skills were applied.
+- **Exact next action:** Begin Phase 1.2 (validated configuration and redacted diagnostics) only when that subphase is authorized.

@@ -1,0 +1,26 @@
+{
+  "name": "taskforge",
+  "version": "0.1.0",
+  "description": "TaskForge is an early development local CLI assistant.",
+  "type": "module",
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "bin": {
+    "taskforge": "dist/cli.js"
+  },
+  "engines": {
+    "node": ">=22.13.0"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "build": "tsc",
+    "cli": "node dist/cli.js"
+  },
+  "devDependencies": {
+    "@types/node": "22.13.10",
+    "typescript": "5.8.3"
+  }
+}

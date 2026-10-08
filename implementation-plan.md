@@ -1,7 +1,7 @@
 # Implementation Plan
 
 ## Method and status
-Phase 0 inspection and document alignment are COMPLETE. Planning baseline commit `45c949e` is present and verified. Build phases 1-8 are NOT STARTED. Use build-in-verified-phases where installed. Each phase records goal, scope, dependencies, acceptance, checks and actual results. Stop dependent advancement on failed required verification. No date overrides checks. Dates below are planning windows, not commitments.
+Phase 0 inspection and document alignment are COMPLETE. Planning baseline commit `45c949e` is present and verified. Phase 1 is IN PROGRESS (subphase 1.1); phases 2-8 are NOT STARTED. Use build-in-verified-phases where installed. Each phase records goal, scope, dependencies, acceptance, checks and actual results. Stop dependent advancement on failed required verification. No date overrides checks. Dates below are planning windows, not commitments.
 
 ## Phase 0 - Baseline and Windows setup (8-9 October)
 Goal: reviewed documents, public repository, local folder and skills/tool inventory. Scope: README, MIT, Node ignore rules, root planning Markdown files and phase tracker. Repository: https://github.com/shazzark/taskforge (origin URL verified). Acceptance: requirements and unresolved proposals visible; local Git baseline is recorded. Checks: planning baseline commit `45c949e` exists; Node/npm/Git and Codex versions, skills and current AGENTS instructions inspected; no secrets printed. No runtime implementation.
