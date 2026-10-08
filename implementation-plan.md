@@ -1,10 +1,10 @@
 # Implementation Plan
 
 ## Method and status
-Phase 0 inspection and document alignment are COMPLETE. The planning baseline commit is PENDING; the planning files remain untracked, and no staging or commit was performed. Build phases 1-8 are NOT STARTED. Use build-in-verified-phases where installed. Each phase records goal, scope, dependencies, acceptance, checks and actual results. Stop dependent advancement on failed required verification. No date overrides checks. Dates below are planning windows, not commitments.
+Phase 0 inspection and document alignment are COMPLETE. Planning baseline commit `45c949e` is present and verified. Build phases 1-8 are NOT STARTED. Use build-in-verified-phases where installed. Each phase records goal, scope, dependencies, acceptance, checks and actual results. Stop dependent advancement on failed required verification. No date overrides checks. Dates below are planning windows, not commitments.
 
 ## Phase 0 - Baseline and Windows setup (8-9 October)
-Goal: reviewed documents, public repository, local folder and skills/tool inventory. Scope: README, MIT, Node ignore rules, root planning Markdown files and phase tracker. Repository: https://github.com/shazzark/taskforge (origin URL verified). Acceptance: requirements and unresolved proposals visible; local Git baseline is recorded. The baseline commit remains pending. Checks: inspect Node/npm/Git, Codex help, skills and current AGENTS instructions; never print secrets. No runtime implementation.
+Goal: reviewed documents, public repository, local folder and skills/tool inventory. Scope: README, MIT, Node ignore rules, root planning Markdown files and phase tracker. Repository: https://github.com/shazzark/taskforge (origin URL verified). Acceptance: requirements and unresolved proposals visible; local Git baseline is recorded. Checks: planning baseline commit `45c949e` exists; Node/npm/Git and Codex versions, skills and current AGENTS instructions inspected; no secrets printed. No runtime implementation.
 
 ## Phase 1 - CLI, configuration and MongoDB (9-10 October)
 Goal: commands/chat shell, validated settings, MongoDB connection, doctor and errors. Dependencies: Phase 0. Acceptance: clean Windows setup, redacted logs and deterministic failure when DB unavailable. Verify typecheck, CLI smoke tests and disposable DB integration. No browser or mutation tools.

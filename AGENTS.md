@@ -14,3 +14,11 @@ Use relevant installed skills and appropriate agents/subagents for independent s
 
 ## Documentation
 Update behavior and phase status truthfully. Keep requirements, CLI flow, persistence schema and acceptance evidence aligned. Maintain task.md as implementation tracker when created. Do not invent passing tests, coverage, scanner guarantees or completed integrations.
+
+## Git workflow
+- Update `task.md` truthfully after meaningful milestones and before stopping a session.
+- Commit each verified substantial subphase with its number in the commit message.
+- Push completed checkpoints to `origin/main`.
+- Never label failed or unverified work COMPLETE.
+- If interrupted, preserve incomplete work and clearly record its status.
+- Do not amend or force-push published commits.
