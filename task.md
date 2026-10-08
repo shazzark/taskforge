@@ -24,11 +24,11 @@ This file is the execution status source. Statuses describe verified work only. 
 
 **Checks and evidence:** `npm ci`, `npm run typecheck`, and `npm run build` passed on Node.js v22.13.0. Built CLI help and version commands passed; CLI version `0.1.0` matches `package.json`. An invalid argument returned exit code 1 with a clear error and did not echo the supplied argument text. Packed the project, installed it in a temporary Windows consumer, and verified the generated `taskforge.cmd` shim ran and returned the matching version. `git diff --check` passed. The read-only review-agent review found no remaining defects after fixes.
 
-#### Phase 1.2 — Validated configuration and redacted diagnostics — IN PROGRESS
+#### Phase 1.2 — Validated configuration and redacted diagnostics — COMPLETE
 
 **Acceptance:** Configuration is runtime-validated; missing and malformed values produce clear setup errors; diagnostics redact credentials and connection strings.
 
-**Checks:** Automated cases for valid, missing and malformed configuration; inspect captured diagnostics to confirm secret values do not appear; run the configuration/doctor CLI smoke path.
+**Checks and evidence:** `npm ci`, `npm run typecheck`, and `npm test` passed (8 tests). Cases cover valid and multi-host MongoDB URIs, missing values, invalid input shapes, malformed scheme/host/path/query escapes and ambiguous user-info delimiters, redacted summaries, and CLI behavior with missing, valid and malformed configuration. Missing configuration exits 2; CLI diagnostics omit the URI. Phase 1.2 does not connect to MongoDB; that is Phase 1.3. Independent review found no remaining issues; `git diff --check` passed.
 
 #### Phase 1.3 — MongoDB connection and minimal persistence — NOT STARTED
 
@@ -86,8 +86,8 @@ This file is the execution status source. Statuses describe verified work only. 
 
 ## Recovery
 
-- **Current phase/subphase:** Phase 1 is IN PROGRESS; Phase 1.1 is COMPLETE; Phase 1.2 is IN PROGRESS.
-- **Last completed work:** Phase 0 planning and Windows setup inspection (`45c949e`); Phase 1.1 TypeScript/package foundation and help/version CLI.
-- **Checks performed:** Phase 1.1 checks: `npm ci`; `npm run typecheck`; `npm run build`; built CLI help/version; package-version parity; invalid-argument message/exit behavior and no argument echo; packed Windows consumer install and `taskforge.cmd` invocation; independent review-agent review; `git diff --check`. Current-session checks before this doc update: `git status --short --branch`; `git log -5 --oneline --decorate`; required planning documents and installed skills read. Phase 1.2 checks are pending. No chat, model, database, task execution or other later-phase behavior was implemented or tested.
-- **Blockers:** MongoDB server command is unavailable and its Windows service was stopped during inspection; MongoDB version/setup must be selected before Phase 1.3. No blocker for Phase 1.2. The local `build-in-verified-phases` skill is unavailable; installed `engineering-workflow` and `review-agent` skills were applied.
-- **Exact next action:** Implement and verify Phase 1.2 configuration loading/validation and redacted diagnostics; do not begin Phase 1.3 until Phase 1.2 checks pass.
+- **Current phase/subphase:** Phase 1 is IN PROGRESS; Phases 1.1 and 1.2 are COMPLETE; Phase 1.3 is next and NOT STARTED.
+- **Last completed work:** Phase 0 planning and Windows setup inspection (`45c949e`); Phase 1.1 TypeScript/package foundation; Phase 1.2 validated MongoDB URI configuration and redacted CLI diagnostics.
+- **Checks performed:** Phase 1.1 checks: `npm ci`; `npm run typecheck`; `npm run build`; built CLI help/version; package-version parity; invalid-argument message/exit behavior and no argument echo; packed Windows consumer install and `taskforge.cmd` invocation; independent review-agent review; `git diff --check`. Phase 1.2: `npm ci`; `npm run typecheck`; `npm test` (8 passed, 0 failed); direct CLI missing-config exit code 2; malformed URI path/query/user-info regression cases; redacted CLI output; independent review-agent review; `git diff --check`. Current-session checks: `git status --short --branch`; `git log -5 --oneline --decorate`; required planning documents and skills read. No MongoDB connection, chat, model, task execution or later-phase behavior was implemented or tested.
+- **Blockers:** The MongoDB server command was unavailable and its Windows service was previously observed stopped. Inspect the service and install/start a disposable local MongoDB instance only with appropriate authorization before Phase 1.3. Do not reuse the existing `MongoDb` variable. The local `build-in-verified-phases` skill is unavailable; installed `engineering-workflow`, `debugging-workflow` and `review-agent` skills were read and applied where relevant.
+- **Exact next action:** Inspect the installed MongoDB Windows service and server availability without starting or changing it; then determine whether Phase 1.3 can use an isolated disposable database safely.

@@ -16,6 +16,9 @@ npm run typecheck
 npm run build
 npm run cli -- --help
 npm run cli -- --version
+npm test
 ```
 
-The CLI currently supports help and version output only. Task execution, model providers, and other runtime features are not implemented.
+The CLI supports help, version output, and `config` validation. Configuration reads the explicitly named `TASKFORGE_MONGODB_URI` environment variable. In PowerShell, set it only in the current session (`$env:TASKFORGE_MONGODB_URI`) and run `npm run cli -- config`. The command validates the URI format and prints a redacted status; it does not connect to MongoDB. Do not print or commit the connection string.
+
+Task execution, model providers, database connectivity, and other runtime features are not implemented yet.
