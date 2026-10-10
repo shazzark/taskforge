@@ -22,10 +22,13 @@ import { redactSourceForDisplay, reviewSourceFiles, SourceReviewError } from "./
 import { ActionApprovalRegistry } from "./security/approval-preview.js";
 import { previewPdfArtifact, PdfArtifactError, writeApprovedPdfArtifact } from "./artifacts/approved-pdf-output.js";
 import { prepareFilePatch, applyPreparedFilePatch, PatchApplicationError } from "./software/patch-application.js";
+import { GitDiffReviewError, listGitDiffFiles, readGitDiff } from "./software/git-diff-review.js";
+import { investigateSource, ModelInvestigationError } from "./software/model-investigation.js";
+import { GitHubReadError, readPublicIssues } from "./integrations/github-public-issues.js";
 
 const helpText = `TaskForge ${packageJson.version} (early development)
 
-Usage: taskforge [--help | --version | config | doctor | model-check | chat | run csv-analyze --input <path> | run document-analyze --input <path> | run pdf-report --input <json> --output <new.pdf> | run repo-inspect --root <directory> | run source-review --root <directory> --file <relative-path> [...] | run file-patch --root <directory> --target <relative-path> --content-file <relative-path> | run software-check --root <directory> --check <node-test|typescript-check> | resume <run-id> --input <path> | history list]
+Usage: taskforge [--help | --version | config | doctor | model-check | chat | run csv-analyze --input <path> | run document-analyze --input <path> | run pdf-report --input <json> --output <new.pdf> | run repo-inspect --root <directory> | run source-review --root <directory> --file <relative-path> [...] | run model-investigate --root <directory> --file <relative-path> [...] | run github-issues --repository <owner/name> | run file-patch --root <directory> --target <relative-path> --content-file <relative-path> | run git-diff --root <directory> | run software-check --root <directory> --check <node-test|typescript-check> | resume <run-id> --input <path> | history list]
 
 The config command validates local settings and prints a redacted summary.
 The doctor command checks configured MongoDB connectivity and reports available setup areas.
@@ -35,6 +38,9 @@ The csv-analyze workflow reads one explicitly approved CSV file and stores redac
 The repo-inspect workflow inventories one explicitly approved repository root without reading file contents or running commands.
 The source-review workflow reads only explicitly selected source files and displays bounded, locally redacted content; it does not send or persist source.
 The file-patch workflow shows redacted current and replacement text, then applies one content-bound replacement only after exact approval.
+The git-diff workflow displays a bounded, locally redacted staged diff after exact root and file approval; it does not call a model or persist source.
+The model-investigate workflow sends selected, heuristically redacted source to the configured model only after an additional explicit transfer confirmation; it runs no tools and persists no source or findings.
+The github-issues workflow reads at most 20 open issue titles from one public repository without a token; it excludes pull requests and writes nothing.
 The document-analyze workflow parses one approved TXT, Markdown, text PDF, DOCX, or XLSX file and stores counts only.
 The pdf-report workflow renders an approved JSON report and creates a new approved PDF artifact after a content-bound confirmation.
 The software-check workflow runs only an explicitly approved Node test or TypeScript no-emit check in one approved root.
@@ -489,6 +495,201 @@ async function runFilePatchCommand(commandArgs: readonly string[]): Promise<void
   }
 }
 
+async function runGitDiffCommand(commandArgs: readonly string[]): Promise<void> {
+  if (commandArgs.length !== 2 || commandArgs[0] !== "--root" || commandArgs[1] === undefined) {
+    process.stderr.write("Expected --root <directory>.\n");
+    process.exitCode = 1;
+    return;
+  }
+  if (!process.stdin.isTTY || !process.stdout.isTTY) {
+    process.stderr.write("Git diff review requires an interactive terminal for exact root and changed-file approval.\n");
+    process.exitCode = 2;
+    return;
+  }
+  let rootPath: string;
+  try {
+    rootPath = await realpath(resolve(commandArgs[1]));
+  } catch {
+    process.stderr.write("The requested repository root could not be resolved.\n");
+    process.exitCode = 2;
+    return;
+  }
+  const consent = createInterface({ input: process.stdin, output: process.stdout });
+  let rootAnswer: string;
+  try {
+    rootAnswer = await consent.question(`Inspect staged Git changes from this exact repository root?\nRoot: ${rootPath}\nNo source is read until the staged-file list is approved. [y/N] `);
+  } finally {
+    consent.close();
+  }
+  if (rootAnswer.trim().toLowerCase() !== "y") {
+    process.stdout.write("Git diff review cancelled before content access.\n");
+    return;
+  }
+  try {
+    const policy = new WorkspacePathPolicy();
+    const root = await policy.approveRoot(rootPath);
+    const files = await listGitDiffFiles(root, policy);
+    if (files.length === 0) {
+      process.stdout.write("No tracked changes are available for review. Unstaged and untracked files are not included.\n");
+      return;
+    }
+    const fileList = files.map((file) => `  ${JSON.stringify(file)}`).join("\n");
+    const fileConsent = createInterface({ input: process.stdin, output: process.stdout });
+    let fileAnswer: string;
+    try {
+      fileAnswer = await fileConsent.question(`Display the locally redacted diff for these exact changed files?\n${fileList}\nMaximum: 20 files and 48 KiB. Redaction is heuristic. [y/N] `);
+    } finally {
+      fileConsent.close();
+    }
+    if (fileAnswer.trim().toLowerCase() !== "y") {
+      process.stdout.write("Git diff review cancelled before content access.\n");
+      return;
+    }
+    const review = await readGitDiff(root, policy, files);
+    process.stdout.write(review.diff.length === 0 ? "The approved diff is empty.\n" : `${review.diff}\n`);
+  } catch (error: unknown) {
+    const message = error instanceof GitDiffReviewError ? error.message : "Git diff review failed safely.";
+    process.stderr.write(`Git diff review failed: ${message}\n`);
+    process.exitCode = 3;
+  }
+}
+
+async function runModelInvestigationCommand(commandArgs: readonly string[]): Promise<void> {
+  if (commandArgs.length < 4 || commandArgs[0] !== "--root" || commandArgs[1] === undefined) {
+    process.stderr.write("Expected --root <directory> --file <relative-path> [--file <relative-path> ...].\n");
+    process.exitCode = 1;
+    return;
+  }
+  const paths: string[] = [];
+  for (let index = 2; index < commandArgs.length;) {
+    const option = commandArgs[index];
+    const path = commandArgs[index + 1];
+    if (option !== "--file" || path === undefined) {
+      process.stderr.write("Each selected source file must use --file followed by a relative path.\n");
+      process.exitCode = 1;
+      return;
+    }
+    paths.push(path);
+    index += 2;
+  }
+  if (paths.length > 5) {
+    process.stderr.write("Select no more than five source files for model investigation.\n");
+    process.exitCode = 1;
+    return;
+  }
+  if (!process.stdin.isTTY || !process.stdout.isTTY) {
+    process.stderr.write("Model investigation requires interactive root, file-set, and provider-transfer approval.\n");
+    process.exitCode = 2;
+    return;
+  }
+  let providerConfiguration;
+  try {
+    providerConfiguration = loadProviderConfiguration();
+  } catch (error: unknown) {
+    const message = error instanceof ConfigurationError ? error.message : "The selected model provider is not configured.";
+    process.stderr.write(`Model investigation setup error: ${message}\n`);
+    process.exitCode = 2;
+    return;
+  }
+  let rootPath: string;
+  try {
+    rootPath = await realpath(resolve(commandArgs[1]));
+  } catch {
+    process.stderr.write("The requested repository root could not be resolved.\n");
+    process.exitCode = 2;
+    return;
+  }
+  const rootConsent = createInterface({ input: process.stdin, output: process.stdout });
+  let rootAnswer: string;
+  try {
+    rootAnswer = await rootConsent.question(`Review these exact files locally before model transfer?\nRoot: ${rootPath}\nFiles: ${paths.join(", ")}\nThe source will be heuristically redacted before display. [y/N] `);
+  } finally {
+    rootConsent.close();
+  }
+  if (rootAnswer.trim().toLowerCase() !== "y") {
+    process.stdout.write("Model investigation cancelled before source access.\n");
+    return;
+  }
+  const controller = new AbortController();
+  const handleInterrupt = (): void => controller.abort();
+  process.once("SIGINT", handleInterrupt);
+  try {
+    const policy = new WorkspacePathPolicy();
+    const root = await policy.approveRoot(rootPath);
+    const files = await reviewSourceFiles(root, policy, paths);
+    const sourceBytes = files.reduce((total, file) => total + Buffer.byteLength(file.content, "utf8") + Buffer.byteLength(file.path, "utf8") + 64, 0);
+    if (files.length === 0 || files.length > 5 || sourceBytes > 24 * 1024) {
+      throw new ModelInvestigationError("Select 1 to 5 redacted source files within the 24 KiB model-input limit.");
+    }
+    for (const file of files) {
+      process.stdout.write(`\n--- REDACTED ${file.path} (${file.byteCount} bytes, ${file.lineCount} lines) ---\n${file.content}\n`);
+    }
+    const selected = createModelProvider(providerConfiguration);
+    const transferConsent = createInterface({ input: process.stdin, output: process.stdout });
+    let transferAnswer: string;
+    try {
+      transferAnswer = await transferConsent.question(
+        `Send these exact redacted excerpts to ${providerConfiguration.kind} (${selected.model}) for bug investigation? Redaction may miss secrets. No tool actions or persistence will occur. [y/N] `,
+      );
+    } finally {
+      transferConsent.close();
+    }
+    if (transferAnswer.trim().toLowerCase() !== "y") {
+      process.stdout.write("Model investigation cancelled before provider transfer.\n");
+      return;
+    }
+    const findings = await investigateSource(selected.provider, selected.model, files, controller.signal);
+    process.stdout.write(`\nModel investigation result (unverified; no tests were run):\n${findings}\n`);
+  } catch (error: unknown) {
+    const message = error instanceof ConfigurationError || error instanceof ModelInvestigationError || error instanceof ModelProviderError
+      ? error.message
+      : "Model investigation failed safely.";
+    process.stderr.write(`Model investigation failed: ${message}\n`);
+    process.exitCode = controller.signal.aborted ? 130 : 3;
+  } finally {
+    process.removeListener("SIGINT", handleInterrupt);
+  }
+}
+
+async function runGitHubIssuesCommand(commandArgs: readonly string[]): Promise<void> {
+  if (commandArgs.length !== 2 || commandArgs[0] !== "--repository" || commandArgs[1] === undefined) {
+    process.stderr.write("Expected --repository <owner/name>.\n");
+    process.exitCode = 1;
+    return;
+  }
+  if (!process.stdin.isTTY || !process.stdout.isTTY) {
+    process.stderr.write("GitHub issue reading requires an interactive confirmation for the public repository request.\n");
+    process.exitCode = 2;
+    return;
+  }
+  const repository = commandArgs[1];
+  const consent = createInterface({ input: process.stdin, output: process.stdout });
+  let answer: string;
+  try {
+    answer = await consent.question(`Read up to 20 open issue titles from the public repository ${repository}? The request uses no GitHub token and will not write anything. [y/N] `);
+  } finally {
+    consent.close();
+  }
+  if (answer.trim().toLowerCase() !== "y") {
+    process.stdout.write("GitHub issue read cancelled before network access.\n");
+    return;
+  }
+  try {
+    const issues = await readPublicIssues(repository);
+    if (issues.length === 0) {
+      process.stdout.write("No open issues were returned.\n");
+      return;
+    }
+    for (const issue of issues) {
+      process.stdout.write(`#${issue.number} [${issue.state}] ${issue.title}\n${issue.url}\n`);
+    }
+  } catch (error: unknown) {
+    const message = error instanceof GitHubReadError ? error.message : "GitHub issue read failed safely.";
+    process.stderr.write(`GitHub issue read failed: ${message}\n`);
+    process.exitCode = 3;
+  }
+}
+
 async function runDoctor(): Promise<void> {
   process.stdout.write("TaskForge doctor (early development)\n");
   let providerStatus = "not configured or invalid";
@@ -717,6 +918,12 @@ if (args.length === 0 || (args.length === 1 && (args[0] === "--help" || args[0] 
   await runPdfReportCommand(args.slice(2));
 } else if (args.length >= 2 && args[0] === "run" && args[1] === "file-patch") {
   await runFilePatchCommand(args.slice(2));
+} else if (args.length >= 2 && args[0] === "run" && args[1] === "git-diff") {
+  await runGitDiffCommand(args.slice(2));
+} else if (args.length >= 2 && args[0] === "run" && args[1] === "model-investigate") {
+  await runModelInvestigationCommand(args.slice(2));
+} else if (args.length >= 2 && args[0] === "run" && args[1] === "github-issues") {
+  await runGitHubIssuesCommand(args.slice(2));
 } else if (args.length >= 1 && args[0] === "resume") {
   const runId = args[1];
   if (runId === undefined || args.length < 3) {
