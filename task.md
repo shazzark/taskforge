@@ -218,11 +218,19 @@ Official Playwright documentation and a read-only implementation review are comp
 
 **Acceptance checks:** Verify mocked and authorized real read integrations, no accidental sending/publishing, shared budgets, repeat-run suppression and worker review. Clarify integration inputs. No unrestricted third-party executable plugins.
 
-### Phase 8 — Release gate — NOT STARTED
+### Phase 8 — Release gate — IN PROGRESS
 
 **Goal:** Complete a clean Windows consumer trial, workflow documentation, contribution guide, license/dependency review and distribution checks.
 
 **Acceptance checks:** Another developer runs documented scenarios and all required checks are recorded. Release by clone first. npm publication requires tarball consumer verification and explicit publication authorization; check package naming before release.
+
+#### Phase 8.1 — Package metadata and Windows consumer smoke — IN PROGRESS
+
+Added the MIT license and verified GitHub repository URL to package metadata and the lockfile. A packed local tarball installed offline in a temporary Windows consumer using 240 cached packages; the generated `taskforge.cmd` returned version `0.1.0` and help including `file-patch`. The command's final dependency-tree check did not finish cleanly, and a sandbox retry failed while npm attempted to write its cache. No package was published.
+
+**Dependency review:** `npm audit --offline --omit=dev --audit-level=high` reported zero vulnerabilities using the locally cached advisory data. The dependency tree includes deprecated transitive `glob@7.2.3` and `inflight@1.0.6`, and `buffers@0.1.1` plus `png-js@2.0.0` lack license metadata. `jszip@3.10.2` declares `(MIT OR GPL-3.0-or-later)` and is used by parser fixtures. These items require upstream/remediation and license review before release; the offline audit is not a current registry audit.
+
+**Pending:** Complete a clean production consumer install and full dependency-tree check, review/remediate the noted transitive packages, add a contribution guide, and verify documented workflows with another developer after required phases finish. Phase 8 remains incomplete.
 
 ## Prerequisite checklist milestone
 

@@ -2,6 +2,11 @@
   "name": "taskforge",
   "version": "0.1.0",
   "description": "TaskForge is an early development local CLI assistant.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/shazzark/taskforge.git"
+  },
   "type": "module",
   "files": [
     "dist",
