@@ -24,6 +24,8 @@ Goal: repository inspection, seeded bug investigation, approved patch, reviewed 
 ## Phase 6 - Browser, research and design observations (17-20 October)
 Goal: Playwright journeys, network/console/link checks, passive security, responsive/a11y observations, design report and sourced comparisons. Dependencies: providers, permissions and artifacts. Acceptance: seeded failures detected, exact executed check inventory, source references and inferred labels. Verify fixture site and approved real site. Active security and sensitive form actions are separately gated.
 
+Phase 6.2 query-only research is implemented with Groq's built-in browser search. It requires interactive consent, a supported GPT OSS model, validates returned source metadata, and persists nothing. It uses existing Groq credentials; no separate search account or key is required. Phase 6.1 Playwright browser execution remains blocked on npm package access.
+
 ## Phase 7 - Connections, scheduling and specialist agents (20-22 October)
 Goal: GitHub read/drafts, local schedules, email drafts and bounded delegation. Dependencies: preceding tool/permission foundations. Acceptance: mocked and real read integration where authorized, no accidental sending/publishing, shared budgets, repeat-run suppression and worker review. Requires clarified integration inputs. No unrestricted third-party executable plugins.
 

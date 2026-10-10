@@ -8,6 +8,8 @@ Repository: https://github.com/shazzark/taskforge
 
 ## Local development
 
+`run research --query "..."` sends only the approved query to Groq's built-in browser search after an interactive prompt. It requires the selected model to be one of Groq's supported GPT OSS models, displays bounded validated sources and an unverified answer, and persists nothing. It uses the existing Groq configuration and has no separate search key; see [Groq Browser Search](https://console.groq.com/docs/tool-use/built-in-tools/browser-search) for current limits and service details.
+
 Requirements: Node.js 22.13.0 or later and npm.
 
 ```powershell

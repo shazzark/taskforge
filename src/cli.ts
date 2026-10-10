@@ -28,10 +28,11 @@ import { investigateSource, ModelInvestigationError } from "./software/model-inv
 import { GitHubReadError, readPublicIssues } from "./integrations/github-public-issues.js";
 import { DraftArtifactError, parseLocalDraftInput, previewTextArtifact, writeApprovedTextArtifact } from "./artifacts/drafts.js";
 import { escapeTerminalControls } from "./security/terminal-text.js";
+import { BrowserSearchError, GroqBrowserResearch } from "./integrations/groq-browser-search.js";
 
 const helpText = `TaskForge ${packageJson.version} (early development)
 
-Usage: taskforge [--help | --version | config | doctor | model-check | chat | run csv-analyze --input <path> | run document-analyze --input <path> | run pdf-report --input <json> --output <new.pdf> | run draft --input <draft.json> --output <new.md> | run specialist-review --root <directory> --file <relative-path> [...] | run repo-inspect --root <directory> | run source-review --root <directory> --file <relative-path> [...] | run model-investigate --root <directory> --file <relative-path> [...] | run github-issues --repository <owner/name> | run file-patch --root <directory> --target <relative-path> --content-file <relative-path> | run git-diff --root <directory> | run software-check --root <directory> --check <node-test|typescript-check> | resume <run-id> --input <path> | history list]
+Usage: taskforge [--help | --version | config | doctor | model-check | chat | run csv-analyze --input <path> | run document-analyze --input <path> | run pdf-report --input <json> --output <new.pdf> | run draft --input <draft.json> --output <new.md> | run specialist-review --root <directory> --file <relative-path> [...] | run research --query <question> | run repo-inspect --root <directory> | run source-review --root <directory> --file <relative-path> [...] | run model-investigate --root <directory> --file <relative-path> [...] | run github-issues --repository <owner/name> | run file-patch --root <directory> --target <relative-path> --content-file <relative-path> | run git-diff --root <directory> | run software-check --root <directory> --check <node-test|typescript-check> | resume <run-id> --input <path> | history list]
 
 The config command validates local settings and prints a redacted summary.
 The doctor command checks configured MongoDB connectivity and reports available setup areas.
@@ -46,6 +47,7 @@ The model-investigate workflow sends selected, heuristically redacted source to 
 The github-issues workflow reads at most 20 open issue titles from one public repository without a token; it excludes pull requests and writes nothing.
 The draft workflow creates a new local Markdown GitHub issue or email draft from an explicitly approved JSON input; it never contacts GitHub or an email service.
 The specialist-review workflow sends approved, heuristically redacted source excerpts to up to two read-only specialist prompts and asks the same configured model to review their findings; workers have no tools, cannot spawn workers, share one run-wide request/action budget, and do not persist source or findings.
+The research workflow sends only the exact approved query to Groq browser search, then displays bounded source metadata and answer; it makes no project-file access or persistence and requires a supported Groq model.
 The document-analyze workflow parses one approved TXT, Markdown, text PDF, DOCX, or XLSX file and stores counts only.
 The pdf-report workflow renders an approved JSON report and creates a new approved PDF artifact after a content-bound confirmation.
 The software-check workflow runs only an explicitly approved Node test or TypeScript no-emit check in one approved root.
@@ -810,6 +812,58 @@ async function runGitHubIssuesCommand(commandArgs: readonly string[]): Promise<v
   }
 }
 
+async function runResearchCommand(commandArgs: readonly string[]): Promise<void> {
+  if (commandArgs.length !== 2 || commandArgs[0] !== "--query" || commandArgs[1] === undefined || commandArgs[1].trim().length === 0 || commandArgs[1].length > 512) {
+    process.stderr.write("Expected --query <question> with 1–512 characters.\n");
+    process.exitCode = 1;
+    return;
+  }
+  if (!process.stdin.isTTY || !process.stdout.isTTY) {
+    process.stderr.write("Research requires interactive approval before sending a query to Groq browser search.\n");
+    process.exitCode = 2;
+    return;
+  }
+  try {
+    const provider = loadProviderConfiguration();
+    if (provider.kind !== "groq") {
+      process.stderr.write("Groq browser search requires TASKFORGE_PROVIDER=groq.\n");
+      process.exitCode = 2;
+      return;
+    }
+    const query = commandArgs[1].trim();
+    const consent = createInterface({ input: process.stdin, output: process.stdout });
+    let answer: string;
+    try {
+      answer = await consent.question(
+        `Send this exact query to Groq browser search (${provider.model})? Groq reports search is powered by Exa. No project files are sent and no results are persisted. [y/N]\n${escapeTerminalControls(query)}\n> `,
+      );
+    } finally {
+      consent.close();
+    }
+    if (answer.trim().toLowerCase() !== "y") {
+      process.stdout.write("Research cancelled before provider transfer.\n");
+      return;
+    }
+    const controller = new AbortController();
+    const interrupt = (): void => controller.abort();
+    process.once("SIGINT", interrupt);
+    try {
+      const result = await new GroqBrowserResearch(provider).search(query, controller.signal);
+      process.stdout.write(`Research answer (unverified; retrieved ${result.retrievedAt}; model ${result.model}):\n${escapeTerminalControls(result.answer)}\n\nSources (${result.sources.length}):\n`);
+      for (const source of result.sources) {
+        process.stdout.write(`- ${escapeTerminalControls(source.title)}\n  ${source.url}\n  ${escapeTerminalControls(source.excerpt)}\n`);
+      }
+    } finally {
+      process.removeListener("SIGINT", interrupt);
+    }
+  } catch (error: unknown) {
+    const message = error instanceof ConfigurationError ? error.message
+      : error instanceof BrowserSearchError ? error.message : "Research failed safely.";
+    process.stderr.write(`${message}\n`);
+    process.exitCode = error instanceof BrowserSearchError && error.kind === "cancelled" ? 130 : 3;
+  }
+}
+
 async function runDraftCommand(commandArgs: readonly string[]): Promise<void> {
   if (commandArgs.length !== 4 || commandArgs[0] !== "--input" || commandArgs[1] === undefined || commandArgs[2] !== "--output" || commandArgs[3] === undefined) {
     process.stderr.write("Expected --input <draft.json> --output <new.md>.\n");
@@ -1097,6 +1151,8 @@ if (args.length === 0 || (args.length === 1 && (args[0] === "--help" || args[0] 
   await runDraftCommand(args.slice(2));
 } else if (args.length >= 2 && args[0] === "run" && args[1] === "specialist-review") {
   await runSpecialistReviewCommand(args.slice(2));
+} else if (args.length >= 2 && args[0] === "run" && args[1] === "research") {
+  await runResearchCommand(args.slice(2));
 } else if (args.length >= 1 && args[0] === "resume") {
   const runId = args[1];
   if (runId === undefined || args.length < 3) {
