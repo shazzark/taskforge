@@ -18,10 +18,11 @@ import { CsvWorkflowError, resumeCsvAnalysisWorkflow, runCsvAnalysisWorkflow } f
 import { inspectRepository, RepositoryInspectionError } from "./workflows/repository-inspection-workflow.js";
 import { analyzeDocument, DocumentWorkflowError } from "./workflows/document-analysis-workflow.js";
 import { runReviewedCommand, type ReviewedCommandId, ReviewedCommandError } from "./software/reviewed-command.js";
+import { reviewSourceFiles, SourceReviewError } from "./workflows/source-review-workflow.js";
 
 const helpText = `TaskForge ${packageJson.version} (early development)
 
-Usage: taskforge [--help | --version | config | doctor | model-check | chat | run csv-analyze --input <path> | run document-analyze --input <path> | run repo-inspect --root <directory> | run software-check --root <directory> --check <node-test|typescript-check> | resume <run-id> --input <path> | history list]
+Usage: taskforge [--help | --version | config | doctor | model-check | chat | run csv-analyze --input <path> | run document-analyze --input <path> | run repo-inspect --root <directory> | run source-review --root <directory> --file <relative-path> [...] | run software-check --root <directory> --check <node-test|typescript-check> | resume <run-id> --input <path> | history list]
 
 The config command validates local settings and prints a redacted summary.
 The doctor command checks configured MongoDB connectivity and reports available setup areas.
@@ -29,6 +30,7 @@ The model-check command makes a synthetic read-only tool call through the select
 The chat command opens a bounded interactive conversation with the selected provider.
 The csv-analyze workflow reads one explicitly approved CSV file and stores redacted run metadata.
 The repo-inspect workflow inventories one explicitly approved repository root without reading file contents or running commands.
+The source-review workflow reads only explicitly selected source files and displays bounded, locally redacted content; it does not send or persist source.
 The document-analyze workflow parses one approved TXT, Markdown, text PDF, DOCX, or XLSX file and stores counts only.
 The software-check workflow runs only an explicitly approved Node test or TypeScript no-emit check in one approved root.
 The resume command rechecks the input and workflow hashes, then resumes an uncertain CSV analysis.
@@ -300,6 +302,62 @@ async function runSoftwareCheckCommand(commandArgs: readonly string[]): Promise<
   }
 }
 
+async function runSourceReviewCommand(commandArgs: readonly string[]): Promise<void> {
+  if (commandArgs.length < 4 || commandArgs[0] !== "--root" || commandArgs[1] === undefined || commandArgs[1].trim().length === 0) {
+    process.stderr.write("Expected --root <directory> --file <relative-path> [--file <relative-path> ...].\n");
+    process.exitCode = 1;
+    return;
+  }
+  const paths: string[] = [];
+  for (let index = 2; index < commandArgs.length; index += 2) {
+    const flag = commandArgs[index];
+    const path = commandArgs[index + 1];
+    if (flag !== "--file" || path === undefined) {
+      process.stderr.write("Each selected file must use --file followed by a relative path.\n");
+      process.exitCode = 1;
+      return;
+    }
+    paths.push(path);
+  }
+  if (!process.stdin.isTTY || !process.stdout.isTTY) {
+    process.stderr.write("Source review requires an interactive terminal for exact root and file-set approval.\n");
+    process.exitCode = 2;
+    return;
+  }
+  const requestedRoot = resolve(commandArgs[1]);
+  let canonicalRoot: string;
+  try {
+    canonicalRoot = await realpath(requestedRoot);
+  } catch {
+    process.stderr.write("The requested repository root could not be resolved.\n");
+    process.exitCode = 2;
+    return;
+  }
+  const consent = createInterface({ input: process.stdin, output: process.stdout });
+  let answer: string;
+  try {
+    answer = await consent.question(`Review these exact files from this resolved repository root?\nRoot: ${canonicalRoot}\nFiles: ${paths.join(", ")}\nContent stays local. Common credential patterns are redacted heuristically; other secrets may remain visible. [y/N] `);
+  } finally {
+    consent.close();
+  }
+  if (answer.trim().toLowerCase() !== "y") {
+    process.stdout.write("Source review cancelled before file access.\n");
+    return;
+  }
+  try {
+    const policy = new WorkspacePathPolicy();
+    const approvedRoot = await policy.approveRoot(canonicalRoot);
+    const files = await reviewSourceFiles(approvedRoot, policy, paths);
+    for (const file of files) {
+      process.stdout.write(`\n--- ${file.path} (${file.byteCount} bytes, ${file.lineCount} lines) ---\n${file.content}\n`);
+    }
+  } catch (error: unknown) {
+    const message = error instanceof SourceReviewError ? error.message : "Source review failed safely.";
+    process.stderr.write(`Source review failed: ${message}\n`);
+    process.exitCode = 3;
+  }
+}
+
 async function runDoctor(): Promise<void> {
   process.stdout.write("TaskForge doctor (early development)\n");
   let providerStatus = "not configured or invalid";
@@ -522,6 +580,8 @@ if (args.length === 0 || (args.length === 1 && (args[0] === "--help" || args[0] 
   await runDocumentAnalysisCommand(args.slice(2));
 } else if (args.length >= 2 && args[0] === "run" && args[1] === "software-check") {
   await runSoftwareCheckCommand(args.slice(2));
+} else if (args.length >= 2 && args[0] === "run" && args[1] === "source-review") {
+  await runSourceReviewCommand(args.slice(2));
 } else if (args.length >= 1 && args[0] === "resume") {
   const runId = args[1];
   if (runId === undefined || args.length < 3) {
