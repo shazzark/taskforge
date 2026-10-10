@@ -17,10 +17,11 @@ import { PathPolicyError, WorkspacePathPolicy } from "./security/path-policy.js"
 import { CsvWorkflowError, resumeCsvAnalysisWorkflow, runCsvAnalysisWorkflow } from "./workflows/csv-analysis-workflow.js";
 import { inspectRepository, RepositoryInspectionError } from "./workflows/repository-inspection-workflow.js";
 import { analyzeDocument, DocumentWorkflowError } from "./workflows/document-analysis-workflow.js";
+import { runReviewedCommand, type ReviewedCommandId, ReviewedCommandError } from "./software/reviewed-command.js";
 
 const helpText = `TaskForge ${packageJson.version} (early development)
 
-Usage: taskforge [--help | --version | config | doctor | model-check | chat | run csv-analyze --input <path> | run document-analyze --input <path> | run repo-inspect --root <directory> | resume <run-id> --input <path> | history list]
+Usage: taskforge [--help | --version | config | doctor | model-check | chat | run csv-analyze --input <path> | run document-analyze --input <path> | run repo-inspect --root <directory> | run software-check --root <directory> --check <node-test|typescript-check> | resume <run-id> --input <path> | history list]
 
 The config command validates local settings and prints a redacted summary.
 The doctor command checks configured MongoDB connectivity and reports available setup areas.
@@ -29,6 +30,7 @@ The chat command opens a bounded interactive conversation with the selected prov
 The csv-analyze workflow reads one explicitly approved CSV file and stores redacted run metadata.
 The repo-inspect workflow inventories one explicitly approved repository root without reading file contents or running commands.
 The document-analyze workflow parses one approved TXT, Markdown, text PDF, DOCX, or XLSX file and stores counts only.
+The software-check workflow runs only an explicitly approved Node test or TypeScript no-emit check in one approved root.
 The resume command rechecks the input and workflow hashes, then resumes an uncertain CSV analysis.
 History list prints up to 50 redacted run summaries.
 `;
@@ -229,6 +231,71 @@ async function runRepositoryInspectionCommand(commandArgs: readonly string[]): P
   } catch (error: unknown) {
     const message = error instanceof RepositoryInspectionError ? error.message : "Repository inspection failed safely.";
     process.stderr.write(`Repository inspection failed: ${message}\n`);
+    process.exitCode = 3;
+  }
+}
+
+async function runSoftwareCheckCommand(commandArgs: readonly string[]): Promise<void> {
+  const rootValue = commandArgs[1];
+  const checkValue = commandArgs[3];
+  if (
+    commandArgs.length !== 4 || commandArgs[0] !== "--root" || rootValue === undefined ||
+    rootValue.trim().length === 0 || commandArgs[2] !== "--check" ||
+    (checkValue !== "node-test" && checkValue !== "typescript-check")
+  ) {
+    process.stderr.write("Expected --root <directory> --check <node-test|typescript-check>.\n");
+    process.exitCode = 1;
+    return;
+  }
+  if (!process.stdin.isTTY || !process.stdout.isTTY) {
+    process.stderr.write("Software checks require an interactive terminal for explicit approval.\n");
+    process.exitCode = 2;
+    return;
+  }
+
+  const requestedRoot = resolve(rootValue);
+  const command: ReviewedCommandId = checkValue;
+  const rootConsent = createInterface({ input: process.stdin, output: process.stdout });
+  let rootAnswer: string;
+  try {
+    rootAnswer = await rootConsent.question(`Allow TaskForge to run a reviewed check in this exact repository root? ${requestedRoot} [y/N] `);
+  } finally {
+    rootConsent.close();
+  }
+  if (rootAnswer.trim().toLowerCase() !== "y") {
+    process.stdout.write("Software check cancelled before repository access.\n");
+    return;
+  }
+
+  try {
+    const policy = new WorkspacePathPolicy();
+    const approvedRoot = await policy.approveRoot(requestedRoot);
+    const commandLabel = command === "node-test" ? "node --test (runs the repository test code)" : "local TypeScript compiler --noEmit";
+    const commandConsent = createInterface({ input: process.stdin, output: process.stdout });
+    let commandAnswer: string;
+    try {
+      commandAnswer = await commandConsent.question(`Run ${commandLabel} in the approved root? [y/N] `);
+    } finally {
+      commandConsent.close();
+    }
+    if (commandAnswer.trim().toLowerCase() !== "y") {
+      process.stdout.write("Software check cancelled before command execution.\n");
+      return;
+    }
+
+    const result = await withMongoStore((store) => runReviewedCommand(store, approvedRoot, policy, command));
+    if (result !== undefined) {
+      process.stdout.write(
+        `Run ${result.run.runId} ${result.status}: ${result.command}; ` +
+        `exit=${result.exitCode === null ? "unavailable" : result.exitCode}; ` +
+        `duration=${result.durationMs}ms; observed output bytes=${result.observedOutputBytes}` +
+        `${result.outputTruncated ? " (capture limit reached)" : ""}. Output was not displayed or persisted.\n`,
+      );
+      if (result.status !== "passed") process.exitCode = 3;
+    }
+  } catch (error: unknown) {
+    const message = error instanceof ReviewedCommandError ? error.message : "Software check failed safely.";
+    process.stderr.write(`Software check failed: ${message}\n`);
     process.exitCode = 3;
   }
 }
@@ -453,6 +520,8 @@ if (args.length === 0 || (args.length === 1 && (args[0] === "--help" || args[0] 
   await runRepositoryInspectionCommand(args.slice(2));
 } else if (args.length >= 2 && args[0] === "run" && args[1] === "document-analyze") {
   await runDocumentAnalysisCommand(args.slice(2));
+} else if (args.length >= 2 && args[0] === "run" && args[1] === "software-check") {
+  await runSoftwareCheckCommand(args.slice(2));
 } else if (args.length >= 1 && args[0] === "resume") {
   const runId = args[1];
   if (runId === undefined || args.length < 3) {

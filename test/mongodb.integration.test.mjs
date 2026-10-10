@@ -18,6 +18,7 @@ import { parseConfiguration } from "../dist/config.js";
 import { resumeCsvAnalysisWorkflow, runCsvAnalysisWorkflow } from "../dist/workflows/csv-analysis-workflow.js";
 import { analyzeDocument } from "../dist/workflows/document-analysis-workflow.js";
 import { inspectRepository } from "../dist/workflows/repository-inspection-workflow.js";
+import { runReviewedCommand } from "../dist/software/reviewed-command.js";
 import { WorkspacePathPolicy } from "../dist/security/path-policy.js";
 
 const testUri = process.env.TASKFORGE_TEST_MONGODB_URI;
@@ -80,6 +81,7 @@ test(
     const runId = randomUUID();
     const malformedRunId = randomUUID();
     const repositoryFixturePath = await mkdtemp(join(tmpdir(), "taskforge-repo-db-"));
+    const softwareFixturePath = await mkdtemp(join(tmpdir(), "taskforge-software-db-"));
 
     try {
       await rawClient.connect();
@@ -107,6 +109,24 @@ test(
       assert.equal(persistedDocumentRun?.state, "completed");
       assert.equal(persistedDocumentRun?.summary.includes(documentMarker), false);
       assert.equal(documentEvents.some((event) => event.type === "run_finished"), true);
+
+      await mkdir(join(softwareFixturePath, "test"));
+      const seededTestPath = join(softwareFixturePath, "test", "seeded.test.mjs");
+      await writeFile(seededTestPath, "import assert from 'node:assert/strict';\nassert.equal(1, 2);\n", "utf8");
+      const softwarePolicy = new WorkspacePathPolicy();
+      const approvedSoftwareRoot = await softwarePolicy.approveRoot(softwareFixturePath);
+      const reproducedFailure = await runReviewedCommand(store, approvedSoftwareRoot, softwarePolicy, "node-test");
+      assert.equal(reproducedFailure.status, "failed");
+      assert.equal((await store.getRunSummary(reproducedFailure.run.runId))?.state, "failed");
+      await writeFile(seededTestPath, "import assert from 'node:assert/strict';\nassert.equal(1, 1);\n", "utf8");
+      const verifiedFix = await runReviewedCommand(store, approvedSoftwareRoot, softwarePolicy, "node-test");
+      assert.equal(verifiedFix.status, "passed");
+      assert.equal((await store.getRunSummary(verifiedFix.run.runId))?.state, "completed");
+      const projectPolicy = new WorkspacePathPolicy();
+      const approvedProjectRoot = await projectPolicy.approveRoot(process.cwd());
+      const typecheckRun = await runReviewedCommand(store, approvedProjectRoot, projectPolicy, "typescript-check");
+      assert.equal(typecheckRun.status, "passed");
+      assert.equal((await store.getRunSummary(typecheckRun.run.runId))?.state, "completed");
 
       const created = await store.saveRunSummary({
         runId,
@@ -276,7 +296,11 @@ test(
           try {
             await rawClient.close();
           } finally {
-            await rm(repositoryFixturePath, { recursive: true, force: true });
+            try {
+              await rm(repositoryFixturePath, { recursive: true, force: true });
+            } finally {
+              await rm(softwareFixturePath, { recursive: true, force: true });
+            }
           }
         }
       }
