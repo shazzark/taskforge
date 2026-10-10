@@ -112,7 +112,7 @@ For private GitHub access, verify an authorized read using the TaskForge integra
 - **Before Phase 6.1 browser acceptance:** provide working npm registry access or a local Playwright package cache so Codex can install Playwright. The compatible Chromium browser binary must also be installed. Owner supplies an explicitly approved target/journey; login credentials only if the journey genuinely requires them.
 - **Phase 6.2 research:** implemented with the existing Groq account/key and supported GPT OSS model; no extra action/key is required. The query is sent to Groq browser search (powered by Exa); only send queries suitable for this external service. See [Groq Browser Search](https://console.groq.com/docs/tool-use/built-in-tools/browser-search) for supported models, service limitations and current pricing links.
 - **Before Phase 7 private-repo acceptance:** no token for public repositories. Owner creates a fine-grained read-only token only if private access is in scope. Scheduling and specialist workers need no separate accounts/API keys. Email stays draft-only.
-- **Phase 8:** no new credential required for clone-based release checks. Any npm publication remains a separately authorized action.
+- **Phase 8:** no new credential required for clone-based release checks. The offline cached Windows consumer and current online production audit (`npm audit --omit=dev --audit-level=high`, 0 vulnerabilities) passed. Deprecated transitive packages and license metadata still need release review; an independent developer workflow trial remains. Any npm publication remains a separately authorized action.
 
 ### Official documentation consulted
 
