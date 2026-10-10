@@ -58,6 +58,8 @@ This file is the execution status source. Statuses describe verified work only. 
 
 **Live Groq evidence:** `node dist/cli.js model-check` completed with Groq `openai/gpt-oss-20b`, one synthetic read-only tool action and two model requests. No user/project data was sent. The first sandboxed network attempt was unavailable; the authorized elevated run succeeded. Provider credential values were never printed.
 
+**Interactive chat smoke:** Launched `node dist/cli.js chat` in a TTY and declined the Groq transfer prompt. Chat exited before sending a request.
+
 #### Phase 2.2 — Live Ollama evaluation — PENDING (owner-deferred until tonight)
 
 The adapter is implemented and mocked contract tests pass. Ollama is not installed and its endpoint/model are absent. Do not install it or download a model before the owner’s stated time. At the local trial, use the planned `qwen3:4b-q4_K_M` candidate with a pinned 4K context; record load/response time and peak memory. Do not claim hardware fit until measured.
@@ -78,13 +80,21 @@ Implemented explicit realpath-resolved root approval, read/write path checks, se
 
 **Checks:** `npm run typecheck` passed; `npm test` passed (28 passed, 1 skipped: the dedicated MongoDB integration lacked its test URI). Approved-root traversal, secret denial, junction escape, content-change invalidation, junction replacement invalidation and preview limits passed.
 
-**Pending:** Wire approval tokens to actual mutation tools only after their preview/approval contract is integrated. Persist events and checkpoints after MongoDB URI correction. Complete changed-target/escape regression checks before introducing new task families.
+**Pending:** Wire approval tokens to actual mutation tools only after their preview/approval contract is integrated. Persist events and checkpoints after MongoDB URI correction. This foundation alone does not authorize filesystem actions.
 
-### Phase 4 — Files, data and report adapters — NOT STARTED
+### Phase 4 — Files, data and report adapters — IN PROGRESS
 
 **Goal:** Implement inventory, deterministic CSV calculations, approved organization, input parsers and requested outputs.
 
 **Acceptance checks:** Fixture counts/totals and file integrity match; PDF renders; unsupported formats fail clearly. Verify paths, format fixtures, malformed input and artifact hashes.
+
+#### Phase 4.1 — Deterministic CSV analysis core — COMPLETE (pure input module)
+
+Added a bounded CSV parser and analyzer for caller-supplied text: BOM/CRLF, escaped quotes, quoted delimiters and embedded newlines; header/row validation; duplicate and missing-cell counts; selected-column totals using exact decimal arithmetic. It does not open files, create exports, or expose a new workflow/CLI task.
+
+**Checks:** `npm run typecheck` passed; `npm test` passed (33 passed, 1 skipped dedicated MongoDB integration). Fixtures cover known exact totals, missing values, duplicate rows, malformed quoting/width, invalid numeric values, and size/record/column/precision limits.
+
+**Pending:** Integrate file access through approved-root permissions, add requested export formats and artifact validation, and test full file workflows after Phase 3 persistence/approval integration.
 
 ### Phase 5 — Software workflow — NOT STARTED
 
@@ -116,9 +126,10 @@ Implemented explicit realpath-resolved root approval, read/write path checks, se
 
 ## Recovery
 
-- **Current phase/subphase:** Phase 2.1 COMPLETE for online and mocked paths; Phase 2.2 live Ollama verification is owner-deferred until tonight. Phase 2 overall remains IN PROGRESS. Phase 3.1 approved-root and preview foundation is COMPLETE; database-backed events/resume remain pending. MongoDB URI needs an explicit database path before `config`/`doctor` database checks can pass.
+- **Current phase/subphase:** Phase 2.1 COMPLETE for online and mocked paths; Phase 2.2 live Ollama verification is owner-deferred until tonight. Phase 2 remains IN PROGRESS. Phase 3.1 approved-root and preview foundation is COMPLETE; database-backed events/resume remain pending. Phase 4.1 pure CSV analysis core is COMPLETE; file workflows remain pending permission/artifact integration. MongoDB URI needs an explicit database path before `config`/`doctor` database checks can pass.
 - **Last completed work:** Phase 1.4 checkpoint `fda8566`; Phase 2 provider/tool-loop implementation, mock contracts and live synthetic Groq tool call.
 - **Checks performed:** Phase 1.1: `npm ci`; typecheck/build; built CLI help/version; package version parity; invalid-argument error and no argument echo; packed Windows consumer and `taskforge.cmd`; review; `git diff --check`. Phase 1.2: `npm ci`; typecheck; tests (8 passed); missing/malformed config exit behavior and redaction; review; diff check. Phase 1.3: `npm ci`; typecheck/build; 10 tests passed against isolated disposable MongoDB; persistence and unavailable-server paths; review; diff check. Phase 1.4: clean `npm ci`; typecheck/build; Windows help/version/config/doctor smoke checks; all 12 tests passed with no skips against isolated disposable MongoDB; doctor success plus missing/unavailable failure paths and redaction; review; `git diff --check`. Registered MongoDB service remains stopped and untouched; no existing connection value was read or reused.
 - **Verified commands/results:** `npm run typecheck` passed; `npm test` passed (21 passed, 1 skipped dedicated MongoDB integration; test command builds). `node dist/cli.js model-check` passed against Groq (1 read-only synthetic tool action, 2 model requests). Safe `mongosh` ping returned `1`; application URI validation failed without revealing the connection string. `git diff --check` must pass before checkpointing.
-- **Phase 3.1 checks:** `npm run typecheck` passed; `npm test` passed (28 passed, 1 skipped dedicated MongoDB integration). Junction-based escape and changed-target checks both passed on Windows.
+- **Phase 3.1 checks:** `npm run typecheck` passed; `npm test` passed at that checkpoint (28 passed, 1 skipped dedicated MongoDB integration). Junction-based escape and changed-target checks passed on Windows.
+- **Phase 4.1 checks:** `npm run typecheck` passed; `npm test` passed (33 passed, 1 skipped dedicated MongoDB integration).
 - **Outstanding:** Ollama installation/model pull and live local evaluation are explicitly deferred until tonight. Correct the MongoDB URI database path in ignored `.env` without sharing its value. Then verify config/doctor and database-dependent workflows. Continue independent work where prerequisites pass; no push.
