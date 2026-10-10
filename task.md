@@ -112,6 +112,14 @@ Added a bounded parser for caller-supplied TXT/Markdown text. It normalizes BOM/
 
 **Pending:** Integrate file access through approved-root permissions and verify file workflows after Phase 3 persistence/approval wiring.
 
+#### Phase 4.4 — Bounded text-based PDF extraction — COMPLETE (pure byte input)
+
+Added `pdfjs-dist` and a parser that accepts caller-supplied PDF bytes, extracts page text, and enforces 8 MiB input, 100-page, and 1,000,000-character limits. It uses PDF.js without system fonts, disables font-face loading, rejects malformed input, and exposes only normalized errors. Scanned PDFs/OCR, filesystem reads, and artifact integration are not supported.
+
+**Checks:** `npm run typecheck` passed; `npm test` passed (41 passed, 1 skipped dedicated MongoDB integration). A generated in-memory report was parsed for page count and text; invalid type/header/PDF and size limit cases were rejected. npm reported zero vulnerabilities at installation.
+
+**Pending:** Review the PDF.js dependency at release and validate file access/integrity through the integrated Phase 3 boundary. No OCR is implied.
+
 ### Phase 5 — Software workflow — NOT STARTED
 
 **Goal:** Support repository inspection, seeded bug investigation, approved patches, reviewed command execution and local diffs.
@@ -138,11 +146,11 @@ Added a bounded parser for caller-supplied TXT/Markdown text. It normalizes BOM/
 
 ## Prerequisite checklist milestone
 
-**Status: COMPLETE (documentation and prerequisites).** Added root `setup-checklist.md` and placeholder-only `.env.example`; the real `.env` remains ignored. Inspected configuration and credential presence without printing or changing values. MongoDB service ping and live synthetic Groq model-check pass, but the configured MongoDB URI lacks the explicit database path required by the application. PDFKit is installed and CSV/PDF/TXT/Markdown pure-input cores pass. No Ollama installation or model download has been performed. Exact choices and owner actions are in the checklist.
+**Status: COMPLETE (documentation and prerequisites).** Added root `setup-checklist.md` and placeholder-only `.env.example`; the real `.env` remains ignored. Inspected configuration and credential presence without printing or changing values. MongoDB service ping and live synthetic Groq model-check pass, but the configured MongoDB URI lacks the explicit database path required by the application. PDFKit and PDF.js are installed; CSV/PDF/TXT/Markdown pure-input cores pass. No Ollama installation or model download has been performed. Exact choices and owner actions are in the checklist.
 
 ## Recovery
 
-- **Current phase/subphase:** Phase 2.1 COMPLETE for online and mocked paths; Phase 2.2 live Ollama verification is owner-deferred until tonight. Phase 2 remains IN PROGRESS. Phase 3.1 approved-root and preview foundation is COMPLETE; database-backed events/resume remain pending. Phase 4.1 CSV analysis, 4.2 in-memory PDF rendering and 4.3 TXT/Markdown parser cores are COMPLETE; file workflows remain pending permission/artifact integration. MongoDB URI needs an explicit database path before `config`/`doctor` database checks can pass.
+- **Current phase/subphase:** Phase 2.1 COMPLETE for online and mocked paths; Phase 2.2 live Ollama verification is owner-deferred until tonight. Phase 2 remains IN PROGRESS. Phase 3.1 approved-root and preview foundation is COMPLETE; database-backed events/resume remain pending. Phase 4.1 CSV analysis, 4.2 in-memory PDF rendering, 4.3 TXT/Markdown parsing, and 4.4 text-based PDF extraction cores are COMPLETE; DOCX/XLSX parsers and integrated file workflows remain pending. MongoDB URI needs an explicit database path before `config`/`doctor` database checks can pass.
 - **Last completed work:** Phase 1.4 checkpoint `fda8566`; Phase 2 provider/tool-loop implementation, mock contracts and live synthetic Groq tool call.
 - **Checks performed:** Phase 1.1: `npm ci`; typecheck/build; built CLI help/version; package version parity; invalid-argument error and no argument echo; packed Windows consumer and `taskforge.cmd`; review; `git diff --check`. Phase 1.2: `npm ci`; typecheck; tests (8 passed); missing/malformed config exit behavior and redaction; review; diff check. Phase 1.3: `npm ci`; typecheck/build; 10 tests passed against isolated disposable MongoDB; persistence and unavailable-server paths; review; diff check. Phase 1.4: clean `npm ci`; typecheck/build; Windows help/version/config/doctor smoke checks; all 12 tests passed with no skips against isolated disposable MongoDB; doctor success plus missing/unavailable failure paths and redaction; review; `git diff --check`. Registered MongoDB service remains stopped and untouched; no existing connection value was read or reused.
 - **Verified commands/results:** `npm run typecheck` passed; `npm test` passed (21 passed, 1 skipped dedicated MongoDB integration; test command builds). `node dist/cli.js model-check` passed against Groq (1 read-only synthetic tool action, 2 model requests). Safe `mongosh` ping returned `1`; application URI validation failed without revealing the connection string. `git diff --check` must pass before checkpointing.
@@ -150,4 +158,5 @@ Added a bounded parser for caller-supplied TXT/Markdown text. It normalizes BOM/
 - **Phase 4.1 checks:** `npm run typecheck` passed; `npm test` passed (33 passed, 1 skipped dedicated MongoDB integration).
 - **Phase 4.2 checks:** `npm run typecheck` passed; `npm test` passed (36 passed, 1 skipped dedicated MongoDB integration).
 - **Phase 4.3 checks:** `npm run typecheck` passed; `npm test` passed (39 passed, 1 skipped dedicated MongoDB integration).
+- **Phase 4.4 checks:** `npm run typecheck` passed; `npm test` passed (41 passed, 1 skipped dedicated MongoDB integration).
 - **Outstanding:** Ollama installation/model pull and live local evaluation are explicitly deferred until tonight. Correct the MongoDB URI database path in ignored `.env` without sharing its value. Then verify config/doctor and database-dependent workflows. Continue independent work where prerequisites pass; no push.
