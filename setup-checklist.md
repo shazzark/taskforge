@@ -1,6 +1,10 @@
 # TaskForge setup checklist: Phases 2–8
 
-This is a prerequisite inventory, not evidence that later phases are implemented. The project currently has Phase 1 complete; Phase 2 is blocked before implementation. As inspected on 10 October 2026, `src/config.ts` reads and validates only `TASKFORGE_MONGODB_URI`; it does not load `.env`. All other TaskForge variables below are proposed contracts until a phase implements and validates them. Current root `.env` is absent and ignored by Git (`.env` and `.env.*`, with `.env.example` explicitly allowed). No secret value was read, changed, or copied. An unrelated environment variable named `GITHUB_PAT_TOKEN` exists; it is intentionally not reused.
+This is a prerequisite inventory, not evidence that later phases are implemented. The opening state below records the inventory at checklist creation. Since then, Phase 2 provider configuration and adapters were implemented; see the progress update. No secret value was read, changed, or copied. An unrelated environment variable named `GITHUB_PAT_TOKEN` was detected by name only and intentionally not reused.
+
+**Progress update:** Root `.env` now exists and remains ignored. Presence of the MongoDB and Groq settings was checked without reading or printing values. The Groq synthetic tool-call check passed. MongoDB service ping succeeds, but the configured SRV URI lacks the explicit database path required by the application, so CLI database configuration still needs owner correction. Ollama live verification remains deferred until tonight; no installation or model download has been performed.
+
+At checklist creation on 10 October 2026, `src/config.ts` read and validated only `TASKFORGE_MONGODB_URI`; it did not load `.env`. Root `.env` was absent and ignored by Git (`.env` and `.env.*`, with `.env.example` explicitly allowed). All other TaskForge variables in the initial checklist were proposed contracts at that point.
 
 ## What Codex can install versus what you must supply
 

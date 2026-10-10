@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { spawnSync } from "node:child_process";
+import { tmpdir } from "node:os";
 import { MongoClient } from "mongodb";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
@@ -98,11 +99,12 @@ test(
       const doctor = spawnSync(process.execPath, [cliPath, "doctor"], {
         encoding: "utf8",
         env: doctorEnvironment,
+        cwd: tmpdir(),
       });
       assert.equal(doctor.error, undefined);
       assert.equal(doctor.status, 0);
       assert.match(doctor.stdout, /MongoDB: available/u);
-      assert.match(doctor.stdout, /Model providers: not implemented yet/u);
+      assert.match(doctor.stdout, /Model provider: not configured or invalid/u);
       assert.doesNotMatch(doctor.stdout, /mongodb:\/\//u);
     } finally {
       await store.close();

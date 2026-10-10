@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 import {
@@ -12,7 +13,7 @@ import {
 const localMongoUri = "mongodb://localhost:27017/taskforge_test?marker=redaction-check";
 const cliPath = fileURLToPath(new URL("../dist/cli.js", import.meta.url));
 
-function isolatedEnvironment(mongodbUri) {
+function isolatedEnvironment(mongodbUri, extra = {}) {
   const environment = {};
   for (const key of ["PATH", "SystemRoot", "WINDIR", "TEMP", "TMP"]) {
     const value = process.env[key];
@@ -25,13 +26,14 @@ function isolatedEnvironment(mongodbUri) {
     environment.TASKFORGE_MONGODB_URI = mongodbUri;
   }
 
-  return environment;
+  return { ...environment, ...extra };
 }
 
 function runConfigCommand(mongodbUri) {
   return spawnSync(process.execPath, [cliPath, "config"], {
     encoding: "utf8",
     env: isolatedEnvironment(mongodbUri),
+    cwd: tmpdir(),
   });
 }
 
@@ -39,6 +41,15 @@ function runDoctorCommand(mongodbUri) {
   return spawnSync(process.execPath, [cliPath, "doctor"], {
     encoding: "utf8",
     env: isolatedEnvironment(mongodbUri),
+    cwd: tmpdir(),
+  });
+}
+
+function runDoctorWithEnvironment(environment) {
+  return spawnSync(process.execPath, [cliPath, "doctor"], {
+    encoding: "utf8",
+    env: environment,
+    cwd: tmpdir(),
   });
 }
 
@@ -114,7 +125,7 @@ test("CLI doctor reports missing MongoDB configuration without a connection valu
   assert.equal(result.error, undefined);
   assert.equal(result.status, 2);
   assert.match(result.stdout, /MongoDB: not configured/u);
-  assert.match(result.stdout, /Model providers: not implemented yet/u);
+  assert.match(result.stdout, /Model provider: not configured/u);
   assert.match(result.stdout, /Browser tooling: not implemented yet/u);
   assert.equal(result.stdout.includes("mongodb://"), false);
 });
@@ -126,4 +137,18 @@ test("CLI doctor reports unavailable MongoDB without echoing the endpoint", () =
   assert.equal(result.status, 2);
   assert.match(result.stdout, /MongoDB: unavailable/u);
   assert.doesNotMatch(result.stdout, /127\.0\.0\.1:1/u);
+});
+
+test("doctor reports provider configuration independently when MongoDB URI is invalid", () => {
+  const privateTestKey = "synthetic-test-key-that-must-not-appear";
+  const environment = isolatedEnvironment("mongodb+srv://invalid-shape", {
+    TASKFORGE_PROVIDER: "groq",
+    TASKFORGE_GROQ_API_KEY: privateTestKey,
+    TASKFORGE_GROQ_MODEL: "openai/gpt-oss-20b",
+  });
+  const result = runDoctorWithEnvironment(environment);
+  assert.equal(result.status, 2);
+  assert.match(result.stdout, /MongoDB: not configured/u);
+  assert.match(result.stdout, /Model provider: groq configured/u);
+  assert.doesNotMatch(result.stdout, new RegExp(privateTestKey, "u"));
 });

@@ -24,6 +24,8 @@
     "typescript": "5.8.3"
   },
   "dependencies": {
+    "dotenv": "^18.0.7",
+    "groq-sdk": "^1.6.0",
     "mongodb": "7.6.0"
   }
 }
