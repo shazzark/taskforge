@@ -66,11 +66,19 @@ The adapter is implemented and mocked contract tests pass. Ollama is not install
 
 **Phase status:** Phase 2 remains IN PROGRESS; do not mark COMPLETE until Phase 2.2 live local-model evaluation and remaining integration checks pass. No provider switch or billing was enabled.
 
-### Phase 3 — Permissions, events and resume — NOT STARTED
+### Phase 3 — Permissions, events and resume — IN PROGRESS
 
 **Goal:** Add approved roots, secret denials, batch previews, bounded events/checkpoints and state revalidation.
 
 **Acceptance checks:** Escape, changed-target and denial checks pass; cancel/resume and database-failure behavior are verified. No new task family until boundary checks pass.
+
+#### Phase 3.1 — Approved roots and action previews — COMPLETE (in-memory foundation)
+
+Implemented explicit realpath-resolved root approval, read/write path checks, secret-path denials, symlink/junction escape rejection, bounded file fingerprints, write/move previews, approval tokens and changed-target invalidation. This foundation performs no file mutations and keeps approvals in memory; it does not yet provide persistence-backed checkpoints or resume.
+
+**Checks:** `npm run typecheck` passed; `npm test` passed (28 passed, 1 skipped: the dedicated MongoDB integration lacked its test URI). Approved-root traversal, secret denial, junction escape, content-change invalidation, junction replacement invalidation and preview limits passed.
+
+**Pending:** Wire approval tokens to actual mutation tools only after their preview/approval contract is integrated. Persist events and checkpoints after MongoDB URI correction. Complete changed-target/escape regression checks before introducing new task families.
 
 ### Phase 4 — Files, data and report adapters — NOT STARTED
 
@@ -108,8 +116,9 @@ The adapter is implemented and mocked contract tests pass. Ollama is not install
 
 ## Recovery
 
-- **Current phase/subphase:** Phase 2.1 COMPLETE for online and mocked paths; Phase 2.2 live Ollama verification is owner-deferred until tonight. Phase 2 overall remains IN PROGRESS. MongoDB URI needs an explicit database path before `config`/`doctor` database checks can pass.
+- **Current phase/subphase:** Phase 2.1 COMPLETE for online and mocked paths; Phase 2.2 live Ollama verification is owner-deferred until tonight. Phase 2 overall remains IN PROGRESS. Phase 3.1 approved-root and preview foundation is COMPLETE; database-backed events/resume remain pending. MongoDB URI needs an explicit database path before `config`/`doctor` database checks can pass.
 - **Last completed work:** Phase 1.4 checkpoint `fda8566`; Phase 2 provider/tool-loop implementation, mock contracts and live synthetic Groq tool call.
 - **Checks performed:** Phase 1.1: `npm ci`; typecheck/build; built CLI help/version; package version parity; invalid-argument error and no argument echo; packed Windows consumer and `taskforge.cmd`; review; `git diff --check`. Phase 1.2: `npm ci`; typecheck; tests (8 passed); missing/malformed config exit behavior and redaction; review; diff check. Phase 1.3: `npm ci`; typecheck/build; 10 tests passed against isolated disposable MongoDB; persistence and unavailable-server paths; review; diff check. Phase 1.4: clean `npm ci`; typecheck/build; Windows help/version/config/doctor smoke checks; all 12 tests passed with no skips against isolated disposable MongoDB; doctor success plus missing/unavailable failure paths and redaction; review; `git diff --check`. Registered MongoDB service remains stopped and untouched; no existing connection value was read or reused.
 - **Verified commands/results:** `npm run typecheck` passed; `npm test` passed (21 passed, 1 skipped dedicated MongoDB integration; test command builds). `node dist/cli.js model-check` passed against Groq (1 read-only synthetic tool action, 2 model requests). Safe `mongosh` ping returned `1`; application URI validation failed without revealing the connection string. `git diff --check` must pass before checkpointing.
+- **Phase 3.1 checks:** `npm run typecheck` passed; `npm test` passed (28 passed, 1 skipped dedicated MongoDB integration). Junction-based escape and changed-target checks both passed on Windows.
 - **Outstanding:** Ollama installation/model pull and live local evaluation are explicitly deferred until tonight. Correct the MongoDB URI database path in ignored `.env` without sharing its value. Then verify config/doctor and database-dependent workflows. Continue independent work where prerequisites pass; no push.
