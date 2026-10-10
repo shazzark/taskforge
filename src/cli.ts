@@ -2,7 +2,7 @@
 
 import packageJson from "../package.json" with { type: "json" };
 import { open, realpath } from "node:fs/promises";
-import { dirname, resolve } from "node:path";
+import { dirname, extname, resolve } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { ConfigurationError, formatConfigurationSummary, loadConfiguration, loadProviderConfiguration } from "./config.js";
 import { AgentToolError, runToolLoop } from "./agent/tool-loop.js";
@@ -13,13 +13,14 @@ import {
 } from "./mongo-store.js";
 import { createModelProvider } from "./providers/create-provider.js";
 import { ModelProviderError } from "./providers/types.js";
-import { WorkspacePathPolicy } from "./security/path-policy.js";
+import { PathPolicyError, WorkspacePathPolicy } from "./security/path-policy.js";
 import { CsvWorkflowError, resumeCsvAnalysisWorkflow, runCsvAnalysisWorkflow } from "./workflows/csv-analysis-workflow.js";
 import { inspectRepository, RepositoryInspectionError } from "./workflows/repository-inspection-workflow.js";
+import { analyzeDocument, DocumentWorkflowError } from "./workflows/document-analysis-workflow.js";
 
 const helpText = `TaskForge ${packageJson.version} (early development)
 
-Usage: taskforge [--help | --version | config | doctor | model-check | chat | run csv-analyze --input <path> | run repo-inspect --root <directory> | resume <run-id> --input <path> | history list]
+Usage: taskforge [--help | --version | config | doctor | model-check | chat | run csv-analyze --input <path> | run document-analyze --input <path> | run repo-inspect --root <directory> | resume <run-id> --input <path> | history list]
 
 The config command validates local settings and prints a redacted summary.
 The doctor command checks configured MongoDB connectivity and reports available setup areas.
@@ -27,6 +28,7 @@ The model-check command makes a synthetic read-only tool call through the select
 The chat command opens a bounded interactive conversation with the selected provider.
 The csv-analyze workflow reads one explicitly approved CSV file and stores redacted run metadata.
 The repo-inspect workflow inventories one explicitly approved repository root without reading file contents or running commands.
+The document-analyze workflow parses one approved TXT, Markdown, text PDF, DOCX, or XLSX file and stores counts only.
 The resume command rechecks the input and workflow hashes, then resumes an uncertain CSV analysis.
 History list prints up to 50 redacted run summaries.
 `;
@@ -83,7 +85,8 @@ async function readApprovedInputFile(pathValue: string): Promise<Uint8Array | un
       await file.close();
     }
   } catch (error: unknown) {
-    process.stderr.write(error instanceof Error ? `File read denied: ${error.message}\n` : "File read denied by path policy.\n");
+    const message = error instanceof PathPolicyError ? error.message : "The approved file could not be read safely.";
+    process.stderr.write(`File read denied: ${message}\n`);
     process.exitCode = 2;
     return undefined;
   }
@@ -129,6 +132,35 @@ async function runCsvWorkflowCommand(commandArgs: readonly string[], runId?: str
     }
   } catch (error: unknown) {
     process.stderr.write(error instanceof CsvWorkflowError ? `CSV workflow failed: ${error.message}\n` : "CSV workflow failed; run state was preserved where possible.\n");
+    process.exitCode = 3;
+  }
+}
+
+async function runDocumentAnalysisCommand(commandArgs: readonly string[]): Promise<void> {
+  const inputPath = inputPathArgument(commandArgs);
+  if (inputPath === undefined) {
+    process.stderr.write("Expected --input followed by a file path.\n");
+    process.exitCode = 1;
+    return;
+  }
+  const input = await readApprovedInputFile(inputPath);
+  if (input === undefined) return;
+  try {
+    const extension = extname(inputPath).toLowerCase();
+    const result = await withMongoStore((store) => analyzeDocument(store, extension, input));
+    if (result !== undefined) {
+      const analysis = result.analysis;
+      process.stdout.write(
+        `Run ${result.run.runId} completed: ${analysis.format}, ${analysis.byteCount} bytes, ` +
+        `${analysis.wordCount} words, ${analysis.lineCount} lines` +
+        (analysis.pageCount === undefined ? "" : `, ${analysis.pageCount} pages`) +
+        (analysis.sheetCount === undefined ? "" : `, ${analysis.sheetCount} sheets, ${analysis.rowCount ?? 0} rows, ${analysis.cellCount ?? 0} cells`) +
+        `.\n`,
+      );
+    }
+  } catch (error: unknown) {
+    const message = error instanceof DocumentWorkflowError ? error.message : "Document analysis failed safely.";
+    process.stderr.write(`Document analysis failed: ${message}\n`);
     process.exitCode = 3;
   }
 }
@@ -419,6 +451,8 @@ if (args.length === 0 || (args.length === 1 && (args[0] === "--help" || args[0] 
   await runCsvWorkflowCommand(args.slice(2));
 } else if (args.length >= 2 && args[0] === "run" && args[1] === "repo-inspect") {
   await runRepositoryInspectionCommand(args.slice(2));
+} else if (args.length >= 2 && args[0] === "run" && args[1] === "document-analyze") {
+  await runDocumentAnalysisCommand(args.slice(2));
 } else if (args.length >= 1 && args[0] === "resume") {
   const runId = args[1];
   if (runId === undefined || args.length < 3) {

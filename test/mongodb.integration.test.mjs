@@ -16,6 +16,7 @@ import {
 } from "../dist/mongo-store.js";
 import { parseConfiguration } from "../dist/config.js";
 import { resumeCsvAnalysisWorkflow, runCsvAnalysisWorkflow } from "../dist/workflows/csv-analysis-workflow.js";
+import { analyzeDocument } from "../dist/workflows/document-analysis-workflow.js";
 import { inspectRepository } from "../dist/workflows/repository-inspection-workflow.js";
 import { WorkspacePathPolicy } from "../dist/security/path-policy.js";
 
@@ -97,6 +98,15 @@ test(
       assert.equal(persistedRepositoryRun?.state, "completed");
       assert.equal(persistedRepositoryRun?.summary.includes(repositoryFixturePath), false);
       assert.equal(repositoryEvents.some((event) => event.type === "run_finished"), true);
+
+      const documentMarker = "private-document-fixture-marker";
+      const documentRun = await analyzeDocument(store, ".txt", Buffer.from(documentMarker, "utf8"));
+      const persistedDocumentRun = await store.getRunSummary(documentRun.run.runId);
+      const documentEvents = await store.getRunEvents(documentRun.run.runId);
+      assert.equal(documentRun.analysis.wordCount, 1);
+      assert.equal(persistedDocumentRun?.state, "completed");
+      assert.equal(persistedDocumentRun?.summary.includes(documentMarker), false);
+      assert.equal(documentEvents.some((event) => event.type === "run_finished"), true);
 
       const created = await store.saveRunSummary({
         runId,

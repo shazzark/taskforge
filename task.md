@@ -124,7 +124,7 @@ Added a bounded parser for caller-supplied TXT/Markdown text. It normalizes BOM/
 
 **Checks:** `npm run typecheck` passed; `npm test` passed (39 passed, 1 skipped dedicated MongoDB integration). Fixtures cover normalization/counts, fenced heading exclusion, unsupported formats, NUL bytes, wrong types and size limits.
 
-**Pending:** Integrate file access through approved-root permissions and verify file workflows after Phase 3 persistence/approval wiring.
+**Integrated:** Phase 4.7 routes Markdown and TXT through the approved-file workflow and persists aggregate counts only.
 
 #### Phase 4.4 — Bounded text-based PDF extraction — COMPLETE (pure byte input)
 
@@ -132,7 +132,7 @@ Added `pdfjs-dist` and a parser that accepts caller-supplied PDF bytes, extracts
 
 **Checks:** `npm run typecheck` passed; `npm test` passed (41 passed, 1 skipped dedicated MongoDB integration). A generated in-memory report was parsed for page count and text; invalid type/header/PDF and size limit cases were rejected. npm reported zero vulnerabilities at installation.
 
-**Pending:** Review the PDF.js dependency at release and validate file access/integrity through the integrated Phase 3 boundary. No OCR is implied.
+**Pending:** Review the PDF.js dependency at release and add approved-root artifact integrity. Phase 4.7 now parses text PDF through the approved-file boundary; no OCR is implied.
 
 #### Phase 4.5 — Bounded XLSX parsing — COMPLETE (pure byte input)
 
@@ -140,7 +140,7 @@ Added ExcelJS and a Yauzl ZIP preflight with entry count, per-entry and total ex
 
 **Checks:** `npm run typecheck` passed; full `npm test` passed against the running local MongoDB service (45 passed, 0 skipped, 0 failed), including synthetic/malformed/oversized/formula workbook contracts. `npm audit` reported zero vulnerabilities after the UUID override.
 
-**Pending:** Integrated approved-root file workflow/artifact persistence; spreadsheet formula values are deliberately unsupported.
+**Integrated:** Phase 4.7 parses XLSX through the approved-file workflow and persists aggregate counts only. Spreadsheet formula values remain unsupported.
 
 #### Phase 4.6 - Bounded DOCX text extraction - COMPLETE (pure byte input)
 
@@ -148,7 +148,15 @@ Added a text-only DOCX parser using `fast-xml-parser` with bounded Yauzl ZIP pre
 
 **Checks:** Synthetic paragraph/entity/tab/break extraction and malformed, oversized, and DTD rejection tests passed. `npm run typecheck` passed; full `npm test` passed against isolated local MongoDB (47 passed, 0 skipped, 0 failed). The package install audit reported zero vulnerabilities.
 
-**Pending:** Integrate DOCX reads through the same approved-root workflow; formatting, tracked changes, headers/footers, images, tables-as-structure, and legacy DOC are not claimed.
+**Integrated:** Phase 4.7 parses DOCX through the approved-file workflow and persists aggregate counts only. Formatting, tracked changes, headers/footers, images, tables-as-structure, and legacy DOC are not claimed.
+
+#### Phase 4.7 — Approved document analysis workflow — COMPLETE (metadata-only persistence)
+
+Added `run document-analyze --input <path>`. It requires interactive approval for the exact file, applies the shared approved-root/secret-path check and 8 MiB read limit, then dispatches TXT, Markdown, text PDF, DOCX, or XLSX bytes to the bounded parsers. Run records contain only format and aggregate counts; file names, extracted text, sheet names, and cell values are not persisted. No artifact is written.
+
+**Checks:** `npm run typecheck` passed; full `npm test` passed against the loopback isolated MongoDB backend (51 passed, 0 skipped, 0 failed). Generated TXT, Markdown, PDF, DOCX, and XLSX fixtures exercised each parser; unsupported suffixes and invalid UTF-8 failed before creating run records. Persistence integration verified completed state/events and confirmed fixture text was absent from MongoDB; the unique test database and temporary fixture were cleaned up.
+
+**Pending:** Approved-root PDF artifact output/integrity, parser resumability, and structured extraction/report workflows remain future work. Scanned PDF OCR and unsupported DOCX/XLSX features remain outside current support.
 
 ### Phase 5 — Software workflow — IN PROGRESS
 
@@ -188,8 +196,8 @@ Added `run repo-inspect --root <directory>`. The command requires interactive ap
 
 ## Recovery
 
-- **Current phase/subphase:** Phase 2.1 COMPLETE for online and mocked paths; Phase 2.2 live Ollama verification is owner-deferred until tonight. Phase 2 remains IN PROGRESS. Phase 3.1 approved-root/previews, 3.2 MongoDB persistence primitives, and 3.3 CSV run/history/resume CLI are COMPLETE as bounded foundations; other workflows and durable approval integration remain pending. Phase 4.1–4.6 bounded parser/render cores are COMPLETE; integrated remaining file workflows/artifact persistence remain pending. Phase 5.1 metadata-only repository inventory is COMPLETE; seeded bug reproduction and approved patch/command/diff subphases remain.
-- **Last completed work:** Phase 5.1 approved-root repository inventory, verified against the isolated local MongoDB integration; commit follows final diff review.
+- **Current phase/subphase:** Phase 2.1 COMPLETE for online and mocked paths; Phase 2.2 live Ollama verification is owner-deferred until tonight. Phase 2 remains IN PROGRESS. Phase 3.1 approved-root/previews, 3.2 MongoDB persistence primitives, and 3.3 CSV run/history/resume CLI are COMPLETE as bounded foundations; other workflows and durable approval integration remain pending. Phase 4.1–4.7 bounded parser/render/integrated document workflows are COMPLETE; approved artifact writing remains pending. Phase 5.1 metadata-only repository inventory is COMPLETE; seeded bug reproduction and approved patch/command/diff subphases remain.
+- **Last completed work:** Phase 4.7 approved document analysis; Phase 5.1 inventory checkpoint `4f5ff92` is committed locally.
 - **Checks performed:** Phase 1.1: `npm ci`; typecheck/build; built CLI help/version; package version parity; invalid-argument error and no argument echo; packed Windows consumer and `taskforge.cmd`; review; `git diff --check`. Phase 1.2: `npm ci`; typecheck; tests (8 passed); missing/malformed config exit behavior and redaction; review; diff check. Phase 1.3: `npm ci`; typecheck/build; 10 tests passed against isolated disposable MongoDB; persistence and unavailable-server paths; review; diff check. Phase 1.4: clean `npm ci`; typecheck/build; Windows help/version/config/doctor smoke checks; all 12 tests passed with no skips against isolated disposable MongoDB; doctor success plus missing/unavailable failure paths and redaction; review; `git diff --check`. Registered MongoDB service remains stopped and untouched; no existing connection value was read or reused.
 - **Verified commands/results:** `npm run typecheck` passed; `npm test` passed (21 passed, 1 skipped dedicated MongoDB integration; test command builds). `node dist/cli.js model-check` passed against Groq (1 read-only synthetic tool action, 2 model requests). Safe `mongosh` ping returned `1`; application URI validation failed without revealing the connection string. `git diff --check` must pass before checkpointing.
 - **Phase 3.1 checks:** `npm run typecheck` passed; `npm test` passed at that checkpoint (28 passed, 1 skipped dedicated MongoDB integration). Junction-based escape and changed-target checks passed on Windows.
@@ -199,6 +207,7 @@ Added `run repo-inspect --root <directory>`. The command requires interactive ap
 - **Phase 4.2 checks:** `npm run typecheck` passed; `npm test` passed (36 passed, 1 skipped dedicated MongoDB integration).
 - **Phase 4.3 checks:** `npm run typecheck` passed; `npm test` passed (39 passed, 1 skipped dedicated MongoDB integration).
 - **Phase 4.4 checks:** `npm run typecheck` passed; `npm test` passed (41 passed, 1 skipped dedicated MongoDB integration).
-- **Phase 4.5/4.6 checks:** Bounded XLSX and DOCX extraction contract fixtures pass; package installation audits reported zero vulnerabilities. Full current `npm test` passed with local MongoDB (47 passed, 0 skipped).
+- **Phase 4.5/4.6 checks:** Bounded XLSX and DOCX extraction contract fixtures pass; package installation audits reported zero vulnerabilities. Full current `npm test` passed with local MongoDB (51 passed, 0 skipped).
+- **Phase 4.7 checks:** `npm run typecheck` passed; `npm test` passed against a unique loopback MongoDB database (51 passed, 0 skipped, 0 failed). Integrated TXT, Markdown, PDF, DOCX, and XLSX parsing; malformed input rejection; metadata-only run/event persistence; and isolated database cleanup were verified.
 - **Phase 5.1 checks:** `npm run typecheck` passed; `npm test` passed against a unique loopback MongoDB database (49 passed, 0 skipped, 0 failed). Integration verified the repository inventory summary and event lifecycle, then dropped the unique database and removed the temporary fixture. `node dist/cli.js run repo-inspect --root .` in a noninteractive process exited 2 before accessing the path. `git diff --check` passed.
 - **Outstanding:** Ollama installation/model pull and live local evaluation are explicitly deferred until the owner provides it tonight. Atlas SRV DNS resolved three nodes and authenticated ping succeeded outside the sandbox; no owner database or IP-list action remains. Local MongoDB-backed workflows pass. Continue independent work; no push.
