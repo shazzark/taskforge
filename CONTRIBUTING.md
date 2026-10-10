@@ -1,0 +1,37 @@
+# Contributing to TaskForge
+
+TaskForge is an early-development Windows-first TypeScript CLI. Contributions should preserve the permission boundaries and documented phase scope.
+
+## Development setup
+
+- Use Node.js 22.13.0 or later and npm.
+- Clone the repository and run `npm ci`.
+- Copy `.env.example` to the ignored `.env` only when local services are needed. Fill placeholders locally; never commit or paste `.env` values into issues, logs, screenshots, or model prompts.
+- MongoDB integration tests require a dedicated disposable database through `TASKFORGE_TEST_MONGODB_URI`. Use a local isolated test database, never a production URI.
+- Live provider checks are optional for ordinary changes. Use synthetic inputs and explicit consent; do not reuse credentials intended for another project.
+
+## Before submitting changes
+
+Run the applicable checks:
+
+```powershell
+npm run typecheck
+npm run build
+npm test
+git diff --check
+```
+
+TypeScript must remain strict, including `noUncheckedIndexedAccess` and `exactOptionalPropertyTypes`. Validate untrusted input at runtime; do not use `any`, `@ts-ignore`, or unsafe assertions to silence errors. Keep tests bounded and avoid live services unless the change requires a documented integration check.
+
+Update `task.md` and the relevant architecture/requirements documentation when behavior or phase status changes. Mark a phase complete only after its required live and mocked checks pass; mocks do not prove provider connectivity. Record blocked checks and evidence precisely.
+
+## Safety and Git
+
+- Preserve the approved-root, explicit-consent, bounded-action, and create-only artifact rules.
+- Do not add send, publish, purchase, deployment, unrestricted shell, or automatic provider-switch behavior without an approved scope change.
+- Never include credentials, database URIs, private source data, or generated `.env` files in a change.
+- Use focused commits with the phase number when a substantial subphase is verified. Do not push unless explicitly requested. Do not rewrite published history.
+
+## Reporting a change
+
+Describe the behavior, evidence and commands run, known limitations, and any required owner setup. Keep claims aligned with the current `task.md` tracker and the actual test results.

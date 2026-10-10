@@ -231,7 +231,7 @@ Official Playwright documentation and a read-only implementation review are comp
 
 Added `run research --query <question>`. It requires a TTY and explicit confirmation, sends only the trimmed query (maximum 512 characters) to Groq browser search, and has no file, agent, code-execution, persistence, or external write access. It requires an allowlisted Groq GPT OSS model, requests only the built-in `browser_search` tool, validates that execution type and bounded HTTPS source fields, requires at least one retrieved source, and terminal-escapes the answer, titles and excerpts. Results are labeled unverified and include a local retrieval timestamp. Search is optional, uses the existing Groq key/model configuration, and is powered by Exa per Groq documentation; no separate key/account is needed. Service terms, quotas and pricing are controlled by Groq.
 
-**Checks:** Three mocked contract tests cover exact tool scope, configured supported-model selection, unsafe/missing source rejection, bounds, sanitized quota errors and cancellation. `npm run typecheck`, `npm run build` and full `npm test` passed with the isolated local MongoDB URI (82 passed, 0 skipped, 0 failed). Live synthetic Groq query returned 10 validated sources including an official Groq documentation result; only model, source count, retrieval timestamp and an official-domain boolean were printed. Independent review confirmed consent and output handling; its model-mismatch finding was fixed and a non-default supported-model test was added.
+**Checks:** Four mocked contract tests cover exact tool scope, configured supported-model selection, unsafe/missing source rejection, bounds, sanitized quota errors and cancellation. `npm run typecheck`, `npm run build` and full `npm test` passed with the isolated local MongoDB URI (82 passed, 0 skipped, 0 failed). Live synthetic Groq query returned 10 validated sources including an official Groq documentation result; only model, source count, retrieval timestamp and an official-domain boolean were printed. Independent review confirmed consent and output handling; its model-mismatch finding was fixed and a non-default supported-model test was added.
 
 **Remaining Phase 6:** Phase 6.1 browser execution and the broader audit/design workflows remain pending; the Playwright npm registry prerequisite blocks browser runs only.
 
@@ -275,7 +275,11 @@ Added the MIT license and verified GitHub repository URL to package metadata and
 
 **Dependency review:** `npm audit --offline --omit=dev --audit-level=high` reported zero vulnerabilities using the locally cached advisory data. The dependency tree includes deprecated transitive `glob@7.2.3` and `inflight@1.0.6`, and `buffers@0.1.1` plus `png-js@2.0.0` lack license metadata. `jszip@3.10.2` declares `(MIT OR GPL-3.0-or-later)` and is used by parser fixtures. These items require upstream/remediation and license review before release; the offline audit is not a current registry audit.
 
-**Pending:** Complete a clean production consumer install and full dependency-tree check, review/remediate the noted transitive packages, add a contribution guide, and verify documented workflows with another developer after required phases finish. Phase 8 remains incomplete.
+#### Phase 8.2 — Contributor guidance and package-content check — COMPLETE (documentation slice)
+
+Added `CONTRIBUTING.md` with Windows/Node setup, isolated test database instructions, quality gates, strict TypeScript requirements, consent boundaries and local-only checkpoint rules. `npm pack --dry-run --json` completed after the sandbox denied its npm cache write; the escalated read-only retry listed 33 package files including the new research adapter in `dist`, with no `.env`, tests or tracker files. `npm ls --omit=dev --all` exited 0; npm reported unmet optional platform/provider packages that are intentionally optional. `git diff --check` passed.
+
+**Pending:** Complete a clean production consumer install and full installed dependency-tree check; review/remediate deprecated transitive packages and missing license metadata; obtain another developer's documented workflow trial after required phases finish. Phase 8 remains incomplete.
 
 ## Prerequisite checklist milestone
 
