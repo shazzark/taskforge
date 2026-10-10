@@ -18,13 +18,14 @@ import { CsvWorkflowError, resumeCsvAnalysisWorkflow, runCsvAnalysisWorkflow } f
 import { inspectRepository, RepositoryInspectionError } from "./workflows/repository-inspection-workflow.js";
 import { analyzeDocument, DocumentWorkflowError } from "./workflows/document-analysis-workflow.js";
 import { runReviewedCommand, type ReviewedCommandId, ReviewedCommandError } from "./software/reviewed-command.js";
-import { reviewSourceFiles, SourceReviewError } from "./workflows/source-review-workflow.js";
+import { redactSourceForDisplay, reviewSourceFiles, SourceReviewError } from "./workflows/source-review-workflow.js";
 import { ActionApprovalRegistry } from "./security/approval-preview.js";
 import { previewPdfArtifact, PdfArtifactError, writeApprovedPdfArtifact } from "./artifacts/approved-pdf-output.js";
+import { prepareFilePatch, applyPreparedFilePatch, PatchApplicationError } from "./software/patch-application.js";
 
 const helpText = `TaskForge ${packageJson.version} (early development)
 
-Usage: taskforge [--help | --version | config | doctor | model-check | chat | run csv-analyze --input <path> | run document-analyze --input <path> | run pdf-report --input <json> --output <new.pdf> | run repo-inspect --root <directory> | run source-review --root <directory> --file <relative-path> [...] | run software-check --root <directory> --check <node-test|typescript-check> | resume <run-id> --input <path> | history list]
+Usage: taskforge [--help | --version | config | doctor | model-check | chat | run csv-analyze --input <path> | run document-analyze --input <path> | run pdf-report --input <json> --output <new.pdf> | run repo-inspect --root <directory> | run source-review --root <directory> --file <relative-path> [...] | run file-patch --root <directory> --target <relative-path> --content-file <relative-path> | run software-check --root <directory> --check <node-test|typescript-check> | resume <run-id> --input <path> | history list]
 
 The config command validates local settings and prints a redacted summary.
 The doctor command checks configured MongoDB connectivity and reports available setup areas.
@@ -33,6 +34,7 @@ The chat command opens a bounded interactive conversation with the selected prov
 The csv-analyze workflow reads one explicitly approved CSV file and stores redacted run metadata.
 The repo-inspect workflow inventories one explicitly approved repository root without reading file contents or running commands.
 The source-review workflow reads only explicitly selected source files and displays bounded, locally redacted content; it does not send or persist source.
+The file-patch workflow shows redacted current and replacement text, then applies one content-bound replacement only after exact approval.
 The document-analyze workflow parses one approved TXT, Markdown, text PDF, DOCX, or XLSX file and stores counts only.
 The pdf-report workflow renders an approved JSON report and creates a new approved PDF artifact after a content-bound confirmation.
 The software-check workflow runs only an explicitly approved Node test or TypeScript no-emit check in one approved root.
@@ -415,6 +417,78 @@ async function runPdfReportCommand(commandArgs: readonly string[]): Promise<void
   }
 }
 
+async function runFilePatchCommand(commandArgs: readonly string[]): Promise<void> {
+  if (
+    commandArgs.length !== 6 || commandArgs[0] !== "--root" || commandArgs[1] === undefined ||
+    commandArgs[2] !== "--target" || commandArgs[3] === undefined ||
+    commandArgs[4] !== "--content-file" || commandArgs[5] === undefined
+  ) {
+    process.stderr.write("Expected --root <directory> --target <relative-path> --content-file <relative-path>.\n");
+    process.exitCode = 1;
+    return;
+  }
+  if (!process.stdin.isTTY || !process.stdout.isTTY) {
+    process.stderr.write("File patching requires an interactive terminal for exact root, file-set and write approval.\n");
+    process.exitCode = 2;
+    return;
+  }
+  let rootPath: string;
+  try {
+    rootPath = await realpath(resolve(commandArgs[1]));
+  } catch {
+    process.stderr.write("The requested repository root could not be resolved.\n");
+    process.exitCode = 2;
+    return;
+  }
+  const targetRelativePath = commandArgs[3];
+  const contentRelativePath = commandArgs[5];
+  const rootConsent = createInterface({ input: process.stdin, output: process.stdout });
+  let rootAnswer: string;
+  try {
+    rootAnswer = await rootConsent.question(
+      `Review a replacement for this exact target?\nRoot: ${rootPath}\nTarget: ${targetRelativePath}\nReplacement content file: ${contentRelativePath}\nSource stays local; redaction is heuristic. [y/N] `,
+    );
+  } finally {
+    rootConsent.close();
+  }
+  if (rootAnswer.trim().toLowerCase() !== "y") {
+    process.stdout.write("File patch cancelled before access.\n");
+    return;
+  }
+  try {
+    const policy = new WorkspacePathPolicy();
+    const approvedRoot = await policy.approveRoot(rootPath);
+    const approvals = new ActionApprovalRegistry(policy);
+    const prepared = await prepareFilePatch(approvedRoot, policy, approvals, targetRelativePath, contentRelativePath);
+    const currentFiles = await reviewSourceFiles(approvedRoot, policy, [targetRelativePath]);
+    const current = currentFiles[0];
+    if (current === undefined) throw new PatchApplicationError();
+    process.stdout.write(`\n--- CURRENT ${current.path} (${current.byteCount} bytes) ---\n${current.content}\n`);
+    process.stdout.write(`\n--- REPLACEMENT ${contentRelativePath} (SHA-256 ${prepared.sha256}) ---\n${redactSourceForDisplay(prepared.content)}\n`);
+    const patchConsent = createInterface({ input: process.stdin, output: process.stdout });
+    let patchAnswer: string;
+    try {
+      patchAnswer = await patchConsent.question(
+        `Apply this exact replacement to ${prepared.preview.targetPath}? The target will be revalidated before write. [y/N] `,
+      );
+    } finally {
+      patchConsent.close();
+    }
+    if (patchAnswer.trim().toLowerCase() !== "y") {
+      approvals.discard(prepared.preview.previewId);
+      process.stdout.write("File patch cancelled before writing.\n");
+      return;
+    }
+    const approval = approvals.approve(prepared.preview.previewId);
+    await applyPreparedFilePatch(prepared, approval, approvals);
+    process.stdout.write(`Replacement applied to ${prepared.preview.targetPath}. Run a reviewed check to verify it.\n`);
+  } catch (error: unknown) {
+    const message = error instanceof PatchApplicationError ? error.message : "File patch failed safely.";
+    process.stderr.write(`File patch failed: ${message}\n`);
+    process.exitCode = 3;
+  }
+}
+
 async function runDoctor(): Promise<void> {
   process.stdout.write("TaskForge doctor (early development)\n");
   let providerStatus = "not configured or invalid";
@@ -641,6 +715,8 @@ if (args.length === 0 || (args.length === 1 && (args[0] === "--help" || args[0] 
   await runSourceReviewCommand(args.slice(2));
 } else if (args.length >= 2 && args[0] === "run" && args[1] === "pdf-report") {
   await runPdfReportCommand(args.slice(2));
+} else if (args.length >= 2 && args[0] === "run" && args[1] === "file-patch") {
+  await runFilePatchCommand(args.slice(2));
 } else if (args.length >= 1 && args[0] === "resume") {
   const runId = args[1];
   if (runId === undefined || args.length < 3) {

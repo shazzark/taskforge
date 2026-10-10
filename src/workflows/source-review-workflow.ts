@@ -36,7 +36,7 @@ function redactLine(line: string): string {
     .replace(/\b(?:AKIA|ASIA)[A-Z0-9]{16}\b/gu, "[REDACTED]");
 }
 
-function redactSource(value: string): string {
+export function redactSourceForDisplay(value: string): string {
   return value
     .replace(/-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z0-9 ]*PRIVATE KEY-----/gu, "[REDACTED: private key block]")
     .split("\n").map(redactLine).join("\n");
@@ -119,7 +119,7 @@ export async function reviewSourceFiles(
       if (buffer.byteLength !== before.size || buffer.byteLength > MAX_FILE_BYTES) throw new SourceReviewError();
       const decoded = new TextDecoder("utf-8", { fatal: true }).decode(buffer);
       if (decoded.includes("\u0000")) throw new SourceReviewError("Binary source files are not supported.");
-      const content = redactSource(decoded.replace(/\r\n?/gu, "\n"));
+      const content = redactSourceForDisplay(decoded.replace(/\r\n?/gu, "\n"));
       totalBytes += buffer.byteLength;
       totalChars += content.length;
       if (totalChars > MAX_DISPLAY_CHARS) throw new SourceReviewError("Selected source exceeds the review display limit.");

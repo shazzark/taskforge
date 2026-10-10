@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
-import { readFile, stat } from "node:fs/promises";
+import { constants } from "node:fs";
+import { lstat, open, readFile, realpath, stat } from "node:fs/promises";
 import { PathPolicyError, WorkspacePathPolicy } from "./path-policy.js";
 
 const MAX_PREVIEW_CONTENT_BYTES = 8 * 1024 * 1024;
@@ -188,6 +189,61 @@ export class ActionApprovalRegistry {
       throw new ApprovalError("stale_preview");
     }
     return preview.publicPreview;
+  }
+
+  async applyApprovedWrite(approval: ApprovedAction, content: string): Promise<ActionPreview> {
+    const preview = this.previews.get(approval.previewId);
+    if (preview === undefined || preview.action.kind !== "write" || hash(content) !== preview.action.contentHash) {
+      throw new ApprovalError("invalid_action");
+    }
+    await this.revalidate(approval);
+    const target = await this.pathPolicy.authorizePath(preview.action.targetPath, "write");
+    const expectedHash = preview.action.kind === "write" ? (await snapshot(target.path)) : undefined;
+    if (expectedHash?.exists !== true) throw new ApprovalError("stale_preview");
+    const noFollow = process.platform === "win32" ? 0 : constants.O_NOFOLLOW;
+    const pathBeforeOpen = await lstat(target.path);
+    if (!pathBeforeOpen.isFile() || pathBeforeOpen.isSymbolicLink()) throw new ApprovalError("stale_preview");
+    const canonicalPath = await realpath(target.path);
+    if (canonicalPath !== target.path) throw new ApprovalError("stale_preview");
+    try {
+      // Write through the already-open target so a path swap cannot redirect a replacement.
+      // This preserves the existing file's permissions and Windows ACL inheritance.
+      const handle = await open(target.path, constants.O_RDWR | noFollow);
+      try {
+        const openedStats = await handle.stat();
+        if (openedStats.ino === 0 || openedStats.ino !== pathBeforeOpen.ino ||
+            (process.platform !== "win32" && openedStats.dev !== pathBeforeOpen.dev)) {
+          throw new ApprovalError("stale_preview");
+        }
+        const currentBytes = await handle.readFile();
+        if (hash(currentBytes) !== expectedHash.sha256 || currentBytes.byteLength !== expectedHash.size) {
+          throw new ApprovalError("stale_preview");
+        }
+        const pathAtWrite = await realpath(target.path);
+        const pathStatsAtWrite = await lstat(pathAtWrite);
+        if (pathAtWrite !== target.path || pathStatsAtWrite.ino !== openedStats.ino ||
+            (process.platform !== "win32" && pathStatsAtWrite.dev !== openedStats.dev)) {
+          throw new ApprovalError("stale_preview");
+        }
+        await this.revalidate(approval);
+        await handle.truncate(0);
+        await handle.write(content, 0, "utf8");
+        await handle.truncate(Buffer.byteLength(content, "utf8"));
+        await handle.sync();
+        const writtenBytes = Buffer.alloc(Buffer.byteLength(content, "utf8"));
+        const { bytesRead } = await handle.read(writtenBytes, 0, writtenBytes.byteLength, 0);
+        if (bytesRead !== writtenBytes.byteLength || hash(writtenBytes) !== preview.action.contentHash) {
+          throw new ApprovalError("stale_preview");
+        }
+      } finally {
+        await handle.close();
+      }
+      this.previews.delete(approval.previewId);
+      return preview.publicPreview;
+    } catch (error: unknown) {
+      if (error instanceof ApprovalError) throw error;
+      throw new ApprovalError("unsupported_target");
+    }
   }
 
   discard(previewId: string): void {
