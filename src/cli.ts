@@ -19,10 +19,12 @@ import { inspectRepository, RepositoryInspectionError } from "./workflows/reposi
 import { analyzeDocument, DocumentWorkflowError } from "./workflows/document-analysis-workflow.js";
 import { runReviewedCommand, type ReviewedCommandId, ReviewedCommandError } from "./software/reviewed-command.js";
 import { reviewSourceFiles, SourceReviewError } from "./workflows/source-review-workflow.js";
+import { ActionApprovalRegistry } from "./security/approval-preview.js";
+import { previewPdfArtifact, PdfArtifactError, writeApprovedPdfArtifact } from "./artifacts/approved-pdf-output.js";
 
 const helpText = `TaskForge ${packageJson.version} (early development)
 
-Usage: taskforge [--help | --version | config | doctor | model-check | chat | run csv-analyze --input <path> | run document-analyze --input <path> | run repo-inspect --root <directory> | run source-review --root <directory> --file <relative-path> [...] | run software-check --root <directory> --check <node-test|typescript-check> | resume <run-id> --input <path> | history list]
+Usage: taskforge [--help | --version | config | doctor | model-check | chat | run csv-analyze --input <path> | run document-analyze --input <path> | run pdf-report --input <json> --output <new.pdf> | run repo-inspect --root <directory> | run source-review --root <directory> --file <relative-path> [...] | run software-check --root <directory> --check <node-test|typescript-check> | resume <run-id> --input <path> | history list]
 
 The config command validates local settings and prints a redacted summary.
 The doctor command checks configured MongoDB connectivity and reports available setup areas.
@@ -32,6 +34,7 @@ The csv-analyze workflow reads one explicitly approved CSV file and stores redac
 The repo-inspect workflow inventories one explicitly approved repository root without reading file contents or running commands.
 The source-review workflow reads only explicitly selected source files and displays bounded, locally redacted content; it does not send or persist source.
 The document-analyze workflow parses one approved TXT, Markdown, text PDF, DOCX, or XLSX file and stores counts only.
+The pdf-report workflow renders an approved JSON report and creates a new approved PDF artifact after a content-bound confirmation.
 The software-check workflow runs only an explicitly approved Node test or TypeScript no-emit check in one approved root.
 The resume command rechecks the input and workflow hashes, then resumes an uncertain CSV analysis.
 History list prints up to 50 redacted run summaries.
@@ -358,6 +361,60 @@ async function runSourceReviewCommand(commandArgs: readonly string[]): Promise<v
   }
 }
 
+async function runPdfReportCommand(commandArgs: readonly string[]): Promise<void> {
+  if (
+    commandArgs.length !== 4 || commandArgs[0] !== "--input" || commandArgs[1] === undefined ||
+    commandArgs[2] !== "--output" || commandArgs[3] === undefined || commandArgs[3].trim().length === 0
+  ) {
+    process.stderr.write("Expected --input <report.json> --output <new.pdf>.\n");
+    process.exitCode = 1;
+    return;
+  }
+  const input = await readApprovedInputFile(commandArgs[1]);
+  if (input === undefined) return;
+  let report: unknown;
+  try {
+    report = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(input)) as unknown;
+  } catch {
+    process.stderr.write("PDF report input must be valid UTF-8 JSON.\n");
+    process.exitCode = 3;
+    return;
+  }
+  if (!process.stdin.isTTY || !process.stdout.isTTY) {
+    process.stderr.write("PDF artifact output requires an interactive terminal for target and content-bound approval.\n");
+    process.exitCode = 2;
+    return;
+  }
+  const requestedOutput = resolve(commandArgs[3]);
+  try {
+    const policy = new WorkspacePathPolicy();
+    const outputRoot = await policy.approveRoot(dirname(requestedOutput));
+    const approvals = new ActionApprovalRegistry(policy);
+    const pending = await previewPdfArtifact(report, requestedOutput, outputRoot, policy, approvals);
+    const consent = createInterface({ input: process.stdin, output: process.stdout });
+    let answer: string;
+    try {
+      answer = await consent.question(
+        `Create this new PDF artifact?\nPath: ${pending.preview.targetPath}\nBytes: ${pending.bytes.byteLength}\nSHA-256: ${pending.digest}\nExisting files will not be replaced. [y/N] `,
+      );
+    } finally {
+      consent.close();
+    }
+    if (answer.trim().toLowerCase() !== "y") {
+      approvals.discard(pending.preview.previewId);
+      process.stdout.write("PDF artifact creation cancelled before writing.\n");
+      return;
+    }
+    const approval = approvals.approve(pending.preview.previewId);
+    const written = await writeApprovedPdfArtifact(pending, approval, outputRoot, policy, approvals);
+    process.stdout.write(`PDF artifact created: ${written.byteCount} bytes; SHA-256 ${written.sha256}.\n`);
+  } catch (error: unknown) {
+    const message = error instanceof PdfArtifactError ? error.message : "PDF artifact creation failed safely.";
+    process.stderr.write(`PDF report failed: ${message}\n`);
+    process.exitCode = 3;
+  }
+}
+
 async function runDoctor(): Promise<void> {
   process.stdout.write("TaskForge doctor (early development)\n");
   let providerStatus = "not configured or invalid";
@@ -582,6 +639,8 @@ if (args.length === 0 || (args.length === 1 && (args[0] === "--help" || args[0] 
   await runSoftwareCheckCommand(args.slice(2));
 } else if (args.length >= 2 && args[0] === "run" && args[1] === "source-review") {
   await runSourceReviewCommand(args.slice(2));
+} else if (args.length >= 2 && args[0] === "run" && args[1] === "pdf-report") {
+  await runPdfReportCommand(args.slice(2));
 } else if (args.length >= 1 && args[0] === "resume") {
   const runId = args[1];
   if (runId === undefined || args.length < 3) {
