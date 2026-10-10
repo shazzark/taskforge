@@ -80,7 +80,7 @@ Implemented explicit realpath-resolved root approval, read/write path checks, se
 
 **Checks:** `npm run typecheck` passed; `npm test` passed (28 passed, 1 skipped: the dedicated MongoDB integration lacked its test URI). Approved-root traversal, secret denial, junction escape, content-change invalidation, junction replacement invalidation and preview limits passed.
 
-**Pending:** Wire approval tokens to actual mutation tools only after their preview/approval contract is integrated. This foundation alone does not authorize filesystem actions.
+**Pending:** This general root/preview foundation remains in-memory. `file-patch`, `pdf-report`, and local `draft` each enforce their own approved, content-bound operation path; durable approved-root/approval configuration and additional mutation workflows remain unimplemented.
 
 #### Phase 3.2 — MongoDB run state, events and checkpoints — COMPLETE (persistence foundation)
 
@@ -94,7 +94,7 @@ Added `run csv-analyze --input <path>`, `resume <run-id> --input <path>`, and `h
 
 **Checks:** `npm run typecheck` passed; `npm test` passed against a unique loopback MongoDB database (47 passed, 0 skipped, 0 failed). Integration covered run summary redaction, events, analysis, history listing, stale-input rejection, crash-age recovery, resume completion, and cleanup of the isolated database.
 
-**Pending:** Other workflow families, durable approved-root configuration, mutation tools, and rich artifact persistence remain future subphases. Atlas authenticated ping and isolated local MongoDB integration both pass.
+**Pending:** Additional workflow families, durable approved-root configuration, additional mutation workflows, and rich artifact references remain future subphases. Atlas authenticated ping and isolated local MongoDB integration both pass.
 
 ### Phase 4 — Files, data and report adapters — IN PROGRESS
 
@@ -108,7 +108,7 @@ Added a bounded CSV parser and analyzer for caller-supplied text: BOM/CRLF, esca
 
 **Checks:** `npm run typecheck` passed; `npm test` passed (33 passed, 1 skipped dedicated MongoDB integration). Fixtures cover known exact totals, missing values, duplicate rows, malformed quoting/width, invalid numeric values, and size/record/column/precision limits.
 
-**Pending:** Integrate file access through approved-root permissions, add requested export formats and artifact validation, and test full file workflows after Phase 3 persistence/approval integration.
+**Integrated:** File access is wired through explicit approval and Phase 3 metadata persistence in the CSV analysis/resume and document-analysis workflows. Create-only validated PDF output is in Phase 4.8. **Remaining:** requested structured export formats and additional file workflow families.
 
 #### Phase 4.2 — PDF report rendering core — COMPLETE (in-memory output)
 
@@ -116,7 +116,7 @@ Added a PDFKit renderer for validated title/section text that returns PDF bytes 
 
 **Checks:** `npm run typecheck` passed; `npm test` passed (36 passed, 1 skipped dedicated MongoDB integration). Generated output had a valid PDF header/EOF and expected metadata; malformed, unsupported-character, oversized and excessive-section cases failed closed.
 
-**Pending:** Write artifacts only through the approved-root/approval system, validate resulting hashes and paths, and add integrated report workflows after Phase 3 persistence/approval wiring.
+**Integrated:** Phase 4.8 writes a new PDF only after path/content approval and verifies the resulting hash. **Remaining:** persisted artifact references and other requested output formats.
 
 #### Phase 4.3 — Bounded TXT and Markdown parsing — COMPLETE (pure input module)
 
@@ -132,7 +132,7 @@ Added `pdfjs-dist` and a parser that accepts caller-supplied PDF bytes, extracts
 
 **Checks:** `npm run typecheck` passed; `npm test` passed (41 passed, 1 skipped dedicated MongoDB integration). A generated in-memory report was parsed for page count and text; invalid type/header/PDF and size limit cases were rejected. npm reported zero vulnerabilities at installation.
 
-**Pending:** Review the PDF.js dependency at release and add approved-root artifact integrity. Phase 4.7 now parses text PDF through the approved-file boundary; no OCR is implied.
+**Dependency review:** Current online production `npm audit` passed with zero reported vulnerabilities; licensing and deprecation review remains in Phase 8. Phase 4.7 parses text PDFs through the approved-file boundary; no OCR is implied.
 
 #### Phase 4.5 — Bounded XLSX parsing — COMPLETE (pure byte input)
 
@@ -156,7 +156,7 @@ Added `run document-analyze --input <path>`. It requires interactive approval fo
 
 **Checks:** `npm run typecheck` passed; full `npm test` passed against the loopback isolated MongoDB backend (51 passed, 0 skipped, 0 failed). Generated TXT, Markdown, PDF, DOCX, and XLSX fixtures exercised each parser; unsupported suffixes and invalid UTF-8 failed before creating run records. Persistence integration verified completed state/events and confirmed fixture text was absent from MongoDB; the unique test database and temporary fixture were cleaned up.
 
-**Pending:** Approved-root PDF artifact output/integrity, parser resumability, and structured extraction/report workflows remain future work. Scanned PDF OCR and unsupported DOCX/XLSX features remain outside current support.
+**Integrated:** Approved-root PDF artifact output/integrity is implemented in Phase 4.8. **Pending:** parser resumability, rich artifact references, and structured extraction/report workflows remain future work. Scanned PDF OCR and unsupported DOCX/XLSX features remain outside current support.
 
 #### Phase 4.8 — Approved PDF artifact output — COMPLETE (create-only, hash-verified)
 
@@ -177,7 +177,7 @@ Added `run repo-inspect --root <directory>`. The command requires interactive ap
 
 **Checks:** `npm run typecheck` passed; full `npm test` passed against a loopback MongoDB URI, 49 passed, 0 skipped. Unit fixtures verified excluded dependency/VCS folders, `.env` denial, metadata redaction, unapproved-root rejection, and lifecycle events. Integration verified completed inventory run/events in a unique database that the test dropped afterward. Noninteractive CLI smoke stopped before root access. `git diff --check` passed.
 
-**Pending after Phase 5.1:** Source-content review/seeded-failure reproduction, approved patch previews/application, and local diff review remain future subphases. This metadata inventory is not bug diagnosis or a sandbox.
+**Integrated:** Source review and model-assisted investigation are in Phase 5.3/5.6; approved patching is Phase 5.4; staged diff review is Phase 5.5. This metadata inventory itself remains read-only and is not bug diagnosis or a sandbox.
 
 #### Phase 5.2 — Reviewed test/check execution — COMPLETE (fixed command set)
 
@@ -185,7 +185,7 @@ Added `run software-check --root <directory> --check <node-test|typescript-check
 
 **Checks:** `npm run typecheck` passed; `npm test` passed against an isolated local MongoDB database (53 passed, 0 skipped). A disposable fixture reproduced an assertion failure and passed after the fixture test was corrected. Database integration verified failed/completed run state and a successful TypeScript no-emit check; the isolated database and fixture roots were cleaned up. Persisted summaries/events contain no command output or paths.
 
-**Pending:** Reading repository source into an investigation context, reviewed patch/diff previews and application, and more targeted test selection remain future subphases.
+**Integrated:** Local source review, consented model-assisted investigation, patch preview/application, and staged diff review are in Phases 5.3–5.6. **Remaining:** finer-grained test selection and any broader workflow not covered by the fixed reviewed commands.
 
 #### Phase 5.3 — Bounded local source review — COMPLETE (local-only, read-only)
 
@@ -193,14 +193,14 @@ Added `run source-review --root <directory> --file <relative-path> [...]`. It re
 
 **Checks:** `npm run typecheck` passed; `npm test` passed with the isolated local MongoDB URI (55 passed, 0 skipped, 0 failed). Source review contract tests verified approved-root enforcement, explicit file selection, protected paths, traversal, symlink/junction rejection, invalid UTF-8/NUL rejection, credential assignment/token/PEM redaction, and successful bounded source review. The full suite reverified every database workflow on the isolated local database. Review found and closed a PEM redaction gap; approval now names the resolved root. Node v22 documentation confirms fatal UTF-8 decoding rejects malformed sequences and that Windows does not support `O_NOFOLLOW`, so file identity is also checked on the opened handle.
 
-**Pending:** Seeded-failure investigation integration, reviewed patch preview/application, and local diff review remain future subphases. The read workflow is not a security scanner or OS sandbox.
+**Integrated:** Seeded-failure investigation is in Phase 5.6; reviewed patch preview/application is in Phase 5.4; staged local diff review is in Phase 5.5. Redaction remains heuristic; this read workflow is not a security scanner or OS sandbox.
 #### Phase 5.4 — Reviewed file replacement — COMPLETE (approved single-file operation)
 
 Added `run file-patch --root <directory> --target <relative-path> --content-file <relative-path>`. It accepts one existing source target and a bounded UTF-8 replacement file from the approved root. The CLI displays current and replacement text after heuristic redaction, prints the replacement SHA-256, and requires an explicit apply confirmation against a canonicalized root. The action preview binds replacement bytes and the target snapshot; state is revalidated and the replacement is written through the opened target handle, preserving permissions and avoiding path-swap redirection. The in-place write is not crash-atomic and cannot coordinate with concurrent writers to that file. Contents are not sent to a model or persisted.
 
 **Checks:** `npm run typecheck`, `npm run build`, and `node --test test/patch-application.test.mjs` passed (3/3). Full `npm test` passed against the isolated local MongoDB test database (60 passed, 0 skipped, 0 failed). The three patch contract tests cover exact preview-bound writes, stale-target and path rejection, and reproducing a seeded test failure, applying the approved replacement, then passing the reviewed Node test runner. CLI help lists `file-patch`; the noninteractive command exits before file access. `git diff --check` passed.
 
-**Pending:** Local Git diff review and model-assisted investigation remain separate future subphases. Redaction is heuristic; displayed terminal content must be reviewed before sharing.
+**Integrated:** Local Git diff review and model-assisted investigation are tracked in Phases 5.5 and 5.6. Redaction is heuristic; displayed terminal content must be reviewed before sharing.
 
 #### Phase 5.5 — Approved local Git diff review — COMPLETE (read-only, local)
 
@@ -253,7 +253,7 @@ Added `run draft --input <draft.json> --output <new.md>` for GitHub issue and em
 
 **Checks:** `npm run typecheck`, `npm run build`, and the full `npm test` suite passed against isolated local MongoDB (72 passed, 0 skipped, 0 failed). Five focused draft tests cover issue/email rendering, malformed and credential-bearing issue URLs, email header injection, terminal control escaping, create-only output, stale targets, path boundaries and hash verification. `git diff --check` passed.
 
-**Remaining Phase 7 work:** Schedule semantics need owner decisions on trigger types, missed runs, interactive sessions and renewed approvals. Bounded read-only specialist work is tracked in Phase 7.3 below. Private-repository access is optional and remains out of scope unless selected; public reading needs no token.
+**Remaining Phase 7 work:** Schedule semantics need owner decisions on trigger types, missed runs, interactive sessions and renewed approvals. Phase 7.3 provides the first bounded read-only specialist slice; richer tool-bearing specialists are not implemented. Private-repository access is optional and remains out of scope unless selected; public reading needs no token.
 
 #### Phase 7.3 — Bounded read-only specialist review — COMPLETE (first read-only slice)
 
