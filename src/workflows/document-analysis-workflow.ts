@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { TextDecoder } from "node:util";
 import type { MongoStore, RunSummary } from "../mongo-store.js";
 import { parseDocxText } from "../documents/docx-parser.js";
@@ -8,6 +8,7 @@ import { parseXlsxText } from "../documents/xlsx-parser.js";
 
 const WORKFLOW_ID = "document-analyze";
 const STEP_ID = "parse";
+const STATE_HASH = createHash("sha256").update("taskforge:document-analyze:v1").digest("hex");
 const MAX_INPUT_BYTES = 8 * 1024 * 1024;
 const WORD_PATTERN = /[\p{L}\p{N}]+(?:['’\-][\p{L}\p{N}]+)*/gu;
 
@@ -29,9 +30,12 @@ export interface DocumentAnalysis {
 export interface DocumentAnalysisResult {
   readonly run: RunSummary;
   readonly analysis: DocumentAnalysis;
+  readonly resumed: boolean;
 }
 
-type Persistence = Pick<MongoStore, "saveRunSummary" | "updateRunState" | "appendRunEvent" | "updateRunSummary">;
+type Persistence = Pick<MongoStore,
+  "saveRunSummary" | "updateRunState" | "appendRunEvent" | "updateRunSummary" |
+  "saveRunCheckpoint" | "loadRunCheckpoint" | "getRunSummary" | "recoverStaleRun">;
 
 export class DocumentWorkflowError extends Error {
   constructor(message: string) {
@@ -139,14 +143,7 @@ export async function analyzeDocument(
   input: Uint8Array,
 ): Promise<DocumentAnalysisResult> {
   const format = parseFormat(extension);
-  let analysis: DocumentAnalysis;
-  try {
-    analysis = await analyzeBytes(format, input);
-  } catch (error: unknown) {
-    if (error instanceof DocumentWorkflowError) throw error;
-    throw new DocumentWorkflowError("Document parsing failed; input content was not persisted.");
-  }
-
+  const inputHash = createHash("sha256").update(input).digest("hex");
   const runId = randomUUID();
   const run = await store.saveRunSummary({
     runId,
@@ -155,10 +152,85 @@ export async function analyzeDocument(
   });
   await store.updateRunState(runId, "running");
   await store.appendRunEvent({ runId, eventId: randomUUID(), type: "run_started" });
-  await store.appendRunEvent({ runId, eventId: randomUUID(), type: "step_started", stepId: STEP_ID });
-  await store.updateRunSummary(runId, summarize(analysis));
-  const completed = await store.updateRunState(runId, "completed");
-  await store.appendRunEvent({ runId, eventId: randomUUID(), type: "step_finished", stepId: STEP_ID });
-  await store.appendRunEvent({ runId, eventId: randomUUID(), type: "run_finished" });
-  return { run: completed, analysis };
+  return executeAnalysis(store, run, format, input, inputHash, false);
+}
+
+async function executeAnalysis(
+  store: Persistence,
+  run: RunSummary,
+  format: SupportedDocumentFormat,
+  input: Uint8Array,
+  inputHash: string,
+  resumed: boolean,
+): Promise<DocumentAnalysisResult> {
+  try {
+    await store.saveRunCheckpoint({
+      runId: run.runId,
+      version: 1,
+      inputHash,
+      stateHash: STATE_HASH,
+      completedStepIds: [],
+      pendingStepId: STEP_ID,
+    });
+    await store.appendRunEvent({ runId: run.runId, eventId: randomUUID(), type: "step_started", stepId: STEP_ID });
+    const analysis = await analyzeBytes(format, input);
+    await store.saveRunCheckpoint({
+      runId: run.runId,
+      version: 1,
+      inputHash,
+      stateHash: STATE_HASH,
+      completedStepIds: [STEP_ID],
+    });
+    await store.appendRunEvent({ runId: run.runId, eventId: randomUUID(), type: "step_finished", stepId: STEP_ID });
+    await store.updateRunSummary(run.runId, summarize(analysis));
+    const completed = await store.updateRunState(run.runId, "completed");
+    await store.appendRunEvent({ runId: run.runId, eventId: randomUUID(), type: "run_finished" });
+    return { run: completed, analysis, resumed };
+  } catch (error: unknown) {
+    if (error instanceof DocumentWorkflowError) {
+      await store.updateRunSummary(run.runId, "Document parsing failed validation; input content was not persisted.");
+      await store.updateRunState(run.runId, "failed");
+      await store.appendRunEvent({ runId: run.runId, eventId: randomUUID(), type: "run_failed" });
+      throw error;
+    }
+    try {
+      await store.updateRunState(run.runId, "uncertain");
+      await store.appendRunEvent({ runId: run.runId, eventId: randomUUID(), type: "run_paused" });
+    } catch {
+      // Preserve the original persistence error if the database is unavailable.
+    }
+    throw error;
+  }
+}
+
+export async function resumeDocumentAnalysisWorkflow(
+  store: Persistence,
+  runId: unknown,
+  extension: unknown,
+  input: Uint8Array,
+): Promise<DocumentAnalysisResult> {
+  if (typeof runId !== "string") throw new DocumentWorkflowError("A run id is required to resume document analysis.");
+  const format = parseFormat(extension);
+  let existing = await store.getRunSummary(runId);
+  if (existing === null || existing.workflowId !== WORKFLOW_ID) {
+    throw new DocumentWorkflowError("Only an uncertain document-analyze run can be resumed.");
+  }
+  if (existing.state === "running") {
+    const recovered = await store.recoverStaleRun(runId, new Date(Date.now() - 2 * 60 * 1000));
+    if (recovered) {
+      await store.appendRunEvent({ runId, eventId: randomUUID(), type: "run_paused" });
+      existing = await store.getRunSummary(runId);
+    }
+  }
+  if (existing === null || existing.state !== "uncertain") {
+    throw new DocumentWorkflowError("Only an uncertain document-analyze run can be resumed.");
+  }
+  const inputHash = createHash("sha256").update(input).digest("hex");
+  const checkpoint = await store.loadRunCheckpoint(runId, inputHash, STATE_HASH);
+  if (checkpoint === null || (checkpoint.pendingStepId !== STEP_ID && !checkpoint.completedStepIds.includes(STEP_ID))) {
+    throw new DocumentWorkflowError("The run has no resumable document checkpoint for these input bytes.");
+  }
+  const resumed = await store.updateRunState(runId, "running");
+  await store.appendRunEvent({ runId, eventId: randomUUID(), type: "run_resumed" });
+  return executeAnalysis(store, resumed, format, input, inputHash, true);
 }

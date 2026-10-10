@@ -17,7 +17,7 @@ import { ModelProviderError } from "./providers/types.js";
 import { PathPolicyError, WorkspacePathPolicy } from "./security/path-policy.js";
 import { CsvWorkflowError, resumeCsvAnalysisWorkflow, runCsvAnalysisWorkflow } from "./workflows/csv-analysis-workflow.js";
 import { inspectRepository, RepositoryInspectionError } from "./workflows/repository-inspection-workflow.js";
-import { analyzeDocument, DocumentWorkflowError } from "./workflows/document-analysis-workflow.js";
+import { analyzeDocument, DocumentWorkflowError, resumeDocumentAnalysisWorkflow } from "./workflows/document-analysis-workflow.js";
 import { runReviewedCommand, type ReviewedCommandId, ReviewedCommandError } from "./software/reviewed-command.js";
 import { redactSourceForDisplay, reviewSourceFiles, SourceReviewError } from "./workflows/source-review-workflow.js";
 import { ActionApprovalRegistry } from "./security/approval-preview.js";
@@ -29,10 +29,11 @@ import { GitHubReadError, readPublicIssues } from "./integrations/github-public-
 import { DraftArtifactError, parseLocalDraftInput, previewTextArtifact, writeApprovedTextArtifact } from "./artifacts/drafts.js";
 import { escapeTerminalControls } from "./security/terminal-text.js";
 import { BrowserSearchError, GroqBrowserResearch } from "./integrations/groq-browser-search.js";
+import { BrowserAuditError, runBrowserAudit, validateLoopbackBrowserTarget } from "./workflows/browser-audit-workflow.js";
 
 const helpText = `TaskForge ${packageJson.version} (early development)
 
-Usage: taskforge [--help | --version | config | doctor | model-check | chat | run csv-analyze --input <path> | run document-analyze --input <path> | run pdf-report --input <json> --output <new.pdf> | run draft --input <draft.json> --output <new.md> | run specialist-review --root <directory> --file <relative-path> [...] | run research --query <question> | run repo-inspect --root <directory> | run source-review --root <directory> --file <relative-path> [...] | run model-investigate --root <directory> --file <relative-path> [...] | run github-issues --repository <owner/name> | run file-patch --root <directory> --target <relative-path> --content-file <relative-path> | run git-diff --root <directory> | run software-check --root <directory> --check <node-test|typescript-check> | resume <run-id> --input <path> | history list]
+Usage: taskforge [--help | --version | config | doctor | model-check | chat | run csv-analyze --input <path> | run document-analyze --input <path> | run pdf-report --input <json> --output <new.pdf> | run draft --input <draft.json> --output <new.md> | run specialist-review --root <directory> --file <relative-path> [...] | run research --query <question> | run browser-audit --url <loopback-url> | run repo-inspect --root <directory> | run source-review --root <directory> --file <relative-path> [...] | run model-investigate --root <directory> --file <relative-path> [...] | run github-issues --repository <owner/name> | run file-patch --root <directory> --target <relative-path> --content-file <relative-path> | run git-diff --root <directory> | run software-check --root <directory> --check <node-test|typescript-check> | resume <run-id> --input <path> | history list]
 
 The config command validates local settings and prints a redacted summary.
 The doctor command checks configured MongoDB connectivity and reports available setup areas.
@@ -48,10 +49,11 @@ The github-issues workflow reads at most 20 open issue titles from one public re
 The draft workflow creates a new local Markdown GitHub issue or email draft from an explicitly approved JSON input; it never contacts GitHub or an email service.
 The specialist-review workflow sends approved, heuristically redacted source excerpts to up to two read-only specialist prompts and asks the same configured model to review their findings; workers have no tools, cannot spawn workers, share one run-wide request/action budget, and do not persist source or findings.
 The research workflow sends only the exact approved query to Groq browser search, then displays bounded source metadata and answer; it makes no project-file access or persistence and requires a supported Groq model.
+The browser-audit workflow visits one explicitly approved loopback HTTP URL in an isolated Chromium context, blocks cross-origin requests and non-GET/HEAD methods, checks bounded same-origin links, and stores aggregate counts only.
 The document-analyze workflow parses one approved TXT, Markdown, text PDF, DOCX, or XLSX file and stores counts only.
 The pdf-report workflow renders an approved JSON report and creates a new approved PDF artifact after a content-bound confirmation.
 The software-check workflow runs only an explicitly approved Node test or TypeScript no-emit check in one approved root.
-The resume command rechecks the input and workflow hashes, then resumes an uncertain CSV analysis.
+The resume command reacquires input-file approval, rechecks input and workflow hashes, then resumes an uncertain CSV or document analysis.
 History list prints up to 50 redacted run summaries.
 `;
 
@@ -130,7 +132,7 @@ async function withMongoStore<T>(action: (store: MongoStore) => Promise<T>): Pro
   }
 }
 
-async function runCsvWorkflowCommand(commandArgs: readonly string[], runId?: string): Promise<void> {
+async function runCsvWorkflowCommand(commandArgs: readonly string[]): Promise<void> {
   const inputPath = inputPathArgument(commandArgs);
   if (inputPath === undefined) {
     process.stderr.write("Expected --input followed by a file path.\n");
@@ -142,9 +144,7 @@ async function runCsvWorkflowCommand(commandArgs: readonly string[], runId?: str
     return;
   }
   try {
-    const result = await withMongoStore(async (store) => runId === undefined
-      ? runCsvAnalysisWorkflow(store, input)
-      : resumeCsvAnalysisWorkflow(store, runId, input));
+    const result = await withMongoStore((store) => runCsvAnalysisWorkflow(store, input));
     if (result !== undefined) {
       const totals = Object.entries(result.analysis.numericTotals).map(([column, total]) => `${column}=${total}`);
       process.stdout.write(`Run ${result.run.runId} ${result.resumed ? "resumed" : "completed"}: ${result.analysis.rowCount} rows, ${result.analysis.duplicateRowCount} duplicate rows.\n`);
@@ -154,6 +154,48 @@ async function runCsvWorkflowCommand(commandArgs: readonly string[], runId?: str
     }
   } catch (error: unknown) {
     process.stderr.write(error instanceof CsvWorkflowError ? `CSV workflow failed: ${error.message}\n` : "CSV workflow failed; run state was preserved where possible.\n");
+    process.exitCode = 3;
+  }
+}
+
+async function resumeWorkflowCommand(runId: string, commandArgs: readonly string[]): Promise<void> {
+  const inputPath = inputPathArgument(commandArgs);
+  if (inputPath === undefined) {
+    process.stderr.write("Expected --input followed by the original input file path.\n");
+    process.exitCode = 1;
+    return;
+  }
+  const input = await readApprovedInputFile(inputPath);
+  if (input === undefined) return;
+  try {
+    const result = await withMongoStore(async (store) => {
+      const existing = await store.getRunSummary(runId);
+      if (existing?.workflowId === "csv-analyze") {
+        return { kind: "csv" as const, value: await resumeCsvAnalysisWorkflow(store, runId, input) };
+      }
+      if (existing?.workflowId === "document-analyze") {
+        return {
+          kind: "document" as const,
+          value: await resumeDocumentAnalysisWorkflow(store, runId, extname(inputPath).toLowerCase(), input),
+        };
+      }
+      throw new Error("This run type cannot be resumed by the current CLI.");
+    });
+    if (result === undefined) return;
+    if (result.kind === "csv") {
+      const analysis = result.value.analysis;
+      const totals = Object.entries(analysis.numericTotals).map(([column, total]) => `${column}=${total}`);
+      process.stdout.write(`Run ${result.value.run.runId} resumed: ${analysis.rowCount} rows, ${analysis.duplicateRowCount} duplicate rows.\n`);
+      if (totals.length > 0) process.stdout.write(`Numeric totals: ${totals.join(", ")}\n`);
+    } else {
+      const analysis = result.value.analysis;
+      process.stdout.write(`Run ${result.value.run.runId} resumed: ${analysis.format}, ${analysis.byteCount} bytes, ${analysis.wordCount} words.\n`);
+    }
+  } catch (error: unknown) {
+    const message = error instanceof CsvWorkflowError || error instanceof DocumentWorkflowError
+      ? error.message
+      : "Resume failed; run state was preserved where possible.";
+    process.stderr.write(`Resume failed: ${message}\n`);
     process.exitCode = 3;
   }
 }
@@ -864,6 +906,60 @@ async function runResearchCommand(commandArgs: readonly string[]): Promise<void>
   }
 }
 
+async function runBrowserAuditCommand(commandArgs: readonly string[]): Promise<void> {
+  if (commandArgs.length !== 2 || commandArgs[0] !== "--url" || commandArgs[1] === undefined) {
+    process.stderr.write("Expected --url <loopback-http-url>.\n");
+    process.exitCode = 1;
+    return;
+  }
+  let target: URL;
+  try {
+    target = validateLoopbackBrowserTarget(commandArgs[1]);
+  } catch (error: unknown) {
+    process.stderr.write(`${error instanceof BrowserAuditError ? error.message : "Browser audit target was rejected."}\n`);
+    process.exitCode = 1;
+    return;
+  }
+  if (!process.stdin.isTTY || !process.stdout.isTTY) {
+    process.stderr.write("Browser audit requires interactive approval before opening a loopback page.\n");
+    process.exitCode = 2;
+    return;
+  }
+  const consent = createInterface({ input: process.stdin, output: process.stdout });
+  let answer: string;
+  try {
+    answer = await consent.question(
+      `Open this exact loopback page in an isolated, unauthenticated Chromium context?\n${escapeTerminalControls(target.toString())}\nOnly same-origin GET/HEAD navigation is allowed; cross-origin and unsafe methods are blocked. Aggregate counts only are stored; page text, URL, links and console messages are not. [y/N] `,
+    );
+  } finally {
+    consent.close();
+  }
+  if (answer.trim().toLowerCase() !== "y") {
+    process.stdout.write("Browser audit cancelled before local navigation.\n");
+    return;
+  }
+  const controller = new AbortController();
+  const interrupt = (): void => controller.abort();
+  process.once("SIGINT", interrupt);
+  try {
+    const result = await withMongoStore((store) => runBrowserAudit(store, target.toString(), controller.signal));
+    if (result !== undefined) {
+      const metrics = result.metrics;
+      process.stdout.write(
+        `Run ${result.run.runId} completed: ${metrics.httpErrorCount} HTTP errors, ${metrics.brokenLinkCount}/${metrics.linksChecked} broken local links, ` +
+        `${metrics.consoleErrorCount} console errors, ${metrics.pageErrorCount} page errors, ` +
+        `${metrics.blockedExternalRequestCount} external requests blocked, ${metrics.blockedUnsafeMethodCount} unsafe methods blocked, ` +
+        `${metrics.blockedRequestLimitCount} requests blocked at the limit.\n`,
+      );
+    }
+  } catch (error: unknown) {
+    process.stderr.write(`${error instanceof BrowserAuditError ? error.message : "Browser audit failed safely; no page content was persisted."}\n`);
+    process.exitCode = controller.signal.aborted ? 130 : 3;
+  } finally {
+    process.removeListener("SIGINT", interrupt);
+  }
+}
+
 async function runDraftCommand(commandArgs: readonly string[]): Promise<void> {
   if (commandArgs.length !== 4 || commandArgs[0] !== "--input" || commandArgs[1] === undefined || commandArgs[2] !== "--output" || commandArgs[3] === undefined) {
     process.stderr.write("Expected --input <draft.json> --output <new.md>.\n");
@@ -947,13 +1043,13 @@ async function runDoctor(): Promise<void> {
       process.stdout.write("MongoDB: check failed with an unexpected error.\n");
     }
     process.stdout.write(`Model provider: ${providerStatus}.\n`);
-    process.stdout.write("Browser tooling: not implemented yet.\n");
+    process.stdout.write("Browser tooling: local loopback audit is available; broader real-site checks remain pending.\n");
     process.exitCode = 2;
     return;
   }
 
   process.stdout.write(`Model provider: ${providerStatus}.\n`);
-  process.stdout.write("Browser tooling: not implemented yet.\n");
+  process.stdout.write("Browser tooling: local loopback audit is available; broader real-site checks remain pending.\n");
 }
 
 async function runModelCheck(): Promise<void> {
@@ -1153,13 +1249,15 @@ if (args.length === 0 || (args.length === 1 && (args[0] === "--help" || args[0] 
   await runSpecialistReviewCommand(args.slice(2));
 } else if (args.length >= 2 && args[0] === "run" && args[1] === "research") {
   await runResearchCommand(args.slice(2));
+} else if (args.length >= 2 && args[0] === "run" && args[1] === "browser-audit") {
+  await runBrowserAuditCommand(args.slice(2));
 } else if (args.length >= 1 && args[0] === "resume") {
   const runId = args[1];
   if (runId === undefined || args.length < 3) {
     process.stderr.write("Expected resume <run-id> --input <path>.\n");
     process.exitCode = 1;
   } else {
-    await runCsvWorkflowCommand(args.slice(2), runId);
+    await resumeWorkflowCommand(runId, args.slice(2));
   }
 } else if (args.length === 2 && args[0] === "history" && args[1] === "list") {
   await listRunHistory();

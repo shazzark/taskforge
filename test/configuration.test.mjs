@@ -126,7 +126,7 @@ test("CLI doctor reports missing MongoDB configuration without a connection valu
   assert.equal(result.status, 2);
   assert.match(result.stdout, /MongoDB: not configured/u);
   assert.match(result.stdout, /Model provider: not configured/u);
-  assert.match(result.stdout, /Browser tooling: not implemented yet/u);
+  assert.match(result.stdout, /Browser tooling: local loopback audit is available/u);
   assert.equal(result.stdout.includes("mongodb://"), false);
 });
 

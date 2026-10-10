@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { createHash, randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { spawnSync } from "node:child_process";
+import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { MongoClient } from "mongodb";
@@ -16,10 +17,11 @@ import {
 } from "../dist/mongo-store.js";
 import { parseConfiguration } from "../dist/config.js";
 import { resumeCsvAnalysisWorkflow, runCsvAnalysisWorkflow } from "../dist/workflows/csv-analysis-workflow.js";
-import { analyzeDocument } from "../dist/workflows/document-analysis-workflow.js";
+import { analyzeDocument, resumeDocumentAnalysisWorkflow } from "../dist/workflows/document-analysis-workflow.js";
 import { inspectRepository } from "../dist/workflows/repository-inspection-workflow.js";
 import { runReviewedCommand } from "../dist/software/reviewed-command.js";
 import { WorkspacePathPolicy } from "../dist/security/path-policy.js";
+import { runBrowserAudit } from "../dist/workflows/browser-audit-workflow.js";
 
 const testUri = process.env.TASKFORGE_TEST_MONGODB_URI;
 const cliPath = fileURLToPath(new URL("../dist/cli.js", import.meta.url));
@@ -109,6 +111,52 @@ test(
       assert.equal(persistedDocumentRun?.state, "completed");
       assert.equal(persistedDocumentRun?.summary.includes(documentMarker), false);
       assert.equal(documentEvents.some((event) => event.type === "run_finished"), true);
+
+      const resumableDocumentId = randomUUID();
+      const resumableDocumentInput = Buffer.from("resumable approved document fixture", "utf8");
+      await store.saveRunSummary({ runId: resumableDocumentId, workflowId: "document-analyze", summary: "Document analysis interrupted safely." });
+      await store.updateRunState(resumableDocumentId, "running");
+      await store.appendRunEvent({ runId: resumableDocumentId, eventId: randomUUID(), type: "run_started" });
+      await store.saveRunCheckpoint({
+        runId: resumableDocumentId,
+        version: 1,
+        inputHash: createHash("sha256").update(resumableDocumentInput).digest("hex"),
+        stateHash: createHash("sha256").update("taskforge:document-analyze:v1").digest("hex"),
+        completedStepIds: [],
+        pendingStepId: "parse",
+      });
+      await store.updateRunState(resumableDocumentId, "uncertain");
+      await assert.rejects(
+        resumeDocumentAnalysisWorkflow(store, resumableDocumentId, ".txt", Buffer.from("changed document", "utf8")),
+        /checkpoint/,
+      );
+      const resumedDocument = await resumeDocumentAnalysisWorkflow(store, resumableDocumentId, ".txt", resumableDocumentInput);
+      assert.equal(resumedDocument.resumed, true);
+      assert.equal(resumedDocument.run.state, "completed");
+      assert.equal(resumedDocument.analysis.wordCount, 4);
+
+      const browserMarker = "private-browser-fixture-marker";
+      const browserServer = createServer((_request, response) => {
+        response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+        response.end(`<html><body><p>${browserMarker}</p></body></html>`);
+      });
+      await new Promise((resolve, reject) => {
+        browserServer.once("error", reject);
+        browserServer.listen(0, "127.0.0.1", resolve);
+      });
+      try {
+        const browserAddress = browserServer.address();
+        if (browserAddress === null || typeof browserAddress === "string") throw new Error("Browser fixture did not bind a loopback port.");
+        const browserRun = await runBrowserAudit(store, `http://127.0.0.1:${browserAddress.port}/`);
+        const persistedBrowserRun = await store.getRunSummary(browserRun.run.runId);
+        const browserEvents = await store.getRunEvents(browserRun.run.runId);
+        assert.equal(persistedBrowserRun?.state, "completed");
+        assert.equal(persistedBrowserRun?.summary.includes(browserMarker), false);
+        assert.equal(persistedBrowserRun?.summary.includes(String(browserAddress.port)), false);
+        assert.equal(browserEvents.some((event) => event.type === "run_finished"), true);
+      } finally {
+        await new Promise((resolve, reject) => browserServer.close((error) => error === undefined ? resolve() : reject(error)));
+      }
 
       await mkdir(join(softwareFixturePath, "test"));
       const seededTestPath = join(softwareFixturePath, "test", "seeded.test.mjs");

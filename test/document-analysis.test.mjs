@@ -1,12 +1,13 @@
 import assert from "node:assert/strict";
+import { createHash, randomUUID } from "node:crypto";
 import ExcelJS from "exceljs";
 import JSZip from "jszip";
 import test from "node:test";
 import { renderPdfReport } from "../dist/artifacts/pdf-report.js";
-import { analyzeDocument, DocumentWorkflowError } from "../dist/workflows/document-analysis-workflow.js";
+import { analyzeDocument, DocumentWorkflowError, resumeDocumentAnalysisWorkflow } from "../dist/workflows/document-analysis-workflow.js";
 
 function createPersistenceRecorder() {
-  const state = { events: [], runs: new Map() };
+  const state = { events: [], runs: new Map(), checkpoints: new Map() };
   return {
     state,
     async saveRunSummary(input) {
@@ -26,6 +27,23 @@ function createPersistenceRecorder() {
     async appendRunEvent(event) {
       state.events.push(event);
       return { ...event, sequence: state.events.length, createdAt: new Date() };
+    },
+    async saveRunCheckpoint(checkpoint) {
+      state.checkpoints.set(checkpoint.runId, checkpoint);
+      return { ...checkpoint, updatedAt: new Date() };
+    },
+    async loadRunCheckpoint(runId, inputHash, stateHash) {
+      const checkpoint = state.checkpoints.get(runId);
+      const run = state.runs.get(runId);
+      return run?.state === "uncertain" && checkpoint?.inputHash === inputHash && checkpoint?.stateHash === stateHash
+        ? { ...checkpoint, updatedAt: new Date() }
+        : null;
+    },
+    async getRunSummary(runId) {
+      return state.runs.get(runId) ?? null;
+    },
+    async recoverStaleRun() {
+      return false;
     },
   };
 }
@@ -84,10 +102,28 @@ test("approved document workflow parses supported formats and persists metadata 
   assert.equal(persistence.state.events.length, 20);
 });
 
-test("document workflow rejects unsupported formats and malformed UTF-8 before persistence", async () => {
+test("document workflow rejects unsupported formats and records malformed UTF-8 as failed metadata", async () => {
   const persistence = createPersistenceRecorder();
   await assert.rejects(analyzeDocument(persistence, ".exe", Buffer.from("data")), DocumentWorkflowError);
   await assert.rejects(analyzeDocument(persistence, ".txt", Buffer.from([0xff, 0xfe])), DocumentWorkflowError);
-  assert.equal(persistence.state.runs.size, 0);
-  assert.equal(persistence.state.events.length, 0);
+  assert.equal(persistence.state.runs.size, 1);
+  assert.equal([...persistence.state.runs.values()][0]?.state, "failed");
+  assert.equal(persistence.state.events.some((event) => event.type === "run_failed"), true);
+});
+
+test("document resume rejects changed bytes and deterministically completes the checkpoint", async () => {
+  const persistence = createPersistenceRecorder();
+  const runId = randomUUID();
+  const input = Buffer.from("same input bytes", "utf8");
+  await persistence.saveRunSummary({ runId, workflowId: "document-analyze", summary: "Interrupted." });
+  await persistence.updateRunState(runId, "uncertain");
+  const inputHash = createHash("sha256").update(input).digest("hex");
+  const stateHash = createHash("sha256").update("taskforge:document-analyze:v1").digest("hex");
+  await persistence.saveRunCheckpoint({ runId, version: 1, inputHash, stateHash, completedStepIds: [], pendingStepId: "parse" });
+
+  await assert.rejects(resumeDocumentAnalysisWorkflow(persistence, runId, ".txt", Buffer.from("changed")), /checkpoint/);
+  const result = await resumeDocumentAnalysisWorkflow(persistence, runId, ".txt", input);
+  assert.equal(result.resumed, true);
+  assert.equal(result.run.state, "completed");
+  assert.equal(result.analysis.wordCount, 3);
 });
