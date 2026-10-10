@@ -120,6 +120,8 @@ Added `pdfjs-dist` and a parser that accepts caller-supplied PDF bytes, extracts
 
 **Pending:** Review the PDF.js dependency at release and validate file access/integrity through the integrated Phase 3 boundary. No OCR is implied.
 
+**DOCX/XLSX dependency review:** DOCX/XLSX parsers remain pending. A Mammoth trial install produced three moderate npm audit findings in its dependency tree, so the package was removed before integration. ExcelJS has not been installed or reviewed. Select a parser only after its archive expansion, memory bounds, and dependency advisories are acceptable.
+
 ### Phase 5 — Software workflow — NOT STARTED
 
 **Goal:** Support repository inspection, seeded bug investigation, approved patches, reviewed command execution and local diffs.
