@@ -12,6 +12,7 @@ export type RunState = "created" | "running" | "completed" | "failed" | "cancell
 export interface RunSummary extends RunSummaryInput {
   readonly state: RunState;
   readonly createdAt: Date;
+  readonly updatedAt?: Date;
 }
 
 export type RunEventType =
@@ -60,6 +61,7 @@ interface StoredRunSummary extends Document {
   readonly summary: string;
   readonly state: RunState;
   readonly createdAt: Date;
+  readonly updatedAt?: Date;
   readonly eventCount?: number;
   readonly eventBytes?: number;
 }
@@ -414,6 +416,40 @@ export class MongoStore {
     return parseStoredRunSummary(document);
   }
 
+  async updateRunSummary(runIdValue: unknown, summaryValue: unknown): Promise<RunSummary> {
+    const runId = parseIdentifier(runIdValue, "Run id");
+    if (typeof summaryValue !== "string") {
+      throw new PersistenceInputError("Run summary requires a string summary.");
+    }
+    const summary = redactSensitiveText(summaryValue.slice(0, MAX_RUN_SUMMARY_CHARACTERS))
+      .slice(0, MAX_RUN_SUMMARY_CHARACTERS);
+    try {
+      const result = await this.runs.updateOne({ _id: runId }, { $set: { summary } });
+      if (result.matchedCount !== 1) {
+        throw new PersistenceInputError("Run does not exist.");
+      }
+      const updated = await this.runs.findOne({ _id: runId });
+      if (updated === null) {
+        throw new PersistenceInputError("Run does not exist.");
+      }
+      return parseStoredRunSummary(updated);
+    } catch (error) {
+      if (error instanceof PersistenceInputError) {
+        throw error;
+      }
+      throw new DatabasePersistenceError();
+    }
+  }
+
+  async listRunSummaries(): Promise<readonly RunSummary[]> {
+    try {
+      const documents = await this.runs.find({}).sort({ createdAt: -1 }).limit(50).toArray();
+      return documents.map((document) => parseStoredRunSummary(document));
+    } catch {
+      throw new DatabasePersistenceError();
+    }
+  }
+
   async updateRunState(runIdValue: unknown, nextStateValue: unknown): Promise<RunSummary> {
     const runId = parseIdentifier(runIdValue, "Run id");
     if (!isRunState(nextStateValue)) {
@@ -435,7 +471,7 @@ export class MongoStore {
     try {
       const result = await this.runs.updateOne(
         { _id: runId, state: parsedCurrent.state },
-        { $set: { state: nextStateValue } },
+        { $set: { state: nextStateValue, updatedAt: new Date() } },
       );
       if (result.matchedCount !== 1) {
         throw new PersistenceInputError("Run state changed concurrently; reload it before continuing.");
@@ -447,6 +483,22 @@ export class MongoStore {
       throw new DatabasePersistenceError();
     }
     return { ...parsedCurrent, state: nextStateValue };
+  }
+
+  async recoverStaleRun(runIdValue: unknown, staleBeforeValue: unknown): Promise<boolean> {
+    const runId = parseIdentifier(runIdValue, "Run id");
+    if (!(staleBeforeValue instanceof Date) || Number.isNaN(staleBeforeValue.getTime())) {
+      throw new PersistenceInputError("A valid stale-run cutoff is required.");
+    }
+    try {
+      const result = await this.runs.updateOne(
+        { _id: runId, state: "running", updatedAt: { $lte: staleBeforeValue } },
+        { $set: { state: "uncertain", updatedAt: new Date() } },
+      );
+      return result.modifiedCount === 1;
+    } catch {
+      throw new DatabasePersistenceError();
+    }
   }
 
   async appendRunEvent(value: unknown): Promise<RunEvent> {

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { MongoClient } from "mongodb";
@@ -13,6 +13,7 @@ import {
   StaleCheckpointError,
 } from "../dist/mongo-store.js";
 import { parseConfiguration } from "../dist/config.js";
+import { resumeCsvAnalysisWorkflow, runCsvAnalysisWorkflow } from "../dist/workflows/csv-analysis-workflow.js";
 
 const testUri = process.env.TASKFORGE_TEST_MONGODB_URI;
 const cliPath = fileURLToPath(new URL("../dist/cli.js", import.meta.url));
@@ -151,6 +152,59 @@ test(
         StaleCheckpointError,
       );
       assert.equal(await store.getRunSummary(randomUUID()), null);
+
+      const csvBytes = Buffer.from("name,count\nalpha,2\nbeta,3\nalpha,2\n", "utf8");
+      const csvRun = await runCsvAnalysisWorkflow(store, csvBytes);
+      assert.equal(csvRun.run.state, "completed");
+      assert.equal(csvRun.analysis.rowCount, 3);
+      assert.equal(csvRun.analysis.duplicateRowCount, 1);
+      assert.equal(csvRun.run.summary.includes("alpha"), false);
+      assert.equal((await store.getRunEvents(csvRun.run.runId)).some((event) => event.type === "run_finished"), true);
+
+      const pendingRunId = randomUUID();
+      const pendingInputHash = createHash("sha256").update(csvBytes).digest("hex");
+      const workflowStateHash = createHash("sha256").update("taskforge:csv-analyze:v1").digest("hex");
+      await store.saveRunSummary({ runId: pendingRunId, workflowId: "csv-analyze", summary: "Interrupted fixture run." });
+      await store.updateRunState(pendingRunId, "running");
+      await rawClient.db().collection("runs").updateOne(
+        { _id: pendingRunId },
+        { $set: { updatedAt: new Date(Date.now() - 3 * 60 * 1000) } },
+      );
+      await store.saveRunCheckpoint({
+        runId: pendingRunId,
+        version: 1,
+        inputHash: pendingInputHash,
+        stateHash: workflowStateHash,
+        completedStepIds: [],
+        pendingStepId: "analyze",
+      });
+      await assert.rejects(resumeCsvAnalysisWorkflow(store, pendingRunId, Buffer.from("changed")), StaleCheckpointError);
+      const resumedCsvRun = await resumeCsvAnalysisWorkflow(store, pendingRunId, csvBytes);
+      assert.equal(resumedCsvRun.resumed, true);
+      assert.equal(resumedCsvRun.run.state, "completed");
+      assert.equal(resumedCsvRun.analysis.rowCount, 3);
+
+      const history = await store.listRunSummaries();
+      assert.equal(history.some((item) => item.runId === csvRun.run.runId), true);
+      assert.equal(history.some((item) => item.runId === pendingRunId), true);
+      const historyEnvironment = {};
+      for (const key of ["PATH", "SystemRoot", "WINDIR", "TEMP", "TMP"]) {
+        const value = process.env[key];
+        if (typeof value === "string") {
+          historyEnvironment[key] = value;
+        }
+      }
+      historyEnvironment.TASKFORGE_MONGODB_URI = isolatedUri;
+      const historyCommand = spawnSync(process.execPath, [cliPath, "history", "list"], {
+        encoding: "utf8",
+        env: historyEnvironment,
+        cwd: tmpdir(),
+      });
+      assert.equal(historyCommand.error, undefined);
+      assert.equal(historyCommand.status, 0);
+      assert.match(historyCommand.stdout, new RegExp(csvRun.run.runId));
+      assert.doesNotMatch(historyCommand.stdout, /alpha/u);
+
       await rawClient.db().collection("runs").insertOne({
         _id: malformedRunId,
         runId: malformedRunId,
