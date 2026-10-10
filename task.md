@@ -94,6 +94,10 @@ This file is the execution status source. Statuses describe verified work only. 
 
 **Acceptance checks:** Another developer runs documented scenarios and all required checks are recorded. Release by clone first. npm publication requires tarball consumer verification and explicit publication authorization; check package naming before release.
 
+## Prerequisite checklist milestone
+
+**Status: COMPLETE (documentation only).** Added root `setup-checklist.md` and placeholder-only `.env.example` after inspecting the current plans, configuration, package state, tool/service presence and official setup docs. Confirmed `.env` is absent and ignored; only `TASKFORGE_MONGODB_URI` is implemented; Phase 2 remains BLOCKED pending MongoDB configuration and a TaskForge Groq key. No credentials were read or changed, no packages/services were installed or started, and no provider calls were made. Exact setup choices and owner actions are in the checklist. `git diff --check` and placeholder/ignore review are documentation checks; no runtime tests were run.
+
 ## Recovery
 
 - **Current phase/subphase:** Phase 1 COMPLETE; Phase 2 BLOCKED before implementation pending TaskForge Groq key setup and Ollama setup.
