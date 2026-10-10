@@ -80,7 +80,15 @@ Implemented explicit realpath-resolved root approval, read/write path checks, se
 
 **Checks:** `npm run typecheck` passed; `npm test` passed (28 passed, 1 skipped: the dedicated MongoDB integration lacked its test URI). Approved-root traversal, secret denial, junction escape, content-change invalidation, junction replacement invalidation and preview limits passed.
 
-**Pending:** Wire approval tokens to actual mutation tools only after their preview/approval contract is integrated. Persist events and checkpoints after MongoDB URI correction. This foundation alone does not authorize filesystem actions.
+**Pending:** Wire approval tokens to actual mutation tools only after their preview/approval contract is integrated. This foundation alone does not authorize filesystem actions.
+
+#### Phase 3.2 — MongoDB run state, events and checkpoints — COMPLETE (persistence foundation)
+
+Fixed `MongoStore.connect` to validate the MongoDB URI independently from the already-normalized provider object. Added validated run-state transitions, typed metadata-only events with stable per-run sequence and idempotency IDs, atomic per-run limits (300 events / 5 MiB budget), redacted/truncated run summaries, and version-1 checkpoints with input/state hash matching. Event payloads reject arbitrary fields, so chat text and tool outputs are not persisted by this API. Stale checkpoints and terminal runs fail closed. Approval tokens are not persisted.
+
+**Checks:** `npm run typecheck` passed. `npm test` passed with a loopback-only test URI to the running local MongoDB service (45 passed, 0 skipped, 0 failed). The integration used a unique database name and dropped that database after run-summary CRUD, redaction, state transitions, event ordering/idempotency/budget, checkpoint round-trip/staleness and doctor connectivity checks. `node dist/cli.js config` passed with redacted output. `node dist/cli.js doctor` passed against a scratch path on local MongoDB; the corrected `.env` URI itself passes syntax validation but remained unreachable even outside the sandbox.
+
+**Pending:** Connect these store primitives to the future workflow/orchestrator and actual resume CLI. The caller must recompute current input/state hashes and request fresh approvals before resuming; the store does not itself inspect files or execute workflows.
 
 ### Phase 4 — Files, data and report adapters — IN PROGRESS
 
@@ -120,7 +128,13 @@ Added `pdfjs-dist` and a parser that accepts caller-supplied PDF bytes, extracts
 
 **Pending:** Review the PDF.js dependency at release and validate file access/integrity through the integrated Phase 3 boundary. No OCR is implied.
 
-**DOCX/XLSX dependency review:** DOCX/XLSX parsers remain pending. A Mammoth trial install produced three moderate npm audit findings in its dependency tree, so the package was removed before integration. ExcelJS has not been installed or reviewed. Select a parser only after its archive expansion, memory bounds, and dependency advisories are acceptable.
+#### Phase 4.5 — Bounded XLSX parsing \u2014 COMPLETE (pure byte input)
+
+Added ExcelJS and a Yauzl ZIP preflight with entry count, per-entry and total expansion, path, encryption, symlink, duplicate-entry, worksheet-size, workbook complexity, cell-count, scalar-value and output-character limits. Formula-bearing and unsupported cell types fail closed; no filesystem access or formula evaluation is performed. ExcelJS 4.4.0 uses UUID 8 transitively, so a project-local UUID 11 override removes the reviewed advisory; installation audit reported zero vulnerabilities. Mammoth was trialed and removed after three moderate findings in its dependency tree (including unpatched sprintf-js); DOCX remains unimplemented pending a safer evaluated parser choice.
+
+**Checks:** `npm run typecheck` passed; full `npm test` passed against the running local MongoDB service (45 passed, 0 skipped, 0 failed), including synthetic/malformed/oversized/formula workbook contracts. `npm audit` reported zero vulnerabilities after the UUID override.
+
+**Pending:** DOCX parser selection and integrated approved-root file workflow/artifact persistence; spreadsheet formula values are deliberately unsupported.
 
 ### Phase 5 — Software workflow — NOT STARTED
 
@@ -148,17 +162,18 @@ Added `pdfjs-dist` and a parser that accepts caller-supplied PDF bytes, extracts
 
 ## Prerequisite checklist milestone
 
-**Status: COMPLETE (documentation and prerequisites).** Added root `setup-checklist.md` and placeholder-only `.env.example`; the real `.env` remains ignored. Inspected configuration and credential presence without printing or changing values. MongoDB service ping and live synthetic Groq model-check pass, but the configured MongoDB URI lacks the explicit database path required by the application. PDFKit and PDF.js are installed; CSV/PDF/TXT/Markdown pure-input cores pass. No Ollama installation or model download has been performed. Exact choices and owner actions are in the checklist.
+**Status: COMPLETE (documentation and prerequisites).** Added root `setup-checklist.md` and placeholder-only `.env.example`; the real `.env` remains ignored. Inspected configuration and credential presence without printing or changing values. The corrected MongoDB URI passes validation; its configured endpoint is unreachable, while the local MongoDB service responds to ping and passes isolated persistence integration checks. The synthetic Groq model-check passes. PDFKit and PDF.js are installed; CSV/PDF/TXT/Markdown pure-input cores pass. Ollama has not been installed and no model has been downloaded. Exact choices and owner actions are in the checklist.
 
 ## Recovery
 
-- **Current phase/subphase:** Phase 2.1 COMPLETE for online and mocked paths; Phase 2.2 live Ollama verification is owner-deferred until tonight. Phase 2 remains IN PROGRESS. Phase 3.1 approved-root and preview foundation is COMPLETE; database-backed events/resume remain pending. Phase 4.1 CSV analysis, 4.2 in-memory PDF rendering, 4.3 TXT/Markdown parsing, and 4.4 text-based PDF extraction cores are COMPLETE; DOCX/XLSX parsers and integrated file workflows remain pending. MongoDB URI needs an explicit database path before `config`/`doctor` database checks can pass.
+- **Current phase/subphase:** Phase 2.1 COMPLETE for online and mocked paths; Phase 2.2 live Ollama verification is owner-deferred until tonight. Phase 2 remains IN PROGRESS. Phase 3.1 approved-root/previews and Phase 3.2 MongoDB persistence primitives are COMPLETE; workflow/resume CLI wiring and database connectivity through the configured endpoint remain pending. Phase 4.1 CSV analysis, 4.2 in-memory PDF rendering, 4.3 TXT/Markdown parsing, and 4.4 text-based PDF extraction cores are COMPLETE; Phase 4.5 XLSX parsing is verified; DOCX parser selection and integrated file workflows remain pending.
 - **Last completed work:** Phase 1.4 checkpoint `fda8566`; Phase 2 provider/tool-loop implementation, mock contracts and live synthetic Groq tool call.
 - **Checks performed:** Phase 1.1: `npm ci`; typecheck/build; built CLI help/version; package version parity; invalid-argument error and no argument echo; packed Windows consumer and `taskforge.cmd`; review; `git diff --check`. Phase 1.2: `npm ci`; typecheck; tests (8 passed); missing/malformed config exit behavior and redaction; review; diff check. Phase 1.3: `npm ci`; typecheck/build; 10 tests passed against isolated disposable MongoDB; persistence and unavailable-server paths; review; diff check. Phase 1.4: clean `npm ci`; typecheck/build; Windows help/version/config/doctor smoke checks; all 12 tests passed with no skips against isolated disposable MongoDB; doctor success plus missing/unavailable failure paths and redaction; review; `git diff --check`. Registered MongoDB service remains stopped and untouched; no existing connection value was read or reused.
 - **Verified commands/results:** `npm run typecheck` passed; `npm test` passed (21 passed, 1 skipped dedicated MongoDB integration; test command builds). `node dist/cli.js model-check` passed against Groq (1 read-only synthetic tool action, 2 model requests). Safe `mongosh` ping returned `1`; application URI validation failed without revealing the connection string. `git diff --check` must pass before checkpointing.
 - **Phase 3.1 checks:** `npm run typecheck` passed; `npm test` passed at that checkpoint (28 passed, 1 skipped dedicated MongoDB integration). Junction-based escape and changed-target checks passed on Windows.
+- **Phase 3.2 checks:** `npm run typecheck` passed; full `npm test` passed against a unique loopback test database (45 passed, 0 skipped). Database integration verified redaction, status transitions, event idempotency/order/limit, checkpoint hash matching/staleness, and doctor connectivity; the unique database was dropped afterward.
 - **Phase 4.1 checks:** `npm run typecheck` passed; `npm test` passed (33 passed, 1 skipped dedicated MongoDB integration).
 - **Phase 4.2 checks:** `npm run typecheck` passed; `npm test` passed (36 passed, 1 skipped dedicated MongoDB integration).
 - **Phase 4.3 checks:** `npm run typecheck` passed; `npm test` passed (39 passed, 1 skipped dedicated MongoDB integration).
 - **Phase 4.4 checks:** `npm run typecheck` passed; `npm test` passed (41 passed, 1 skipped dedicated MongoDB integration).
-- **Outstanding:** Ollama installation/model pull and live local evaluation are explicitly deferred until tonight. Correct the MongoDB URI database path in ignored `.env` without sharing its value. Then verify config/doctor and database-dependent workflows. Continue independent work where prerequisites pass; no push.
+- **Outstanding:** Ollama installation/model pull and live local evaluation are explicitly deferred until tonight. The corrected configured MongoDB URI validates but its endpoint cannot be reached from this environment; owner action is needed only if that configured host should be reachable here. Local MongoDB-backed persistence is verified. DOCX parser selection remains unresolved; Mammoth was removed after its dependency audit findings. Continue independent work where prerequisites pass; no push.

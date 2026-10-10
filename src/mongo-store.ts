@@ -7,9 +7,50 @@ export interface RunSummaryInput {
   readonly summary: string;
 }
 
+export type RunState = "created" | "running" | "completed" | "failed" | "cancelled" | "uncertain";
+
 export interface RunSummary extends RunSummaryInput {
-  readonly state: "created";
+  readonly state: RunState;
   readonly createdAt: Date;
+}
+
+export type RunEventType =
+  | "run_started"
+  | "step_started"
+  | "step_finished"
+  | "tool_intent"
+  | "tool_finished"
+  | "approval_required"
+  | "run_paused"
+  | "run_resumed"
+  | "run_finished"
+  | "run_failed"
+  | "run_cancelled";
+
+export interface RunEventInput {
+  readonly runId: string;
+  readonly eventId: string;
+  readonly type: RunEventType;
+  readonly stepId?: string;
+  readonly toolName?: string;
+}
+
+export interface RunEvent extends RunEventInput {
+  readonly sequence: number;
+  readonly createdAt: Date;
+}
+
+export interface RunCheckpointInput {
+  readonly runId: string;
+  readonly version: 1;
+  readonly inputHash: string;
+  readonly stateHash: string;
+  readonly completedStepIds: readonly string[];
+  readonly pendingStepId?: string;
+}
+
+export interface RunCheckpoint extends RunCheckpointInput {
+  readonly updatedAt: Date;
 }
 
 interface StoredRunSummary extends Document {
@@ -17,9 +58,62 @@ interface StoredRunSummary extends Document {
   readonly runId: string;
   readonly workflowId: string;
   readonly summary: string;
-  readonly state: "created";
+  readonly state: RunState;
+  readonly createdAt: Date;
+  readonly eventCount?: number;
+  readonly eventBytes?: number;
+}
+
+interface StoredRunEvent extends Document {
+  readonly _id: string;
+  readonly runId: string;
+  readonly eventId: string;
+  readonly type: RunEventType;
+  readonly sequence: number;
+  readonly stepId?: string;
+  readonly toolName?: string;
   readonly createdAt: Date;
 }
+
+interface StoredRunCheckpoint extends Document {
+  readonly _id: string;
+  readonly runId: string;
+  readonly version: 1;
+  readonly inputHash: string;
+  readonly stateHash: string;
+  readonly completedStepIds: string[];
+  readonly pendingStepId?: string;
+  readonly updatedAt: Date;
+}
+
+const MAX_EVENTS_PER_RUN = 300;
+const MAX_EVENT_BYTES_PER_RUN = 5 * 1024 * 1024;
+const MAX_EVENT_BYTES = 2 * 1024;
+const MAX_CHECKPOINT_STEPS = 256;
+const MAX_CHECKPOINT_BYTES = 64 * 1024;
+const MAX_RUN_SUMMARY_CHARACTERS = 4_000;
+const EVENT_TYPES: ReadonlySet<string> = new Set([
+  "run_started",
+  "step_started",
+  "step_finished",
+  "tool_intent",
+  "tool_finished",
+  "approval_required",
+  "run_paused",
+  "run_resumed",
+  "run_finished",
+  "run_failed",
+  "run_cancelled",
+]);
+const TERMINAL_STATES = new Set<RunState>(["completed", "failed", "cancelled"]);
+const ALLOWED_RUN_TRANSITIONS: Readonly<Record<RunState, ReadonlySet<RunState>>> = {
+  created: new Set(["running", "failed", "cancelled", "uncertain"]),
+  running: new Set(["completed", "failed", "cancelled", "uncertain"]),
+  completed: new Set(),
+  failed: new Set(),
+  cancelled: new Set(),
+  uncertain: new Set(["running", "failed", "cancelled"]),
+};
 
 export class DatabaseConnectionError extends Error {
   constructor() {
@@ -61,17 +155,167 @@ function parseRunSummaryInput(value: unknown): RunSummaryInput {
   const runId = value["runId"];
   const workflowId = value["workflowId"];
   const summary = value["summary"];
-  if (typeof runId !== "string" || runId.trim().length === 0) {
-    throw new PersistenceInputError("Run summary requires a non-empty runId.");
-  }
-  if (typeof workflowId !== "string" || workflowId.trim().length === 0) {
-    throw new PersistenceInputError("Run summary requires a non-empty workflowId.");
-  }
   if (typeof summary !== "string") {
     throw new PersistenceInputError("Run summary requires a string summary.");
   }
 
-  return { runId, workflowId, summary };
+  return {
+    runId: parseIdentifier(runId, "Run summary runId"),
+    workflowId: parseIdentifier(workflowId, "Run summary workflowId"),
+    summary: redactSensitiveText(summary.slice(0, MAX_RUN_SUMMARY_CHARACTERS)).slice(0, MAX_RUN_SUMMARY_CHARACTERS),
+  };
+}
+
+function redactSensitiveText(value: string): string {
+  return value
+    .replace(/\b(?:mongodb(?:\+srv)?|https?):\/\/[^/\s:@]+:[^@\s/]+@[^\s]+/giu, "[REDACTED_CONNECTION]")
+    .replace(/\b(?:api[_-]?key|token|password|secret|authorization)\s*[:=]\s*[^\s,;.]+/giu, (match) => {
+      const separatorIndex = match.search(/[:=]/u);
+      return `${match.slice(0, separatorIndex + 1)}[REDACTED]`;
+    })
+    .replace(/\bBearer\s+[^\s,;]+/giu, "Bearer [REDACTED]")
+    .replace(/\b(?:gsk_[A-Za-z0-9_-]{8,}|gh[pousr]_[A-Za-z0-9_]{8,}|github_pat_[A-Za-z0-9_]{8,}|sk-[A-Za-z0-9_-]{8,}|xox[baprs]-[A-Za-z0-9-]{8,})\b/giu, "[REDACTED]");
+}
+
+function parseIdentifier(value: unknown, label: string): string {
+  if (typeof value !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u.test(value)) {
+    throw new PersistenceInputError(`${label} must be a bounded identifier.`);
+  }
+  if (/(?:password|secret|token|api[_-]?key|gsk_|gh[pousr]_|github_pat_|sk-)/iu.test(value)) {
+    throw new PersistenceInputError(`${label} cannot contain credential-like values.`);
+  }
+  return value;
+}
+
+function isRunEventType(value: string): value is RunEventType {
+  return EVENT_TYPES.has(value);
+}
+
+function parseRunEventInput(value: unknown): RunEventInput {
+  if (!isRecord(value)) {
+    throw new PersistenceInputError("Run event must be an object.");
+  }
+  const allowedKeys = new Set(["runId", "eventId", "type", "stepId", "toolName"]);
+  if (Object.keys(value).some((key) => !allowedKeys.has(key))) {
+    throw new PersistenceInputError("Run event contains unsupported fields.");
+  }
+  const runId = parseIdentifier(value["runId"], "Run event runId");
+  const eventId = parseIdentifier(value["eventId"], "Run event eventId");
+  const type = value["type"];
+  if (typeof type !== "string" || !isRunEventType(type)) {
+    throw new PersistenceInputError("Run event type is unsupported.");
+  }
+  const stepIdValue = value["stepId"];
+  const toolNameValue = value["toolName"];
+  const stepId = stepIdValue === undefined ? undefined : parseIdentifier(stepIdValue, "Run event stepId");
+  const toolName = toolNameValue === undefined ? undefined : parseIdentifier(toolNameValue, "Run event toolName");
+  return {
+    runId,
+    eventId,
+    type,
+    ...(stepId === undefined ? {} : { stepId }),
+    ...(toolName === undefined ? {} : { toolName }),
+  };
+}
+
+function isRunState(value: unknown): value is RunState {
+  return value === "created" || value === "running" || value === "completed" ||
+    value === "failed" || value === "cancelled" || value === "uncertain";
+}
+
+function parseHash(value: unknown, label: string): string {
+  if (typeof value !== "string" || !/^[a-f0-9]{64}$/u.test(value)) {
+    throw new PersistenceInputError(`${label} must be a SHA-256 hex digest.`);
+  }
+  return value;
+}
+
+function parseRunCheckpointInput(value: unknown): RunCheckpointInput {
+  if (!isRecord(value)) {
+    throw new PersistenceInputError("Run checkpoint must be an object.");
+  }
+  const allowedKeys = new Set(["runId", "version", "inputHash", "stateHash", "completedStepIds", "pendingStepId"]);
+  if (Object.keys(value).some((key) => !allowedKeys.has(key))) {
+    throw new PersistenceInputError("Run checkpoint contains unsupported fields.");
+  }
+  const runId = parseIdentifier(value["runId"], "Run checkpoint runId");
+  const version = value["version"];
+  const inputHash = parseHash(value["inputHash"], "Run checkpoint inputHash");
+  const stateHash = parseHash(value["stateHash"], "Run checkpoint stateHash");
+  const stepValues = value["completedStepIds"];
+  const pendingStepValue = value["pendingStepId"];
+  if (version !== 1 || !Array.isArray(stepValues) || stepValues.length > MAX_CHECKPOINT_STEPS) {
+    throw new PersistenceInputError("Run checkpoint version or completed steps are invalid.");
+  }
+  const completedStepIds = stepValues.map((stepId) => parseIdentifier(stepId, "Completed stepId"));
+  if (new Set(completedStepIds).size !== completedStepIds.length) {
+    throw new PersistenceInputError("Run checkpoint contains duplicate completed steps.");
+  }
+  const pendingStepId = pendingStepValue === undefined
+    ? undefined
+    : parseIdentifier(pendingStepValue, "Pending stepId");
+  const normalized: RunCheckpointInput = {
+    runId,
+    version: 1,
+    inputHash,
+    stateHash,
+    completedStepIds,
+    ...(pendingStepId === undefined ? {} : { pendingStepId }),
+  };
+  if (Buffer.byteLength(JSON.stringify(normalized)) > MAX_CHECKPOINT_BYTES) {
+    throw new PersistenceInputError("Run checkpoint exceeds the supported size limit.");
+  }
+  return normalized;
+}
+
+function parseStoredRunEvent(value: unknown): RunEvent {
+  if (!isRecord(value)) {
+    throw new DatabasePersistenceError();
+  }
+  const event = parseRunEventInput({
+    runId: value["runId"],
+    eventId: value["eventId"],
+    type: value["type"],
+    ...(value["stepId"] === undefined ? {} : { stepId: value["stepId"] }),
+    ...(value["toolName"] === undefined ? {} : { toolName: value["toolName"] }),
+  });
+  const createdAt = value["createdAt"];
+  const sequence = value["sequence"];
+  if (
+    value["_id"] !== `${event.runId}:${event.eventId}` ||
+    typeof sequence !== "number" || !Number.isSafeInteger(sequence) || sequence < 1 ||
+    !(createdAt instanceof Date) ||
+    Number.isNaN(createdAt.getTime())
+  ) {
+    throw new DatabasePersistenceError();
+  }
+  return { ...event, sequence, createdAt };
+}
+
+function parseStoredRunCheckpoint(value: unknown): RunCheckpoint {
+  if (!isRecord(value)) {
+    throw new DatabasePersistenceError();
+  }
+  const checkpoint = parseRunCheckpointInput({
+    runId: value["runId"],
+    version: value["version"],
+    inputHash: value["inputHash"],
+    stateHash: value["stateHash"],
+    completedStepIds: value["completedStepIds"],
+    ...(value["pendingStepId"] === undefined ? {} : { pendingStepId: value["pendingStepId"] }),
+  });
+  const updatedAt = value["updatedAt"];
+  if (value["_id"] !== checkpoint.runId || !(updatedAt instanceof Date) || Number.isNaN(updatedAt.getTime())) {
+    throw new DatabasePersistenceError();
+  }
+  return { ...checkpoint, updatedAt };
+}
+
+export class StaleCheckpointError extends Error {
+  constructor() {
+    super("Run checkpoint is stale because its inputs or state have changed.");
+    this.name = "StaleCheckpointError";
+  }
 }
 
 function parseStoredRunSummary(value: unknown): RunSummary {
@@ -92,7 +336,7 @@ function parseStoredRunSummary(value: unknown): RunSummary {
     typeof workflowId !== "string" ||
     workflowId.trim().length === 0 ||
     typeof summary !== "string" ||
-    state !== "created" ||
+    !isRunState(state) ||
     !(createdAt instanceof Date) ||
     Number.isNaN(createdAt.getTime())
   ) {
@@ -111,14 +355,24 @@ function parseStoredRunSummary(value: unknown): RunSummary {
 export class MongoStore {
   private readonly client: MongoClient;
   private readonly runs: Collection<StoredRunSummary>;
+  private readonly events: Collection<StoredRunEvent>;
+  private readonly checkpoints: Collection<StoredRunCheckpoint>;
 
   private constructor(client: MongoClient) {
     this.client = client;
-    this.runs = client.db().collection<StoredRunSummary>("runs");
+    const database = client.db();
+    this.runs = database.collection<StoredRunSummary>("runs");
+    this.events = database.collection<StoredRunEvent>("run_events");
+    this.checkpoints = database.collection<StoredRunCheckpoint>("run_checkpoints");
   }
 
   static async connect(configuration: unknown): Promise<MongoStore> {
-    const validatedConfiguration = parseConfiguration(configuration);
+    if (!isRecord(configuration)) {
+      throw new PersistenceInputError("MongoDB connection configuration is invalid.");
+    }
+    const validatedConfiguration = parseConfiguration({
+      mongodbUri: configuration["mongodbUri"],
+    });
     let client: MongoClient | undefined;
 
     try {
@@ -147,6 +401,8 @@ export class MongoStore {
       ...input,
       state: "created",
       createdAt: new Date(),
+      eventCount: 0,
+      eventBytes: 0,
     };
 
     try {
@@ -156,6 +412,175 @@ export class MongoStore {
     }
 
     return parseStoredRunSummary(document);
+  }
+
+  async updateRunState(runIdValue: unknown, nextStateValue: unknown): Promise<RunSummary> {
+    const runId = parseIdentifier(runIdValue, "Run id");
+    if (!isRunState(nextStateValue)) {
+      throw new PersistenceInputError("Run state is unsupported.");
+    }
+    let current: StoredRunSummary | null;
+    try {
+      current = await this.runs.findOne({ _id: runId });
+    } catch {
+      throw new DatabasePersistenceError();
+    }
+    if (current === null) {
+      throw new PersistenceInputError("Run does not exist.");
+    }
+    const parsedCurrent = parseStoredRunSummary(current);
+    if (!ALLOWED_RUN_TRANSITIONS[parsedCurrent.state].has(nextStateValue)) {
+      throw new PersistenceInputError("Run state transition is not allowed.");
+    }
+    try {
+      const result = await this.runs.updateOne(
+        { _id: runId, state: parsedCurrent.state },
+        { $set: { state: nextStateValue } },
+      );
+      if (result.matchedCount !== 1) {
+        throw new PersistenceInputError("Run state changed concurrently; reload it before continuing.");
+      }
+    } catch (error) {
+      if (error instanceof PersistenceInputError) {
+        throw error;
+      }
+      throw new DatabasePersistenceError();
+    }
+    return { ...parsedCurrent, state: nextStateValue };
+  }
+
+  async appendRunEvent(value: unknown): Promise<RunEvent> {
+    const input = parseRunEventInput(value);
+    const eventId = `${input.runId}:${input.eventId}`;
+    const baseEvent = { ...input, createdAt: new Date() };
+    const eventBytes = Buffer.byteLength(JSON.stringify({ _id: eventId, ...baseEvent, sequence: MAX_EVENTS_PER_RUN }));
+    if (eventBytes > MAX_EVENT_BYTES) {
+      throw new PersistenceInputError("Run event exceeds the supported size limit.");
+    }
+
+    try {
+      const existing = await this.events.findOne({ _id: eventId });
+      if (existing !== null) {
+        const parsedExisting = parseStoredRunEvent(existing);
+        if (
+          parsedExisting.type !== input.type ||
+          parsedExisting.stepId !== input.stepId ||
+          parsedExisting.toolName !== input.toolName
+        ) {
+          throw new PersistenceInputError("Run event id was already used for different event data.");
+        }
+        return parsedExisting;
+      }
+      const reservation = await this.runs.findOneAndUpdate(
+        {
+          _id: input.runId,
+          $expr: {
+            $and: [
+              { $lt: [{ $ifNull: ["$eventCount", 0] }, MAX_EVENTS_PER_RUN] },
+              {
+                $lte: [
+                  { $add: [{ $ifNull: ["$eventBytes", 0] }, eventBytes] },
+                  MAX_EVENT_BYTES_PER_RUN,
+                ],
+              },
+            ],
+          },
+        },
+        { $inc: { eventCount: 1, eventBytes } },
+        { returnDocument: "after" },
+      );
+      if (reservation === null || typeof reservation["eventCount"] !== "number") {
+        throw new PersistenceInputError("Run event budget is exhausted or the run does not exist.");
+      }
+      const sequence = reservation["eventCount"];
+      const storedEvent: StoredRunEvent = {
+        _id: eventId,
+        ...input,
+        sequence,
+        createdAt: baseEvent.createdAt,
+      };
+      await this.events.insertOne(storedEvent);
+      return parseStoredRunEvent(storedEvent);
+    } catch (error) {
+      if (error instanceof PersistenceInputError) {
+        throw error;
+      }
+      throw new DatabasePersistenceError();
+    }
+  }
+
+  async getRunEvents(runIdValue: unknown): Promise<readonly RunEvent[]> {
+    const runId = parseIdentifier(runIdValue, "Run id");
+    try {
+      const documents = await this.events
+        .find({ runId })
+        .sort({ sequence: 1 })
+        .limit(MAX_EVENTS_PER_RUN)
+        .toArray();
+      return documents.map((document) => parseStoredRunEvent(document));
+    } catch {
+      throw new DatabasePersistenceError();
+    }
+  }
+
+  async saveRunCheckpoint(value: unknown): Promise<RunCheckpoint> {
+    const input = parseRunCheckpointInput(value);
+    let run: StoredRunSummary | null;
+    try {
+      run = await this.runs.findOne({ _id: input.runId });
+    } catch {
+      throw new DatabasePersistenceError();
+    }
+    if (run === null || !isRunState(run.state) || TERMINAL_STATES.has(run.state)) {
+      throw new PersistenceInputError("A checkpoint can only be saved for an active run.");
+    }
+    const checkpoint: RunCheckpoint = { ...input, updatedAt: new Date() };
+    const document: StoredRunCheckpoint = {
+      _id: input.runId,
+      ...input,
+      completedStepIds: [...input.completedStepIds],
+      updatedAt: checkpoint.updatedAt,
+    };
+    try {
+      await this.checkpoints.replaceOne({ _id: input.runId }, document, { upsert: true });
+      return parseStoredRunCheckpoint(document);
+    } catch (error) {
+      if (error instanceof PersistenceInputError) {
+        throw error;
+      }
+      throw new DatabasePersistenceError();
+    }
+  }
+
+  async loadRunCheckpoint(
+    runIdValue: unknown,
+    inputHashValue: unknown,
+    stateHashValue: unknown,
+  ): Promise<RunCheckpoint | null> {
+    const runId = parseIdentifier(runIdValue, "Run id");
+    const inputHash = parseHash(inputHashValue, "Current inputHash");
+    const stateHash = parseHash(stateHashValue, "Current stateHash");
+    let run: StoredRunSummary | null;
+    let document: StoredRunCheckpoint | null;
+    try {
+      [run, document] = await Promise.all([
+        this.runs.findOne({ _id: runId }),
+        this.checkpoints.findOne({ _id: runId }),
+      ]);
+    } catch {
+      throw new DatabasePersistenceError();
+    }
+    if (run === null || document === null) {
+      return null;
+    }
+    if (!isRunState(run.state) || TERMINAL_STATES.has(run.state)) {
+      throw new StaleCheckpointError();
+    }
+    const checkpoint = parseStoredRunCheckpoint(document);
+    if (checkpoint.inputHash !== inputHash || checkpoint.stateHash !== stateHash) {
+      throw new StaleCheckpointError();
+    }
+    return checkpoint;
   }
 
   async getRunSummary(runId: unknown): Promise<RunSummary | null> {
