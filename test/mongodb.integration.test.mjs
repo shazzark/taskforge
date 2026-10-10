@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
 import { createHash, randomUUID } from "node:crypto";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { MongoClient } from "mongodb";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
@@ -14,6 +16,8 @@ import {
 } from "../dist/mongo-store.js";
 import { parseConfiguration } from "../dist/config.js";
 import { resumeCsvAnalysisWorkflow, runCsvAnalysisWorkflow } from "../dist/workflows/csv-analysis-workflow.js";
+import { inspectRepository } from "../dist/workflows/repository-inspection-workflow.js";
+import { WorkspacePathPolicy } from "../dist/security/path-policy.js";
 
 const testUri = process.env.TASKFORGE_TEST_MONGODB_URI;
 const cliPath = fileURLToPath(new URL("../dist/cli.js", import.meta.url));
@@ -74,9 +78,26 @@ test(
     const rawClient = new MongoClient(isolatedUri);
     const runId = randomUUID();
     const malformedRunId = randomUUID();
+    const repositoryFixturePath = await mkdtemp(join(tmpdir(), "taskforge-repo-db-"));
 
     try {
       await rawClient.connect();
+      await mkdir(join(repositoryFixturePath, "src"));
+      await mkdir(join(repositoryFixturePath, "test"));
+      await writeFile(join(repositoryFixturePath, "src", "buggy.ts"), "export const result = 1;", "utf8");
+      await writeFile(join(repositoryFixturePath, "test", "buggy.test.ts"), "assert.equal(result, 2);", "utf8");
+      const repositoryPolicy = new WorkspacePathPolicy();
+      const approvedRepository = await repositoryPolicy.approveRoot(repositoryFixturePath);
+      const repositoryInspection = await inspectRepository(store, approvedRepository, repositoryPolicy);
+      const persistedRepositoryRun = await store.getRunSummary(repositoryInspection.run.runId);
+      const repositoryEvents = await store.getRunEvents(repositoryInspection.run.runId);
+      assert.equal(repositoryInspection.inventory.fileCount, 2);
+      assert.equal(repositoryInspection.inventory.sourceFileCount, 2);
+      assert.equal(repositoryInspection.inventory.testFileCount, 1);
+      assert.equal(persistedRepositoryRun?.state, "completed");
+      assert.equal(persistedRepositoryRun?.summary.includes(repositoryFixturePath), false);
+      assert.equal(repositoryEvents.some((event) => event.type === "run_finished"), true);
+
       const created = await store.saveRunSummary({
         runId,
         workflowId: "phase-1-3-smoke",
@@ -242,7 +263,11 @@ test(
         try {
           await rawClient.db().dropDatabase();
         } finally {
-          await rawClient.close();
+          try {
+            await rawClient.close();
+          } finally {
+            await rm(repositoryFixturePath, { recursive: true, force: true });
+          }
         }
       }
     }

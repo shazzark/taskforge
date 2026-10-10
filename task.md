@@ -64,7 +64,7 @@ This file is the execution status source. Statuses describe verified work only. 
 
 The adapter is implemented and mocked contract tests pass. Ollama is not installed and its endpoint/model are absent. Do not install it or download a model before the owner’s stated time. At the local trial, use the planned `qwen3:4b-q4_K_M` candidate with a pinned 4K context; record load/response time and peak memory. Do not claim hardware fit until measured.
 
-**MongoDB setup finding:** The MongoDB Windows service is running and a secret-free local `mongosh` ping returned `1`. The configured `TASKFORGE_MONGODB_URI` is present only in `.env` but fails the existing URI validator: it uses the SRV scheme and does not provide the explicit database path required by Phase 1. The URI value was not printed or changed. Owner must add/select an explicit database path in the ignored `.env`; until then `config`/`doctor` database validation is blocked. The Groq model check was separated from database loading and succeeded independently.
+**MongoDB setup finding (supersedes the earlier setup note):** The owner corrected the ignored `.env` URI using the locally stored database credentials; the commented credential lines were removed without printing values. `node dist/cli.js config` reports the redacted configuration as valid. A redacted outside-sandbox diagnostic resolved Atlas SRV DNS and all three nodes, then completed authenticated ping successfully. The sandbox-only DNS timeout is an environment restriction; no Atlas IP-list or database-user changes were made. Local MongoDB remains the isolated test backend.
 
 **Phase status:** Phase 2 remains IN PROGRESS; do not mark COMPLETE until Phase 2.2 live local-model evaluation and remaining integration checks pass. No provider switch or billing was enabled.
 
@@ -86,7 +86,7 @@ Implemented explicit realpath-resolved root approval, read/write path checks, se
 
 Fixed `MongoStore.connect` to validate the MongoDB URI independently from the already-normalized provider object. Added validated run-state transitions, typed metadata-only events with stable per-run sequence and idempotency IDs, atomic per-run limits (300 events / 5 MiB budget), redacted/truncated run summaries, and version-1 checkpoints with input/state hash matching. Event payloads reject arbitrary fields, so chat text and tool outputs are not persisted by this API. Stale checkpoints and terminal runs fail closed. Approval tokens are not persisted.
 
-**Checks:** `npm run typecheck` passed. `npm test` passed with a loopback-only test URI to the running local MongoDB service (45 passed, 0 skipped, 0 failed). The integration used a unique database name and dropped that database after run-summary CRUD, redaction, state transitions, event ordering/idempotency/budget, checkpoint round-trip/staleness and doctor connectivity checks. `node dist/cli.js config` passed with redacted output. `node dist/cli.js doctor` passed against a scratch path on local MongoDB; Atlas SRV DNS/TCP connectivity pass outside the sandbox, but the MongoDB handshake rejects authentication.
+**Checks:** `npm run typecheck` passed. `npm test` passed with a loopback-only test URI to the running local MongoDB service (45 passed, 0 skipped, 0 failed). The integration used a unique database name and dropped that database after run-summary CRUD, redaction, state transitions, event ordering/idempotency/budget, checkpoint round-trip/staleness and doctor connectivity checks. `node dist/cli.js config` passed with redacted output. `node dist/cli.js doctor` passed against a scratch path on local MongoDB. Atlas authenticated ping was subsequently verified outside the sandbox; the sandbox DNS timeout is environmental.
 
 #### Phase 3.3 - Persisted CSV workflow and resume CLI - COMPLETE (bounded read-only workflow)
 
@@ -94,7 +94,7 @@ Added `run csv-analyze --input <path>`, `resume <run-id> --input <path>`, and `h
 
 **Checks:** `npm run typecheck` passed; `npm test` passed against a unique loopback MongoDB database (47 passed, 0 skipped, 0 failed). Integration covered run summary redaction, events, analysis, history listing, stale-input rejection, crash-age recovery, resume completion, and cleanup of the isolated database.
 
-**Pending:** Other workflow families, durable approved-root configuration, mutation tools, and rich artifact persistence remain future subphases. The configured Atlas credential rejection prevents using that endpoint; local MongoDB integration passes.
+**Pending:** Other workflow families, durable approved-root configuration, mutation tools, and rich artifact persistence remain future subphases. Atlas authenticated ping and isolated local MongoDB integration both pass.
 
 ### Phase 4 — Files, data and report adapters — IN PROGRESS
 
@@ -150,11 +150,19 @@ Added a text-only DOCX parser using `fast-xml-parser` with bounded Yauzl ZIP pre
 
 **Pending:** Integrate DOCX reads through the same approved-root workflow; formatting, tracked changes, headers/footers, images, tables-as-structure, and legacy DOC are not claimed.
 
-### Phase 5 — Software workflow — NOT STARTED
+### Phase 5 — Software workflow — IN PROGRESS
 
 **Goal:** Support repository inspection, seeded bug investigation, approved patches, reviewed command execution and local diffs.
 
 **Acceptance checks:** Reproduce and correct a seeded failure, run relevant tests, and retain secret/path controls. Verify in a disposable repository. No Git push or deployment from the workflow.
+
+#### Phase 5.1 — Approved-root repository inventory — COMPLETE (metadata-only foundation)
+
+Added `run repo-inspect --root <directory>`. The command requires interactive approval for the exact root, then uses the in-memory path policy to inventory bounded directory/file metadata. It skips secret paths, symlinks, and common generated/dependency directories. It does not read file contents, run commands, modify files, or persist paths/content; MongoDB receives only redacted counts and typed lifecycle events. Limits cap traversal depth, directories, and files.
+
+**Checks:** `npm run typecheck` passed; full `npm test` passed against a loopback MongoDB URI, 49 passed, 0 skipped. Unit fixtures verified excluded dependency/VCS folders, `.env` denial, metadata redaction, unapproved-root rejection, and lifecycle events. Integration verified completed inventory run/events in a unique database that the test dropped afterward. Noninteractive CLI smoke stopped before root access. `git diff --check` passed.
+
+**Pending:** Source-content review and seeded-failure reproduction, approved patch previews/application, bounded reviewed command execution, and local diff workflow remain future subphases. This inventory is not bug diagnosis or a sandbox.
 
 ### Phase 6 — Browser, research and design observations — NOT STARTED
 
@@ -176,12 +184,12 @@ Added a text-only DOCX parser using `fast-xml-parser` with bounded Yauzl ZIP pre
 
 ## Prerequisite checklist milestone
 
-**Status: COMPLETE (documentation and prerequisites).** Added root `setup-checklist.md` and placeholder-only `.env.example`; the real `.env` remains ignored. Inspected configuration and credential presence without printing or changing values. The Atlas URI parses and reaches the cluster, but authentication is rejected; no IP access changes were made. Local MongoDB responds to ping and passes isolated workflow integration checks. The synthetic Groq model-check passes. PDFKit, PDF.js, XLSX and DOCX dependencies are installed and bounded parser cores pass. Ollama has not been installed and no model has been downloaded. Exact owner action and limitations are in the checklist.
+**Status: COMPLETE (documentation and prerequisites).** Added root `setup-checklist.md` and placeholder-only `.env.example`; the real `.env` remains ignored. The owner corrected the Atlas URI locally; redacted authenticated ping passes and no IP access-list or database-user changes were made. Local MongoDB responds to ping and passes isolated workflow integration checks. The synthetic Groq model-check passes. PDFKit, PDF.js, XLSX and DOCX dependencies are installed and bounded parser cores pass. Ollama has not been installed and no model has been downloaded. Remaining optional-provider choices and limitations are in the checklist.
 
 ## Recovery
 
-- **Current phase/subphase:** Phase 2.1 COMPLETE for online and mocked paths; Phase 2.2 live Ollama verification is owner-deferred until tonight. Phase 2 remains IN PROGRESS. Phase 3.1 approved-root/previews, 3.2 MongoDB persistence primitives, and 3.3 CSV run/history/resume CLI are COMPLETE as bounded foundations; other workflows and durable approval integration remain pending. Phase 4.1 CSV, 4.2 PDF rendering, 4.3 TXT/Markdown, 4.4 text-PDF, 4.5 XLSX, and 4.6 DOCX text parser cores are COMPLETE; integrated remaining file workflows/artifact persistence remain pending.
-- **Last completed work:** Phase 1.4 checkpoint `fda8566`; Phase 2 provider/tool-loop implementation, mock contracts and live synthetic Groq tool call.
+- **Current phase/subphase:** Phase 2.1 COMPLETE for online and mocked paths; Phase 2.2 live Ollama verification is owner-deferred until tonight. Phase 2 remains IN PROGRESS. Phase 3.1 approved-root/previews, 3.2 MongoDB persistence primitives, and 3.3 CSV run/history/resume CLI are COMPLETE as bounded foundations; other workflows and durable approval integration remain pending. Phase 4.1–4.6 bounded parser/render cores are COMPLETE; integrated remaining file workflows/artifact persistence remain pending. Phase 5.1 metadata-only repository inventory is COMPLETE; seeded bug reproduction and approved patch/command/diff subphases remain.
+- **Last completed work:** Phase 5.1 approved-root repository inventory, verified against the isolated local MongoDB integration; commit follows final diff review.
 - **Checks performed:** Phase 1.1: `npm ci`; typecheck/build; built CLI help/version; package version parity; invalid-argument error and no argument echo; packed Windows consumer and `taskforge.cmd`; review; `git diff --check`. Phase 1.2: `npm ci`; typecheck; tests (8 passed); missing/malformed config exit behavior and redaction; review; diff check. Phase 1.3: `npm ci`; typecheck/build; 10 tests passed against isolated disposable MongoDB; persistence and unavailable-server paths; review; diff check. Phase 1.4: clean `npm ci`; typecheck/build; Windows help/version/config/doctor smoke checks; all 12 tests passed with no skips against isolated disposable MongoDB; doctor success plus missing/unavailable failure paths and redaction; review; `git diff --check`. Registered MongoDB service remains stopped and untouched; no existing connection value was read or reused.
 - **Verified commands/results:** `npm run typecheck` passed; `npm test` passed (21 passed, 1 skipped dedicated MongoDB integration; test command builds). `node dist/cli.js model-check` passed against Groq (1 read-only synthetic tool action, 2 model requests). Safe `mongosh` ping returned `1`; application URI validation failed without revealing the connection string. `git diff --check` must pass before checkpointing.
 - **Phase 3.1 checks:** `npm run typecheck` passed; `npm test` passed at that checkpoint (28 passed, 1 skipped dedicated MongoDB integration). Junction-based escape and changed-target checks passed on Windows.
@@ -192,4 +200,5 @@ Added a text-only DOCX parser using `fast-xml-parser` with bounded Yauzl ZIP pre
 - **Phase 4.3 checks:** `npm run typecheck` passed; `npm test` passed (39 passed, 1 skipped dedicated MongoDB integration).
 - **Phase 4.4 checks:** `npm run typecheck` passed; `npm test` passed (41 passed, 1 skipped dedicated MongoDB integration).
 - **Phase 4.5/4.6 checks:** Bounded XLSX and DOCX extraction contract fixtures pass; package installation audits reported zero vulnerabilities. Full current `npm test` passed with local MongoDB (47 passed, 0 skipped).
-- **Outstanding:** Ollama installation/model pull and live local evaluation are explicitly deferred until tonight. Atlas SRV DNS and all three Atlas node TCP checks pass outside the sandbox; the MongoDB handshake rejects authentication. Owner action: privately verify the database username/password and `authSource`, or rotate the credential in Atlas and update ignored `.env` locally. No IP access-list change is indicated. Local MongoDB-backed workflows pass. Continue independent work; no push.
+- **Phase 5.1 checks:** `npm run typecheck` passed; `npm test` passed against a unique loopback MongoDB database (49 passed, 0 skipped, 0 failed). Integration verified the repository inventory summary and event lifecycle, then dropped the unique database and removed the temporary fixture. `node dist/cli.js run repo-inspect --root .` in a noninteractive process exited 2 before accessing the path. `git diff --check` passed.
+- **Outstanding:** Ollama installation/model pull and live local evaluation are explicitly deferred until the owner provides it tonight. Atlas SRV DNS resolved three nodes and authenticated ping succeeded outside the sandbox; no owner database or IP-list action remains. Local MongoDB-backed workflows pass. Continue independent work; no push.

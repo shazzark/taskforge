@@ -15,16 +15,18 @@ import { createModelProvider } from "./providers/create-provider.js";
 import { ModelProviderError } from "./providers/types.js";
 import { WorkspacePathPolicy } from "./security/path-policy.js";
 import { CsvWorkflowError, resumeCsvAnalysisWorkflow, runCsvAnalysisWorkflow } from "./workflows/csv-analysis-workflow.js";
+import { inspectRepository, RepositoryInspectionError } from "./workflows/repository-inspection-workflow.js";
 
 const helpText = `TaskForge ${packageJson.version} (early development)
 
-Usage: taskforge [--help | --version | config | doctor | model-check | chat | run csv-analyze --input <path> | resume <run-id> --input <path> | history list]
+Usage: taskforge [--help | --version | config | doctor | model-check | chat | run csv-analyze --input <path> | run repo-inspect --root <directory> | resume <run-id> --input <path> | history list]
 
 The config command validates local settings and prints a redacted summary.
 The doctor command checks configured MongoDB connectivity and reports available setup areas.
 The model-check command makes a synthetic read-only tool call through the selected model provider.
 The chat command opens a bounded interactive conversation with the selected provider.
 The csv-analyze workflow reads one explicitly approved CSV file and stores redacted run metadata.
+The repo-inspect workflow inventories one explicitly approved repository root without reading file contents or running commands.
 The resume command rechecks the input and workflow hashes, then resumes an uncertain CSV analysis.
 History list prints up to 50 redacted run summaries.
 `;
@@ -149,6 +151,53 @@ async function listRunHistory(): Promise<void> {
   }
   for (const run of runs) {
     process.stdout.write(`${run.runId}\t${run.state}\t${run.workflowId}\t${run.summary}\n`);
+  }
+}
+
+async function runRepositoryInspectionCommand(commandArgs: readonly string[]): Promise<void> {
+  if (
+    commandArgs.length !== 2 || commandArgs[0] !== "--root" ||
+    commandArgs[1] === undefined || commandArgs[1].trim().length === 0
+  ) {
+    process.stderr.write("Expected --root followed by a repository directory.\n");
+    process.exitCode = 1;
+    return;
+  }
+  if (!process.stdin.isTTY || !process.stdout.isTTY) {
+    process.stderr.write("Repository inspection requires an interactive terminal for explicit root approval.\n");
+    process.exitCode = 2;
+    return;
+  }
+
+  const requestedRoot = resolve(commandArgs[1]);
+  const consent = createInterface({ input: process.stdin, output: process.stdout });
+  let answer: string;
+  try {
+    answer = await consent.question(`Allow TaskForge to inventory this exact repository root? ${requestedRoot} [y/N] `);
+  } finally {
+    consent.close();
+  }
+  if (answer.trim().toLowerCase() !== "y") {
+    process.stdout.write("Repository inspection cancelled before access.\n");
+    return;
+  }
+
+  try {
+    const policy = new WorkspacePathPolicy();
+    const approvedRoot = await policy.approveRoot(requestedRoot);
+    const result = await withMongoStore((store) => inspectRepository(store, approvedRoot, policy));
+    if (result !== undefined) {
+      const inventory = result.inventory;
+      process.stdout.write(
+        `Run ${result.run.runId} completed: ${inventory.fileCount} files, ` +
+        `${inventory.sourceFileCount} source files, ${inventory.testFileCount} test-named files; ` +
+        `${inventory.skippedLinkCount} links skipped, ${inventory.deniedPathCount} secret paths skipped.\n`,
+      );
+    }
+  } catch (error: unknown) {
+    const message = error instanceof RepositoryInspectionError ? error.message : "Repository inspection failed safely.";
+    process.stderr.write(`Repository inspection failed: ${message}\n`);
+    process.exitCode = 3;
   }
 }
 
@@ -368,6 +417,8 @@ if (args.length === 0 || (args.length === 1 && (args[0] === "--help" || args[0] 
   await runChat();
 } else if (args.length >= 2 && args[0] === "run" && args[1] === "csv-analyze") {
   await runCsvWorkflowCommand(args.slice(2));
+} else if (args.length >= 2 && args[0] === "run" && args[1] === "repo-inspect") {
+  await runRepositoryInspectionCommand(args.slice(2));
 } else if (args.length >= 1 && args[0] === "resume") {
   const runId = args[1];
   if (runId === undefined || args.length < 3) {
