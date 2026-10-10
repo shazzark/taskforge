@@ -23,4 +23,6 @@ The CLI supports help, version output, `config`, `doctor`, `model-check`, `chat`
 
 `run draft --input <draft.json> --output <new.md>` creates a local Markdown GitHub issue or email draft from an approved JSON input, previews the content, and requires approval bound to a new output path and SHA-256 digest. It never contacts GitHub or an email service. Issue JSON uses `kind`, `repository`, `title`, and `body`, with optional `sourceIssueUrl`; email JSON uses `kind`, `subject`, and `body`, with optional `to`. As with other Node path-based artifact output, it does not protect against a hostile concurrent swap of the approved output directory.
 
+`run specialist-review --root <directory> --file <relative-path> [...]` locally reviews up to five approved source files, then asks separately before transfer. It runs up to two read-only specialist prompts and a parent review on the selected provider, shares one 40-request/30-action run budget, rejects tool calls and nested delegation, and stores no source or findings. All findings are unverified and need human review.
+
 Most planned software, document, browser, research, connection, scheduling, and specialist-agent workflows remain in progress. The only executable tool currently exposed by the model-check path is a fixed synthetic fixture.

@@ -14,7 +14,52 @@ export interface AgentTool {
 export interface AgentRunOptions {
   readonly maxModelRequests: number;
   readonly maxToolActions: number;
+  readonly budget?: AgentBudgetLedger;
   readonly signal?: AbortSignal;
+}
+
+export interface AgentBudgetSnapshot {
+  readonly modelRequests: number;
+  readonly toolActions: number;
+  readonly modelRequestsRemaining: number;
+  readonly toolActionsRemaining: number;
+}
+
+export class AgentBudgetLedger {
+  readonly maxModelRequests: number;
+  readonly maxToolActions: number;
+  private modelRequests = 0;
+  private toolActions = 0;
+
+  constructor(maxModelRequests = MAX_ALLOWED_MODEL_REQUESTS, maxToolActions = MAX_ALLOWED_TOOL_ACTIONS) {
+    if (!Number.isInteger(maxModelRequests) || maxModelRequests < 1 || maxModelRequests > MAX_ALLOWED_MODEL_REQUESTS ||
+        !Number.isInteger(maxToolActions) || maxToolActions < 0 || maxToolActions > MAX_ALLOWED_TOOL_ACTIONS) {
+      throw new AgentBudgetError();
+    }
+    this.maxModelRequests = maxModelRequests;
+    this.maxToolActions = maxToolActions;
+  }
+
+  consumeModelRequest(): boolean {
+    if (this.modelRequests >= this.maxModelRequests) return false;
+    this.modelRequests += 1;
+    return true;
+  }
+
+  consumeToolActions(count = 1): boolean {
+    if (!Number.isInteger(count) || count < 0 || this.toolActions + count > this.maxToolActions) return false;
+    this.toolActions += count;
+    return true;
+  }
+
+  snapshot(): AgentBudgetSnapshot {
+    return {
+      modelRequests: this.modelRequests,
+      toolActions: this.toolActions,
+      modelRequestsRemaining: this.maxModelRequests - this.modelRequests,
+      toolActionsRemaining: this.maxToolActions - this.toolActions,
+    };
+  }
 }
 
 export interface AgentRunResult {
@@ -61,6 +106,8 @@ export async function runToolLoop(
   }
 
   const messages: ProviderMessage[] = [...initialMessages];
+  const budget = options.budget ?? new AgentBudgetLedger(options.maxModelRequests, options.maxToolActions);
+  if (options.maxModelRequests > budget.maxModelRequests || options.maxToolActions > budget.maxToolActions) throw new AgentBudgetError();
   const toolsByName = new Map(tools.map((tool) => [tool.definition.name, tool]));
   if (toolsByName.size !== tools.length) {
     throw new AgentToolError();
@@ -78,6 +125,7 @@ export async function runToolLoop(
       messages,
       tools: definitions,
     };
+    if (!budget.consumeModelRequest()) throw new AgentBudgetError();
     const completion = options.signal === undefined
       ? await provider.complete(request)
       : await provider.complete(request, options.signal);
@@ -89,7 +137,7 @@ export async function runToolLoop(
         toolNames: calledToolNames,
       };
     }
-    if (toolActions + completion.toolCalls.length > options.maxToolActions) {
+    if (toolActions + completion.toolCalls.length > options.maxToolActions || !budget.consumeToolActions(completion.toolCalls.length)) {
       throw new AgentBudgetError();
     }
 

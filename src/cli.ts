@@ -5,7 +5,8 @@ import { open, realpath } from "node:fs/promises";
 import { dirname, extname, resolve } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { ConfigurationError, formatConfigurationSummary, loadConfiguration, loadProviderConfiguration } from "./config.js";
-import { AgentToolError, runToolLoop } from "./agent/tool-loop.js";
+import { AgentBudgetLedger, AgentToolError, runToolLoop } from "./agent/tool-loop.js";
+import { runSpecialistReview, type SpecialistTask, SpecialistReviewError } from "./agent/specialist-review.js";
 import {
   DatabaseConnectionError,
   DatabaseShutdownError,
@@ -30,7 +31,7 @@ import { escapeTerminalControls } from "./security/terminal-text.js";
 
 const helpText = `TaskForge ${packageJson.version} (early development)
 
-Usage: taskforge [--help | --version | config | doctor | model-check | chat | run csv-analyze --input <path> | run document-analyze --input <path> | run pdf-report --input <json> --output <new.pdf> | run draft --input <draft.json> --output <new.md> | run repo-inspect --root <directory> | run source-review --root <directory> --file <relative-path> [...] | run model-investigate --root <directory> --file <relative-path> [...] | run github-issues --repository <owner/name> | run file-patch --root <directory> --target <relative-path> --content-file <relative-path> | run git-diff --root <directory> | run software-check --root <directory> --check <node-test|typescript-check> | resume <run-id> --input <path> | history list]
+Usage: taskforge [--help | --version | config | doctor | model-check | chat | run csv-analyze --input <path> | run document-analyze --input <path> | run pdf-report --input <json> --output <new.pdf> | run draft --input <draft.json> --output <new.md> | run specialist-review --root <directory> --file <relative-path> [...] | run repo-inspect --root <directory> | run source-review --root <directory> --file <relative-path> [...] | run model-investigate --root <directory> --file <relative-path> [...] | run github-issues --repository <owner/name> | run file-patch --root <directory> --target <relative-path> --content-file <relative-path> | run git-diff --root <directory> | run software-check --root <directory> --check <node-test|typescript-check> | resume <run-id> --input <path> | history list]
 
 The config command validates local settings and prints a redacted summary.
 The doctor command checks configured MongoDB connectivity and reports available setup areas.
@@ -44,6 +45,7 @@ The git-diff workflow displays a bounded, locally redacted staged diff after exa
 The model-investigate workflow sends selected, heuristically redacted source to the configured model only after an additional explicit transfer confirmation; it runs no tools and persists no source or findings.
 The github-issues workflow reads at most 20 open issue titles from one public repository without a token; it excludes pull requests and writes nothing.
 The draft workflow creates a new local Markdown GitHub issue or email draft from an explicitly approved JSON input; it never contacts GitHub or an email service.
+The specialist-review workflow sends approved, heuristically redacted source excerpts to up to two read-only specialist prompts and asks the same configured model to review their findings; workers have no tools, cannot spawn workers, share one run-wide request/action budget, and do not persist source or findings.
 The document-analyze workflow parses one approved TXT, Markdown, text PDF, DOCX, or XLSX file and stores counts only.
 The pdf-report workflow renders an approved JSON report and creates a new approved PDF artifact after a content-bound confirmation.
 The software-check workflow runs only an explicitly approved Node test or TypeScript no-emit check in one approved root.
@@ -654,6 +656,121 @@ async function runModelInvestigationCommand(commandArgs: readonly string[]): Pro
   }
 }
 
+async function runSpecialistReviewCommand(commandArgs: readonly string[]): Promise<void> {
+  if (commandArgs.length < 4 || commandArgs[0] !== "--root" || commandArgs[1] === undefined) {
+    process.stderr.write("Expected --root <directory> --file <relative-path> [--file <relative-path> ...].\n");
+    process.exitCode = 1;
+    return;
+  }
+  const paths: string[] = [];
+  for (let index = 2; index < commandArgs.length;) {
+    const option = commandArgs[index];
+    const path = commandArgs[index + 1];
+    if (option !== "--file" || path === undefined) {
+      process.stderr.write("Each selected source file must use --file followed by a relative path.\n");
+      process.exitCode = 1;
+      return;
+    }
+    paths.push(path);
+    index += 2;
+  }
+  if (paths.length > 5) {
+    process.stderr.write("Select no more than five source files for specialist review.\n");
+    process.exitCode = 1;
+    return;
+  }
+  if (!process.stdin.isTTY || !process.stdout.isTTY) {
+    process.stderr.write("Specialist review requires interactive root, file-set, goal, and provider-transfer approval.\n");
+    process.exitCode = 2;
+    return;
+  }
+  let providerConfiguration;
+  try {
+    providerConfiguration = loadProviderConfiguration();
+  } catch (error: unknown) {
+    const message = error instanceof ConfigurationError ? error.message : "The selected model provider is not configured.";
+    process.stderr.write(`Specialist review setup error: ${message}\n`);
+    process.exitCode = 2;
+    return;
+  }
+  let rootPath: string;
+  try {
+    rootPath = await realpath(resolve(commandArgs[1]));
+  } catch {
+    process.stderr.write("The requested repository root could not be resolved.\n");
+    process.exitCode = 2;
+    return;
+  }
+  const rootConsent = createInterface({ input: process.stdin, output: process.stdout });
+  let rootAnswer: string;
+  try {
+    rootAnswer = await rootConsent.question(`Review these exact files locally before specialist transfer?\nRoot: ${rootPath}\nFiles: ${paths.join(", ")}\nSource is heuristically redacted. [y/N] `);
+  } finally {
+    rootConsent.close();
+  }
+  if (rootAnswer.trim().toLowerCase() !== "y") {
+    process.stdout.write("Specialist review cancelled before source access.\n");
+    return;
+  }
+  const controller = new AbortController();
+  const handleInterrupt = (): void => controller.abort();
+  process.once("SIGINT", handleInterrupt);
+  try {
+    const policy = new WorkspacePathPolicy();
+    const root = await policy.approveRoot(rootPath);
+    const files = await reviewSourceFiles(root, policy, paths);
+    const sourceBytes = files.reduce((total, file) => total + Buffer.byteLength(file.content, "utf8") + Buffer.byteLength(file.path, "utf8") + 64, 0);
+    if (files.length === 0 || files.length > 5 || sourceBytes > 24 * 1024) {
+      throw new SpecialistReviewError("Select 1 to 5 redacted source files within the 24 KiB model-input limit.");
+    }
+    for (const file of files) {
+      process.stdout.write(`\n--- REDACTED ${file.path} (${file.byteCount} bytes, ${file.lineCount} lines) ---\n${escapeTerminalControls(file.content)}\n`);
+    }
+    const goalConsent = createInterface({ input: process.stdin, output: process.stdout });
+    let goal: string;
+    try {
+      goal = (await goalConsent.question("What should the specialists investigate? ")).trim();
+    } finally {
+      goalConsent.close();
+    }
+    if (goal.length === 0 || Buffer.byteLength(goal, "utf8") > 2_000) throw new SpecialistReviewError("Provide a non-empty goal within 2,000 bytes.");
+    const roles: readonly SpecialistTask[] = [
+      { role: "repository-investigator", goal: "Find specific behavior or correctness risks supported by the selected source." },
+      { role: "reviewer", goal: "Independently challenge the first specialist's likely assumptions and check relevant boundaries." },
+    ];
+    const provider = createModelProvider(providerConfiguration);
+    const transferConsent = createInterface({ input: process.stdin, output: process.stdout });
+    let transferAnswer: string;
+    try {
+      transferAnswer = await transferConsent.question(
+        `Send these exact redacted excerpts and goal to ${providerConfiguration.kind} (${provider.model}) for up to two read-only specialists and one parent review? This command has a fresh run budget of 40 model requests and 30 tool actions (no tool actions are exposed here). No network integrations, persistence, or file writes are available. Redaction may miss secrets. [y/N] `,
+      );
+    } finally {
+      transferConsent.close();
+    }
+    if (transferAnswer.trim().toLowerCase() !== "y") {
+      process.stdout.write("Specialist review cancelled before provider transfer.\n");
+      return;
+    }
+    const ledger = new AgentBudgetLedger(40, 30);
+    const result = await runSpecialistReview(provider.provider, provider.model, goal, files.map((file) => `${file.path}\n${file.content}`).join("\n\n"), roles, ledger, controller.signal);
+    for (const worker of result.workers) {
+      process.stdout.write(`\nSpecialist ${worker.role}: ${worker.status}${worker.failureKind === undefined ? "" : ` (${worker.failureKind})`}\n${worker.findings ?? "No finding available."}\n`);
+    }
+    process.stdout.write(`\nParent review (${result.parentReviewStatus}${result.parentFailureKind === undefined ? "" : `, ${result.parentFailureKind}`}; unverified):\n${result.parentReview ?? "Not completed; inspect the specialist reports manually."}\n`);
+    process.stdout.write(`Budget used: ${result.budget.modelRequests} model requests, ${result.budget.toolActions} tool actions. No code changes or tests were performed by TaskForge.\n`);
+    if (result.parentReviewStatus !== "complete" || result.workers.some((worker) => worker.status !== "complete")) process.exitCode = 3;
+  } catch (error: unknown) {
+    const message = error instanceof ConfigurationError || error instanceof SpecialistReviewError || error instanceof ModelProviderError
+      ? error.message
+      : "Specialist review failed safely.";
+    process.stderr.write(`Specialist review failed: ${message}\n`);
+    process.exitCode = controller.signal.aborted ? 130 : 3;
+  } finally {
+    process.removeListener("SIGINT", handleInterrupt);
+  }
+}
+
 async function runGitHubIssuesCommand(commandArgs: readonly string[]): Promise<void> {
   if (commandArgs.length !== 2 || commandArgs[0] !== "--repository" || commandArgs[1] === undefined) {
     process.stderr.write("Expected --repository <owner/name>.\n");
@@ -978,6 +1095,8 @@ if (args.length === 0 || (args.length === 1 && (args[0] === "--help" || args[0] 
   await runGitHubIssuesCommand(args.slice(2));
 } else if (args.length >= 2 && args[0] === "run" && args[1] === "draft") {
   await runDraftCommand(args.slice(2));
+} else if (args.length >= 2 && args[0] === "run" && args[1] === "specialist-review") {
+  await runSpecialistReviewCommand(args.slice(2));
 } else if (args.length >= 1 && args[0] === "resume") {
   const runId = args[1];
   if (runId === undefined || args.length < 3) {
