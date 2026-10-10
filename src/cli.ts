@@ -25,10 +25,12 @@ import { prepareFilePatch, applyPreparedFilePatch, PatchApplicationError } from 
 import { GitDiffReviewError, listGitDiffFiles, readGitDiff } from "./software/git-diff-review.js";
 import { investigateSource, ModelInvestigationError } from "./software/model-investigation.js";
 import { GitHubReadError, readPublicIssues } from "./integrations/github-public-issues.js";
+import { DraftArtifactError, parseLocalDraftInput, previewTextArtifact, writeApprovedTextArtifact } from "./artifacts/drafts.js";
+import { escapeTerminalControls } from "./security/terminal-text.js";
 
 const helpText = `TaskForge ${packageJson.version} (early development)
 
-Usage: taskforge [--help | --version | config | doctor | model-check | chat | run csv-analyze --input <path> | run document-analyze --input <path> | run pdf-report --input <json> --output <new.pdf> | run repo-inspect --root <directory> | run source-review --root <directory> --file <relative-path> [...] | run model-investigate --root <directory> --file <relative-path> [...] | run github-issues --repository <owner/name> | run file-patch --root <directory> --target <relative-path> --content-file <relative-path> | run git-diff --root <directory> | run software-check --root <directory> --check <node-test|typescript-check> | resume <run-id> --input <path> | history list]
+Usage: taskforge [--help | --version | config | doctor | model-check | chat | run csv-analyze --input <path> | run document-analyze --input <path> | run pdf-report --input <json> --output <new.pdf> | run draft --input <draft.json> --output <new.md> | run repo-inspect --root <directory> | run source-review --root <directory> --file <relative-path> [...] | run model-investigate --root <directory> --file <relative-path> [...] | run github-issues --repository <owner/name> | run file-patch --root <directory> --target <relative-path> --content-file <relative-path> | run git-diff --root <directory> | run software-check --root <directory> --check <node-test|typescript-check> | resume <run-id> --input <path> | history list]
 
 The config command validates local settings and prints a redacted summary.
 The doctor command checks configured MongoDB connectivity and reports available setup areas.
@@ -41,6 +43,7 @@ The file-patch workflow shows redacted current and replacement text, then applie
 The git-diff workflow displays a bounded, locally redacted staged diff after exact root and file approval; it does not call a model or persist source.
 The model-investigate workflow sends selected, heuristically redacted source to the configured model only after an additional explicit transfer confirmation; it runs no tools and persists no source or findings.
 The github-issues workflow reads at most 20 open issue titles from one public repository without a token; it excludes pull requests and writes nothing.
+The draft workflow creates a new local Markdown GitHub issue or email draft from an explicitly approved JSON input; it never contacts GitHub or an email service.
 The document-analyze workflow parses one approved TXT, Markdown, text PDF, DOCX, or XLSX file and stores counts only.
 The pdf-report workflow renders an approved JSON report and creates a new approved PDF artifact after a content-bound confirmation.
 The software-check workflow runs only an explicitly approved Node test or TypeScript no-emit check in one approved root.
@@ -690,6 +693,55 @@ async function runGitHubIssuesCommand(commandArgs: readonly string[]): Promise<v
   }
 }
 
+async function runDraftCommand(commandArgs: readonly string[]): Promise<void> {
+  if (commandArgs.length !== 4 || commandArgs[0] !== "--input" || commandArgs[1] === undefined || commandArgs[2] !== "--output" || commandArgs[3] === undefined) {
+    process.stderr.write("Expected --input <draft.json> --output <new.md>.\n");
+    process.exitCode = 1;
+    return;
+  }
+  if (!process.stdin.isTTY || !process.stdout.isTTY) {
+    process.stderr.write("Draft creation requires an interactive terminal for input and create-only output approval.\n");
+    process.exitCode = 2;
+    return;
+  }
+  const inputBytes = await readApprovedInputFile(commandArgs[1]);
+  if (inputBytes === undefined) return;
+  let draft: unknown;
+  try {
+    draft = parseLocalDraftInput(JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(inputBytes)) as unknown);
+  } catch (error: unknown) {
+    process.stderr.write(`Draft input rejected: ${error instanceof DraftArtifactError ? error.message : "input must be valid UTF-8 JSON"}\n`);
+    process.exitCode = 3;
+    return;
+  }
+  const requestedOutput = resolve(commandArgs[3]);
+  try {
+    const policy = new WorkspacePathPolicy();
+    const outputRoot = await policy.approveRoot(dirname(requestedOutput));
+    const approvals = new ActionApprovalRegistry(policy);
+    const pending = await previewTextArtifact(draft, requestedOutput, outputRoot, policy, approvals);
+    process.stdout.write(`\n--- LOCAL DRAFT PREVIEW (heuristic redaction) ---\n${escapeTerminalControls(redactSourceForDisplay(pending.content))}\n`);
+    const consent = createInterface({ input: process.stdin, output: process.stdout });
+    let answer: string;
+    try {
+      answer = await consent.question(`Create this new local Markdown draft?\nPath: ${pending.preview.targetPath}\nBytes: ${Buffer.byteLength(pending.content, "utf8")}\nSHA-256: ${pending.digest}\nNo network request or email send will occur. [y/N] `);
+    } finally {
+      consent.close();
+    }
+    if (answer.trim().toLowerCase() !== "y") {
+      approvals.discard(pending.preview.previewId);
+      process.stdout.write("Draft creation cancelled before writing.\n");
+      return;
+    }
+    const approval = approvals.approve(pending.preview.previewId);
+    const written = await writeApprovedTextArtifact(pending, approval, outputRoot, policy, approvals);
+    process.stdout.write(`Local draft created: ${written.byteCount} bytes; SHA-256 ${written.sha256}.\n`);
+  } catch (error: unknown) {
+    process.stderr.write(`Draft creation failed: ${error instanceof DraftArtifactError ? error.message : "the artifact could not be created safely"}\n`);
+    process.exitCode = 3;
+  }
+}
+
 async function runDoctor(): Promise<void> {
   process.stdout.write("TaskForge doctor (early development)\n");
   let providerStatus = "not configured or invalid";
@@ -924,6 +976,8 @@ if (args.length === 0 || (args.length === 1 && (args[0] === "--help" || args[0] 
   await runModelInvestigationCommand(args.slice(2));
 } else if (args.length >= 2 && args[0] === "run" && args[1] === "github-issues") {
   await runGitHubIssuesCommand(args.slice(2));
+} else if (args.length >= 2 && args[0] === "run" && args[1] === "draft") {
+  await runDraftCommand(args.slice(2));
 } else if (args.length >= 1 && args[0] === "resume") {
   const runId = args[1];
   if (runId === undefined || args.length < 3) {
