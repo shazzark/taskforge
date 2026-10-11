@@ -286,6 +286,40 @@ test(
       const history = await store.listRunSummaries();
       assert.equal(history.some((item) => item.runId === csvRun.run.runId), true);
       assert.equal(history.some((item) => item.runId === pendingRunId), true);
+
+      const scheduleStart = new Date("2035-01-01T00:00:00.000Z");
+      const scheduleId = randomUUID();
+      await store.createSchedule({
+        scheduleId,
+        workflowId: "csv-analyze",
+        inputPath: join(softwareFixturePath, "fixture.csv"),
+        nextRunAt: scheduleStart,
+        intervalMinutes: 5,
+      });
+      const firstClaim = await store.claimDueSchedules(scheduleStart, 30_000);
+      assert.equal(firstClaim.length, 1);
+      assert.equal(firstClaim[0]?.occurrence.status, "awaiting_approval");
+      assert.equal((await store.claimPendingScheduleOccurrences("worker-alpha")).length, 1);
+      assert.equal((await store.claimPendingScheduleOccurrences("worker-beta")).length, 0, "a pending occurrence is atomically dispatched to one scheduler");
+      await assert.rejects(store.setScheduleStatus(scheduleId, "paused"), PersistenceInputError, "claimed work cannot be raced by a pause transition");
+      assert.equal((await store.claimDueSchedules(scheduleStart, 30_000)).length, 0, "a due occurrence is atomically claimed once");
+      const delayedClaim = await store.claimDueSchedules(new Date("2035-01-01T00:10:00.000Z"), 30_000);
+      assert.equal(delayedClaim.length, 1);
+      assert.equal(delayedClaim[0]?.occurrence.status, "missed");
+      assert.equal(delayedClaim[0]?.occurrence.missedCount, 2);
+      assert.equal((await store.listPendingScheduleOccurrences()).length, 1, "missed recurrence does not replace the awaiting approval");
+      await store.releaseScheduleOccurrenceClaim(scheduleId, scheduleStart, "worker-alpha");
+      await store.setScheduleStatus(scheduleId, "paused");
+      assert.equal((await store.listPendingScheduleOccurrences()).length, 0, "paused schedule is not actionable");
+      await store.setScheduleStatus(scheduleId, "active");
+      await store.finishScheduleOccurrence(scheduleId, scheduleStart, "completed");
+      const completedSchedule = (await store.listSchedules()).find((entry) => entry.scheduleId === scheduleId);
+      assert.equal(completedSchedule?.occurrences.filter((entry) => entry.status === "missed").length, 1);
+      assert.equal(completedSchedule?.occurrences.some((entry) => entry.status === "completed"), true);
+      await store.setScheduleStatus(scheduleId, "deleted");
+      assert.equal((await store.listSchedules()).some((entry) => entry.scheduleId === scheduleId), false);
+      assert.equal((await store.listSchedules(true)).some((entry) => entry.scheduleId === scheduleId), true);
+
       const historyEnvironment = {};
       for (const key of ["PATH", "SystemRoot", "WINDIR", "TEMP", "TMP"]) {
         const value = process.env[key];

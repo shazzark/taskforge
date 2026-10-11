@@ -1,4 +1,5 @@
 import { MongoClient, type Collection, type Document } from "mongodb";
+import { extname, isAbsolute } from "node:path";
 import { parseConfiguration } from "./config.js";
 
 export interface RunSummaryInput {
@@ -54,6 +55,35 @@ export interface RunCheckpoint extends RunCheckpointInput {
   readonly updatedAt: Date;
 }
 
+export type ScheduleWorkflowId = "csv-analyze" | "document-analyze";
+export type ScheduleStatus = "active" | "paused" | "completed" | "deleted";
+export type ScheduleOccurrenceStatus = "awaiting_approval" | "missed" | "completed" | "failed";
+
+export interface ScheduleOccurrence {
+  readonly scheduledFor: Date;
+  readonly status: ScheduleOccurrenceStatus;
+  readonly missedCount: number;
+  readonly recordedAt: Date;
+}
+
+export interface ScheduleDefinition {
+  readonly scheduleId: string;
+  readonly workflowId: ScheduleWorkflowId;
+  readonly inputPath: string;
+  readonly nextRunAt: Date;
+  readonly intervalMinutes?: number;
+}
+
+export interface ScheduleRecord extends ScheduleDefinition {
+  readonly status: ScheduleStatus;
+  readonly createdAt: Date;
+  readonly updatedAt: Date;
+  readonly occurrences: readonly ScheduleOccurrence[];
+  readonly pendingOccurrence?: ScheduleOccurrence;
+  readonly dispatchOwner?: string;
+  readonly dispatchStartedAt?: Date;
+}
+
 interface StoredRunSummary extends Document {
   readonly _id: string;
   readonly runId: string;
@@ -88,12 +118,30 @@ interface StoredRunCheckpoint extends Document {
   readonly updatedAt: Date;
 }
 
+interface StoredSchedule extends Document {
+  readonly _id: string;
+  readonly scheduleId: string;
+  readonly workflowId: ScheduleWorkflowId;
+  readonly inputPath: string;
+  readonly nextRunAt: Date;
+  readonly intervalMinutes?: number;
+  readonly status: ScheduleStatus;
+  readonly createdAt: Date;
+  readonly updatedAt: Date;
+  readonly occurrences: ScheduleOccurrence[];
+  readonly pendingOccurrence?: ScheduleOccurrence;
+  readonly dispatchOwner?: string;
+  readonly dispatchStartedAt?: Date;
+}
+
 const MAX_EVENTS_PER_RUN = 300;
 const MAX_EVENT_BYTES_PER_RUN = 5 * 1024 * 1024;
 const MAX_EVENT_BYTES = 2 * 1024;
 const MAX_CHECKPOINT_STEPS = 256;
 const MAX_CHECKPOINT_BYTES = 64 * 1024;
 const MAX_RUN_SUMMARY_CHARACTERS = 4_000;
+const MAX_SCHEDULES = 500;
+const MAX_SCHEDULE_OCCURRENCES = 100;
 const EVENT_TYPES: ReadonlySet<string> = new Set([
   "run_started",
   "step_started",
@@ -270,6 +318,102 @@ function parseRunCheckpointInput(value: unknown): RunCheckpointInput {
   return normalized;
 }
 
+function parseScheduleDefinition(value: unknown): ScheduleDefinition {
+  if (!isRecord(value)) throw new PersistenceInputError("Schedule definition must be an object.");
+  const allowedKeys = new Set(["scheduleId", "workflowId", "inputPath", "nextRunAt", "intervalMinutes"]);
+  if (Object.keys(value).some((key) => !allowedKeys.has(key))) {
+    throw new PersistenceInputError("Schedule definition contains unsupported fields.");
+  }
+  const scheduleId = parseIdentifier(value["scheduleId"], "Schedule id");
+  const workflowId = value["workflowId"];
+  const inputPath = value["inputPath"];
+  const nextRunAt = value["nextRunAt"];
+  const intervalMinutes = value["intervalMinutes"];
+  if (workflowId !== "csv-analyze" && workflowId !== "document-analyze") {
+    throw new PersistenceInputError("Scheduled workflow is not supported.");
+  }
+  if (
+    typeof inputPath !== "string" || inputPath.length < 1 || inputPath.length > 2_048 ||
+    !isAbsolute(inputPath) || /[\u0000-\u001f\u007f]/u.test(inputPath)
+  ) {
+    throw new PersistenceInputError("Schedule input path must be an absolute path without control characters.");
+  }
+  const extension = extname(inputPath).toLowerCase();
+  if ((workflowId === "csv-analyze" && extension !== ".csv") ||
+      (workflowId === "document-analyze" && !new Set([".txt", ".md", ".markdown", ".pdf", ".docx", ".xlsx"]).has(extension))) {
+    throw new PersistenceInputError("Schedule workflow does not support the input file extension.");
+  }
+  if (!(nextRunAt instanceof Date) || Number.isNaN(nextRunAt.getTime())) {
+    throw new PersistenceInputError("Schedule next-run time must be a valid date.");
+  }
+  if (intervalMinutes !== undefined && (
+    typeof intervalMinutes !== "number" || !Number.isSafeInteger(intervalMinutes) || intervalMinutes < 1 || intervalMinutes > 10_080
+  )) {
+    throw new PersistenceInputError("Schedule interval must be between 1 minute and 7 days.");
+  }
+  return {
+    scheduleId,
+    workflowId,
+    inputPath,
+    nextRunAt,
+    ...(intervalMinutes === undefined ? {} : { intervalMinutes }),
+  };
+}
+
+function parseScheduleOccurrence(value: unknown): ScheduleOccurrence {
+  if (!isRecord(value)) throw new DatabasePersistenceError();
+  const scheduledFor = value["scheduledFor"];
+  const recordedAt = value["recordedAt"];
+  const status = value["status"];
+  const missedCount = value["missedCount"];
+  if (
+    !(scheduledFor instanceof Date) || Number.isNaN(scheduledFor.getTime()) ||
+    !(recordedAt instanceof Date) || Number.isNaN(recordedAt.getTime()) ||
+    (status !== "awaiting_approval" && status !== "missed" && status !== "completed" && status !== "failed") ||
+    typeof missedCount !== "number" || !Number.isSafeInteger(missedCount) || missedCount < 0 || missedCount > 100_000
+  ) throw new DatabasePersistenceError();
+  return { scheduledFor, recordedAt, status, missedCount };
+}
+
+function parseStoredSchedule(value: unknown): ScheduleRecord {
+  if (!isRecord(value)) throw new DatabasePersistenceError();
+  const definition = parseScheduleDefinition({
+    scheduleId: value["scheduleId"],
+    workflowId: value["workflowId"],
+    inputPath: value["inputPath"],
+    nextRunAt: value["nextRunAt"],
+    ...(value["intervalMinutes"] === undefined ? {} : { intervalMinutes: value["intervalMinutes"] }),
+  });
+  const status = value["status"];
+  const createdAt = value["createdAt"];
+  const updatedAt = value["updatedAt"];
+  const occurrencesValue = value["occurrences"];
+  const pendingOccurrenceValue = value["pendingOccurrence"];
+  const dispatchOwnerValue = value["dispatchOwner"];
+  const dispatchStartedAtValue = value["dispatchStartedAt"];
+  if (
+    value["_id"] !== definition.scheduleId ||
+    (status !== "active" && status !== "paused" && status !== "completed" && status !== "deleted") ||
+    !(createdAt instanceof Date) || Number.isNaN(createdAt.getTime()) ||
+    !(updatedAt instanceof Date) || Number.isNaN(updatedAt.getTime()) ||
+    !Array.isArray(occurrencesValue) || occurrencesValue.length > MAX_SCHEDULE_OCCURRENCES ||
+    (dispatchOwnerValue !== undefined && (typeof dispatchOwnerValue !== "string" || dispatchOwnerValue.length > 128)) ||
+    (dispatchStartedAtValue !== undefined && (!(dispatchStartedAtValue instanceof Date) || Number.isNaN(dispatchStartedAtValue.getTime()))) ||
+    (dispatchOwnerValue === undefined) !== (dispatchStartedAtValue === undefined)
+  ) throw new DatabasePersistenceError();
+  return {
+    ...definition,
+    status,
+    createdAt,
+    updatedAt,
+    occurrences: occurrencesValue.map(parseScheduleOccurrence),
+    ...(pendingOccurrenceValue === undefined ? {} : { pendingOccurrence: parseScheduleOccurrence(pendingOccurrenceValue) }),
+    ...(typeof dispatchOwnerValue === "string" && dispatchStartedAtValue instanceof Date
+      ? { dispatchOwner: dispatchOwnerValue, dispatchStartedAt: dispatchStartedAtValue }
+      : {}),
+  };
+}
+
 function parseStoredRunEvent(value: unknown): RunEvent {
   if (!isRecord(value)) {
     throw new DatabasePersistenceError();
@@ -359,6 +503,7 @@ export class MongoStore {
   private readonly runs: Collection<StoredRunSummary>;
   private readonly events: Collection<StoredRunEvent>;
   private readonly checkpoints: Collection<StoredRunCheckpoint>;
+  private readonly schedules: Collection<StoredSchedule>;
 
   private constructor(client: MongoClient) {
     this.client = client;
@@ -366,6 +511,7 @@ export class MongoStore {
     this.runs = database.collection<StoredRunSummary>("runs");
     this.events = database.collection<StoredRunEvent>("run_events");
     this.checkpoints = database.collection<StoredRunCheckpoint>("run_checkpoints");
+    this.schedules = database.collection<StoredSchedule>("schedules");
   }
 
   static async connect(configuration: unknown): Promise<MongoStore> {
@@ -644,6 +790,231 @@ export class MongoStore {
       const document = await this.runs.findOne({ _id: runId });
       return document === null ? null : parseStoredRunSummary(document);
     } catch {
+      throw new DatabasePersistenceError();
+    }
+  }
+
+  async createSchedule(value: unknown): Promise<ScheduleRecord> {
+    const definition = parseScheduleDefinition(value);
+    let count: number;
+    try {
+      count = await this.schedules.countDocuments({ status: { $ne: "deleted" } }, { limit: MAX_SCHEDULES });
+    } catch {
+      throw new DatabasePersistenceError();
+    }
+    if (count >= MAX_SCHEDULES) throw new PersistenceInputError("The active schedule limit has been reached.");
+    const now = new Date();
+    const document: StoredSchedule = {
+      _id: definition.scheduleId,
+      ...definition,
+      status: "active",
+      createdAt: now,
+      updatedAt: now,
+      occurrences: [],
+    };
+    try {
+      await this.schedules.insertOne(document);
+      return parseStoredSchedule(document);
+    } catch (error: unknown) {
+      if (error instanceof PersistenceInputError) throw error;
+      throw new DatabasePersistenceError();
+    }
+  }
+
+  async listSchedules(includeDeleted = false): Promise<readonly ScheduleRecord[]> {
+    try {
+      const documents = await this.schedules
+        .find(includeDeleted ? {} : { status: { $ne: "deleted" } })
+        .sort({ createdAt: -1 })
+        .limit(MAX_SCHEDULES)
+        .toArray();
+      return documents.map(parseStoredSchedule);
+    } catch {
+      throw new DatabasePersistenceError();
+    }
+  }
+
+  async setScheduleStatus(scheduleIdValue: unknown, nextStatusValue: unknown): Promise<ScheduleRecord> {
+    const scheduleId = parseIdentifier(scheduleIdValue, "Schedule id");
+    if (nextStatusValue !== "active" && nextStatusValue !== "paused" && nextStatusValue !== "deleted") {
+      throw new PersistenceInputError("Schedule status change is unsupported.");
+    }
+    try {
+      const current = await this.schedules.findOne({ _id: scheduleId });
+      if (current === null) throw new PersistenceInputError("Schedule does not exist.");
+      const schedule = parseStoredSchedule(current);
+      if (schedule.dispatchOwner !== undefined) {
+        throw new PersistenceInputError("Schedule has an occurrence claimed by a running scheduler; wait for it to finish before changing its status.");
+      }
+      const allowed = nextStatusValue === "deleted"
+        ? schedule.status !== "deleted"
+        : nextStatusValue === "paused"
+          ? schedule.status === "active" || (schedule.status === "completed" && schedule.pendingOccurrence !== undefined)
+          : schedule.status === "paused";
+      if (!allowed) throw new PersistenceInputError("Schedule status transition is not allowed.");
+      const updated = await this.schedules.findOneAndUpdate(
+        { _id: scheduleId, status: schedule.status, dispatchOwner: { $exists: false } },
+        { $set: { status: nextStatusValue, updatedAt: new Date() } },
+        { returnDocument: "after" },
+      );
+      if (updated === null) throw new PersistenceInputError("Schedule changed concurrently; reload it first.");
+      return parseStoredSchedule(updated);
+    } catch (error: unknown) {
+      if (error instanceof PersistenceInputError) throw error;
+      throw new DatabasePersistenceError();
+    }
+  }
+
+  async claimDueSchedules(nowValue: unknown, graceMsValue: unknown): Promise<readonly {
+    readonly schedule: ScheduleRecord;
+    readonly occurrence: ScheduleOccurrence;
+  }[]> {
+    if (!(nowValue instanceof Date) || Number.isNaN(nowValue.getTime())) {
+      throw new PersistenceInputError("A valid scheduler time is required.");
+    }
+    if (typeof graceMsValue !== "number" || !Number.isSafeInteger(graceMsValue) || graceMsValue < 1_000 || graceMsValue > 60_000) {
+      throw new PersistenceInputError("Scheduler grace period must be from 1 to 60 seconds.");
+    }
+    let due: StoredSchedule[];
+    try {
+      due = await this.schedules.find({ status: "active", nextRunAt: { $lte: nowValue } })
+        .sort({ nextRunAt: 1 }).limit(MAX_SCHEDULES).toArray();
+    } catch {
+      throw new DatabasePersistenceError();
+    }
+    const claims: Array<{ readonly schedule: ScheduleRecord; readonly occurrence: ScheduleOccurrence }> = [];
+    for (const stored of due) {
+      const current = parseStoredSchedule(stored);
+      const scheduledFor = current.nextRunAt;
+      const intervalMs = current.intervalMinutes === undefined ? undefined : current.intervalMinutes * 60_000;
+      const lateByMs = nowValue.getTime() - scheduledFor.getTime();
+      const alreadyPending = current.pendingOccurrence !== undefined;
+      const dueSlots = intervalMs === undefined ? 1 : Math.floor(lateByMs / intervalMs) + 1;
+      const missedCount = alreadyPending || lateByMs > graceMsValue ? dueSlots : 0;
+      const outcome: ScheduleOccurrenceStatus = missedCount > 0 ? "missed" : "awaiting_approval";
+      const nextRunAt = intervalMs === undefined
+        ? scheduledFor
+        : new Date(scheduledFor.getTime() + Math.max(1, missedCount) * intervalMs);
+      const status: ScheduleStatus = intervalMs === undefined ? "completed" : "active";
+      const occurrence: ScheduleOccurrence = { scheduledFor, status: outcome, missedCount, recordedAt: nowValue };
+      try {
+        const update: Document = {
+          $set: {
+            status,
+            nextRunAt,
+            updatedAt: nowValue,
+            ...(outcome === "awaiting_approval" ? { pendingOccurrence: occurrence } : {}),
+          },
+          $push: { occurrences: { $each: [occurrence], $slice: -MAX_SCHEDULE_OCCURRENCES } },
+        };
+        const updated = await this.schedules.findOneAndUpdate(
+          { _id: current.scheduleId, status: "active", nextRunAt: scheduledFor },
+          update,
+          { returnDocument: "after" },
+        );
+        if (updated !== null) {
+          claims.push({ schedule: parseStoredSchedule(updated), occurrence });
+        }
+      } catch {
+        throw new DatabasePersistenceError();
+      }
+    }
+    return claims;
+  }
+
+  async listPendingScheduleOccurrences(): Promise<readonly {
+    readonly schedule: ScheduleRecord;
+    readonly occurrence: ScheduleOccurrence;
+  }[]> {
+    const schedules = await this.listSchedules();
+    return schedules.flatMap((schedule) => schedule.status === "paused" || schedule.status === "deleted" || schedule.pendingOccurrence === undefined
+      ? []
+      : [{ schedule, occurrence: schedule.pendingOccurrence }]);
+  }
+
+  async claimPendingScheduleOccurrences(ownerIdValue: unknown): Promise<readonly {
+    readonly schedule: ScheduleRecord;
+    readonly occurrence: ScheduleOccurrence;
+  }[]> {
+    const ownerId = parseIdentifier(ownerIdValue, "Scheduler owner id");
+    const candidates = await this.listPendingScheduleOccurrences();
+    const claimed: Array<{ readonly schedule: ScheduleRecord; readonly occurrence: ScheduleOccurrence }> = [];
+    for (const candidate of candidates) {
+      if (candidate.schedule.dispatchOwner !== undefined) continue;
+      try {
+        const updated = await this.schedules.findOneAndUpdate(
+          {
+            _id: candidate.schedule.scheduleId,
+            status: { $in: ["active", "completed"] },
+            dispatchOwner: { $exists: false },
+            "pendingOccurrence.scheduledFor": candidate.occurrence.scheduledFor,
+            "pendingOccurrence.status": "awaiting_approval",
+          },
+          { $set: { dispatchOwner: ownerId, dispatchStartedAt: new Date(), updatedAt: new Date() } },
+          { returnDocument: "after" },
+        );
+        if (updated !== null) claimed.push({ schedule: parseStoredSchedule(updated), occurrence: candidate.occurrence });
+      } catch {
+        throw new DatabasePersistenceError();
+      }
+    }
+    return claimed;
+  }
+
+  async releaseScheduleOccurrenceClaim(scheduleIdValue: unknown, scheduledForValue: unknown, ownerIdValue: unknown): Promise<void> {
+    const scheduleId = parseIdentifier(scheduleIdValue, "Schedule id");
+    const ownerId = parseIdentifier(ownerIdValue, "Scheduler owner id");
+    if (!(scheduledForValue instanceof Date) || Number.isNaN(scheduledForValue.getTime())) {
+      throw new PersistenceInputError("A valid scheduled occurrence time is required.");
+    }
+    try {
+      const result = await this.schedules.updateOne(
+        { _id: scheduleId, dispatchOwner: ownerId, "pendingOccurrence.scheduledFor": scheduledForValue, "pendingOccurrence.status": "awaiting_approval" },
+        { $unset: { dispatchOwner: "", dispatchStartedAt: "" }, $set: { updatedAt: new Date() } },
+      );
+      if (result.modifiedCount !== 1) throw new PersistenceInputError("Schedule occurrence claim was not found.");
+    } catch (error: unknown) {
+      if (error instanceof PersistenceInputError) throw error;
+      throw new DatabasePersistenceError();
+    }
+  }
+
+  async finishScheduleOccurrence(
+    scheduleIdValue: unknown,
+    scheduledForValue: unknown,
+    outcomeValue: unknown,
+    ownerIdValue?: unknown,
+  ): Promise<void> {
+    const scheduleId = parseIdentifier(scheduleIdValue, "Schedule id");
+    if (!(scheduledForValue instanceof Date) || Number.isNaN(scheduledForValue.getTime())) {
+      throw new PersistenceInputError("A valid scheduled occurrence time is required.");
+    }
+    if (outcomeValue !== "completed" && outcomeValue !== "failed") {
+      throw new PersistenceInputError("Schedule occurrence outcome is unsupported.");
+    }
+    const ownerId = ownerIdValue === undefined ? undefined : parseIdentifier(ownerIdValue, "Scheduler owner id");
+    try {
+      const current = await this.schedules.findOne({ _id: scheduleId });
+      if (current === null) throw new PersistenceInputError("Schedule does not exist.");
+      const schedule = parseStoredSchedule(current);
+      if (schedule.pendingOccurrence?.scheduledFor.getTime() !== scheduledForValue.getTime()) {
+        throw new PersistenceInputError("Pending schedule occurrence was not found.");
+      }
+      const updatedAt = new Date();
+      const setValues: Document = {
+        "occurrences.$[entry].status": outcomeValue,
+        "occurrences.$[entry].recordedAt": updatedAt,
+        updatedAt,
+        ...(schedule.intervalMinutes === undefined ? { status: "completed" } : {}),
+      };
+      const result = await this.schedules.updateOne(
+        { _id: scheduleId, status: { $in: ["active", "completed"] }, ...(ownerId === undefined ? {} : { dispatchOwner: ownerId }), "pendingOccurrence.scheduledFor": scheduledForValue, "pendingOccurrence.status": "awaiting_approval" },
+        { $set: setValues, $unset: { pendingOccurrence: "", dispatchOwner: "", dispatchStartedAt: "" } },
+        { arrayFilters: [{ "entry.scheduledFor": scheduledForValue, "entry.status": "awaiting_approval" }] },
+      );
+      if (result.modifiedCount !== 1) throw new PersistenceInputError("Pending schedule occurrence was not found.");
+    } catch (error: unknown) {
+      if (error instanceof PersistenceInputError) throw error;
       throw new DatabasePersistenceError();
     }
   }

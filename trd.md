@@ -31,3 +31,6 @@ No credentials in logs, screenshots intended for sharing, reports, fixtures or G
 
 ## Distribution
 Document tested Node version, MongoDB installation/connection, local model and browser setup on Windows. Pin dependencies and commit lockfile. npm package must declare actual files, executable and engine requirements. Validate tarball on a separate Windows consumer project before publishing. MIT covers TaskForge code, not automatic relicensing of model weights or dependencies.
+
+## Local scheduling
+`taskforge schedule add --workflow <csv-analyze|document-analyze> --input <path> (--once <future-UTC-ISO>|--every-minutes <1..10080>)` stores a schedule in MongoDB. The foreground `schedule run` process is the only executor; no OS scheduler integration is installed. The process claims due records atomically, records and skips elapsed intervals outside a 30-second grace period, and marks approval-required occurrences pending when no user is present. Every run requires new interactive approval and exact-file read consent, rechecking the path before reading. `schedule list`, `pause <id>`, `resume <id>`, and confirmed soft-delete `delete <id>` are supported. `schedule run --once` performs one scheduler tick for verification/operations.

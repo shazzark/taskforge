@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 
 import packageJson from "../package.json" with { type: "json" };
-import { open, realpath } from "node:fs/promises";
-import { dirname, extname, resolve } from "node:path";
+import { randomUUID } from "node:crypto";
+import { open, realpath, stat } from "node:fs/promises";
+import { basename, dirname, extname, resolve } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { ConfigurationError, formatConfigurationSummary, loadConfiguration, loadProviderConfiguration } from "./config.js";
 import { AgentBudgetLedger, AgentToolError, runToolLoop } from "./agent/tool-loop.js";
@@ -30,10 +31,12 @@ import { DraftArtifactError, parseLocalDraftInput, previewTextArtifact, writeApp
 import { escapeTerminalControls } from "./security/terminal-text.js";
 import { BrowserSearchError, GroqBrowserResearch } from "./integrations/groq-browser-search.js";
 import { BrowserAuditError, runBrowserAudit, validateLoopbackBrowserTarget } from "./workflows/browser-audit-workflow.js";
+import { runSchedulerTick, runScheduler } from "./scheduling/scheduler.js";
+import type { ScheduleRecord, ScheduleWorkflowId } from "./mongo-store.js";
 
 const helpText = `TaskForge ${packageJson.version} (early development)
 
-Usage: taskforge [--help | --version | config | doctor | model-check | chat | run csv-analyze --input <path> | run document-analyze --input <path> | run pdf-report --input <json> --output <new.pdf> | run draft --input <draft.json> --output <new.md> | run specialist-review --root <directory> --file <relative-path> [...] | run research --query <question> | run browser-audit --url <loopback-url> | run repo-inspect --root <directory> | run source-review --root <directory> --file <relative-path> [...] | run model-investigate --root <directory> --file <relative-path> [...] | run github-issues --repository <owner/name> | run file-patch --root <directory> --target <relative-path> --content-file <relative-path> | run git-diff --root <directory> | run software-check --root <directory> --check <node-test|typescript-check> | resume <run-id> --input <path> | history list]
+Usage: taskforge [--help | --version | config | doctor | model-check | chat | run csv-analyze --input <path> | run document-analyze --input <path> | run pdf-report --input <json> --output <new.pdf> | run draft --input <draft.json> --output <new.md> | run specialist-review --root <directory> --file <relative-path> [...] | run research --query <question> | run browser-audit --url <loopback-url> | run repo-inspect --root <directory> | run source-review --root <directory> --file <relative-path> [...] | run model-investigate --root <directory> --file <relative-path> [...] | run github-issues --repository <owner/name> | run file-patch --root <directory> --target <relative-path> --content-file <relative-path> | run git-diff --root <directory> | run software-check --root <directory> --check <node-test|typescript-check> | resume <run-id> --input <path> | history list | schedule add/list/pause/resume/delete/run]
 
 The config command validates local settings and prints a redacted summary.
 The doctor command checks configured MongoDB connectivity and reports available setup areas.
@@ -51,6 +54,7 @@ The specialist-review workflow sends approved, heuristically redacted source exc
 The research workflow sends only the exact approved query to Groq browser search, then displays bounded source metadata and answer; it makes no project-file access or persistence and requires a supported Groq model.
 The browser-audit workflow visits one explicitly approved loopback HTTP URL in an isolated Chromium context, blocks cross-origin requests and non-GET/HEAD methods, checks bounded same-origin links, and stores aggregate counts only.
 The document-analyze workflow parses one approved TXT, Markdown, text PDF, DOCX, or XLSX file and stores counts only.
+The schedule command stores one-time or recurring CSV/document workflows; execution occurs only while its foreground scheduler is running and every occurrence requires fresh interactive approval.
 The pdf-report workflow renders an approved JSON report and creates a new approved PDF artifact after a content-bound confirmation.
 The software-check workflow runs only an explicitly approved Node test or TypeScript no-emit check in one approved root.
 The resume command reacquires input-file approval, rechecks input and workflow hashes, then resumes an uncertain CSV or document analysis.
@@ -227,6 +231,146 @@ async function runDocumentAnalysisCommand(commandArgs: readonly string[]): Promi
     process.stderr.write(`Document analysis failed: ${message}\n`);
     process.exitCode = 3;
   }
+}
+
+function parseScheduleAddArguments(commandArgs: readonly string[]): {
+  readonly workflowId: ScheduleWorkflowId;
+  readonly inputPath: string;
+  readonly nextRunAt: Date;
+  readonly intervalMinutes?: number;
+} | undefined {
+  if (commandArgs.length !== 7) return undefined;
+  if (commandArgs[0] !== "add" || commandArgs[1] !== "--workflow" || commandArgs[3] !== "--input") return undefined;
+  const workflowId = commandArgs[2];
+  const inputPath = commandArgs[4];
+  if ((workflowId !== "csv-analyze" && workflowId !== "document-analyze") || inputPath === undefined || inputPath.trim().length === 0) return undefined;
+  const scheduleKind = commandArgs[5];
+  const scheduleValue = commandArgs[6];
+  if (scheduleKind === "--once" && scheduleValue !== undefined && commandArgs.length === 7) {
+    const nextRunAt = new Date(scheduleValue);
+    if (!Number.isFinite(nextRunAt.getTime()) || nextRunAt.getTime() <= Date.now() || nextRunAt.toISOString() !== scheduleValue) return undefined;
+    return { workflowId, inputPath, nextRunAt };
+  }
+  if (scheduleKind === "--every-minutes" && scheduleValue !== undefined && commandArgs.length === 7 && /^\d{1,5}$/u.test(scheduleValue)) {
+    const intervalMinutes = Number(scheduleValue);
+    if (!Number.isSafeInteger(intervalMinutes) || intervalMinutes < 1 || intervalMinutes > 10_080) return undefined;
+    return { workflowId, inputPath, nextRunAt: new Date(Date.now() + intervalMinutes * 60_000), intervalMinutes };
+  }
+  return undefined;
+}
+
+async function askScheduleQuestion(question: string): Promise<boolean> {
+  const terminal = createInterface({ input: process.stdin, output: process.stdout });
+  try {
+    return (await terminal.question(`${question} [y/N] `)).trim().toLowerCase() === "y";
+  } finally {
+    terminal.close();
+  }
+}
+
+async function executeScheduledWorkflow(store: MongoStore, schedule: ScheduleRecord): Promise<boolean> {
+  const input = await readApprovedInputFile(schedule.inputPath);
+  if (input === undefined) return false;
+  if (schedule.workflowId === "csv-analyze") {
+    const result = await runCsvAnalysisWorkflow(store, input);
+    process.stdout.write(`Scheduled run ${result.run.runId} completed: ${result.analysis.rowCount} CSV rows.\n`);
+  } else {
+    const result = await analyzeDocument(store, extname(schedule.inputPath).toLowerCase(), input);
+    process.stdout.write(`Scheduled run ${result.run.runId} completed: ${result.analysis.format}, ${result.analysis.wordCount} words.\n`);
+  }
+  return true;
+}
+
+async function runScheduleCommand(commandArgs: readonly string[]): Promise<void> {
+  const action = commandArgs[0];
+  if (action === "add") {
+    const definition = parseScheduleAddArguments(commandArgs);
+    if (definition === undefined) {
+      process.stderr.write("Expected schedule add --workflow <csv-analyze|document-analyze> --input <path> (--once <future-UTC-ISO>|--every-minutes <1..10080>).\n");
+      process.exitCode = 1;
+      return;
+    }
+    if (!process.stdin.isTTY || !process.stdout.isTTY) {
+      process.stderr.write("Adding a schedule requires an interactive terminal for explicit file and future-read approval.\n");
+      process.exitCode = 2;
+      return;
+    }
+    const absolutePath = resolve(definition.inputPath);
+    try {
+      const policy = new WorkspacePathPolicy();
+      const approvedRoot = await policy.approveRoot(dirname(absolutePath));
+      const authorized = await policy.authorizePath(absolutePath, "read");
+      const canonicalPath = await realpath(authorized.path);
+      const metadata = await stat(canonicalPath);
+      if (canonicalPath !== authorized.path || !metadata.isFile()) throw new Error("File path is not a stable regular file.");
+      process.stdout.write(`Future executions store and read this exact local file: ${canonicalPath}\n`);
+      process.stdout.write(`Approved root: ${approvedRoot}\nThe file will require fresh read approval for every scheduled run.\n`);
+      if (!(await askScheduleQuestion("Create this schedule?"))) return;
+      const schedule = await withMongoStore((store) => store.createSchedule({
+        scheduleId: randomUUID(), workflowId: definition.workflowId, inputPath: canonicalPath,
+        nextRunAt: definition.nextRunAt,
+        ...(definition.intervalMinutes === undefined ? {} : { intervalMinutes: definition.intervalMinutes }),
+      }));
+      if (schedule !== undefined) process.stdout.write(`Schedule ${schedule.scheduleId} created; next run ${schedule.nextRunAt.toISOString()}.\n`);
+    } catch {
+      process.stderr.write("Schedule creation failed safely; no file contents were read.\n");
+      process.exitCode = 2;
+    }
+    return;
+  }
+  if (action === "list" && commandArgs.length === 1) {
+    const schedules = await withMongoStore((store) => store.listSchedules());
+    if (schedules === undefined) return;
+    if (schedules.length === 0) process.stdout.write("No schedules found.\n");
+    for (const schedule of schedules) {
+      process.stdout.write(`${schedule.scheduleId}\t${schedule.status}\t${schedule.workflowId}\t${basename(schedule.inputPath)}\t${schedule.nextRunAt.toISOString()}\t${schedule.intervalMinutes === undefined ? "once" : `every ${schedule.intervalMinutes}m`}${schedule.pendingOccurrence === undefined ? "" : schedule.dispatchOwner === undefined ? "\tawaiting approval" : "\tapproval claimed; verify prior runner is stopped before recovery"}\n`);
+    }
+    return;
+  }
+  if ((action === "pause" || action === "resume" || action === "delete") && commandArgs.length === 2 && commandArgs[1] !== undefined) {
+    if (action === "delete") {
+      if (!process.stdin.isTTY || !process.stdout.isTTY || !(await askScheduleQuestion(`Soft-delete schedule ${commandArgs[1]}?`))) return;
+    }
+    const nextStatus = action === "pause" ? "paused" : action === "resume" ? "active" : "deleted";
+    const schedule = await withMongoStore((store) => store.setScheduleStatus(commandArgs[1], nextStatus));
+    if (schedule !== undefined) process.stdout.write(`Schedule ${schedule.scheduleId}: ${schedule.status}.\n`);
+    return;
+  }
+  if (action === "run" && (commandArgs.length === 1 || (commandArgs.length === 2 && commandArgs[1] === "--once"))) {
+    const controller = new AbortController();
+    const handleInterrupt = (): void => controller.abort();
+    process.once("SIGINT", handleInterrupt);
+    try {
+      await withMongoStore(async (store) => {
+        const attempted = new Set<string>();
+        const ownerId = randomUUID();
+        const tick = async (now = new Date()) => {
+          const result = await runSchedulerTick(store, {
+            now,
+            userPresent: process.stdin.isTTY === true && process.stdout.isTTY === true,
+            attemptedOccurrences: attempted,
+            ownerId,
+            confirm: async (schedule, scheduledFor) => askScheduleQuestion(`Run ${schedule.workflowId} for ${basename(schedule.inputPath)} scheduled at ${scheduledFor.toISOString()}?`),
+            execute: (schedule) => executeScheduledWorkflow(store, schedule),
+          });
+          if (result.claimed > 0 || result.missed > 0 || result.completed > 0 || result.failed > 0) {
+            process.stdout.write(`Scheduler tick: claimed=${result.claimed}, pending=${result.pending}, missed=${result.missed}, completed=${result.completed}, failed=${result.failed}.\n`);
+          }
+          return result;
+        };
+        if (commandArgs[1] === "--once") await tick();
+        else {
+          process.stdout.write("Foreground scheduler running; schedules execute only while this process remains active. Press Ctrl+C to stop.\n");
+          await runScheduler(controller.signal, tick);
+        }
+      });
+    } finally {
+      process.removeListener("SIGINT", handleInterrupt);
+    }
+    return;
+  }
+  process.stderr.write("Expected schedule add|list|pause|resume|delete|run [--once].\n");
+  process.exitCode = 1;
 }
 
 async function listRunHistory(): Promise<void> {
@@ -1261,6 +1405,8 @@ if (args.length === 0 || (args.length === 1 && (args[0] === "--help" || args[0] 
   }
 } else if (args.length === 2 && args[0] === "history" && args[1] === "list") {
   await listRunHistory();
+} else if (args.length >= 1 && args[0] === "schedule") {
+  await runScheduleCommand(args.slice(1));
 } else {
   process.stderr.write("Error: unknown or unsupported CLI arguments.\nRun 'taskforge --help' for usage.\n");
   process.exitCode = 1;
