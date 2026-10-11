@@ -257,6 +257,13 @@ test(
       assert.equal(csvRun.run.state, "completed");
       assert.equal(csvRun.analysis.rowCount, 3);
       assert.equal(csvRun.analysis.duplicateRowCount, 1);
+
+      const scheduledRunId = `schedule-test-${randomUUID()}`;
+      await store.saveRunSummary({ runId: scheduledRunId, workflowId: "csv-analyze", summary: "Scheduled fixture awaiting approval." });
+      await store.updateRunState(scheduledRunId, "awaiting_approval");
+      const scheduledCsvRun = await runCsvAnalysisWorkflow(store, csvBytes, scheduledRunId);
+      assert.equal(scheduledCsvRun.run.runId, scheduledRunId, "scheduled workflow reuses the canonical occurrence run id");
+      assert.equal(scheduledCsvRun.run.state, "completed");
       assert.equal(csvRun.run.summary.includes("alpha"), false);
       assert.equal((await store.getRunEvents(csvRun.run.runId)).some((event) => event.type === "run_finished"), true);
 
@@ -299,6 +306,7 @@ test(
       const firstClaim = await store.claimDueSchedules(scheduleStart, 30_000);
       assert.equal(firstClaim.length, 1);
       assert.equal(firstClaim[0]?.occurrence.status, "awaiting_approval");
+      assert.equal((await store.getRunSummary(firstClaim[0].occurrence.runId))?.state, "awaiting_approval", "scheduled work has a canonical pending run record");
       assert.equal((await store.claimPendingScheduleOccurrences("worker-alpha")).length, 1);
       assert.equal((await store.claimPendingScheduleOccurrences("worker-beta")).length, 0, "a pending occurrence is atomically dispatched to one scheduler");
       await assert.rejects(store.setScheduleStatus(scheduleId, "paused"), PersistenceInputError, "claimed work cannot be raced by a pause transition");
@@ -316,6 +324,22 @@ test(
       const completedSchedule = (await store.listSchedules()).find((entry) => entry.scheduleId === scheduleId);
       assert.equal(completedSchedule?.occurrences.filter((entry) => entry.status === "missed").length, 1);
       assert.equal(completedSchedule?.occurrences.some((entry) => entry.status === "completed"), true);
+
+      const recoveryScheduleId = randomUUID();
+      const recoveryTime = new Date("2035-01-02T00:00:00.000Z");
+      await store.createSchedule({
+        scheduleId: recoveryScheduleId,
+        workflowId: "csv-analyze",
+        inputPath: join(softwareFixturePath, "fixture.csv"),
+        nextRunAt: recoveryTime,
+      });
+      await store.claimDueSchedules(recoveryTime, 30_000);
+      await store.claimPendingScheduleOccurrences("crashed-runner");
+      assert.equal((await store.listSchedules()).find((entry) => entry.scheduleId === recoveryScheduleId)?.dispatchOwner, "crashed-runner");
+      assert.equal(await store.recoverScheduleOccurrenceClaim(recoveryScheduleId, recoveryTime), true);
+      const recoveredSchedule = (await store.listSchedules()).find((entry) => entry.scheduleId === recoveryScheduleId);
+      assert.equal(recoveredSchedule?.dispatchOwner, undefined);
+      assert.equal(recoveredSchedule?.pendingOccurrence?.status, "awaiting_approval");
       await store.setScheduleStatus(scheduleId, "deleted");
       assert.equal((await store.listSchedules()).some((entry) => entry.scheduleId === scheduleId), false);
       assert.equal((await store.listSchedules(true)).some((entry) => entry.scheduleId === scheduleId), true);

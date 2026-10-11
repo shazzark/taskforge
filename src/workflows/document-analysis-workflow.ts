@@ -141,15 +141,19 @@ export async function analyzeDocument(
   store: Persistence,
   extension: unknown,
   input: Uint8Array,
+  scheduledRunId?: string,
 ): Promise<DocumentAnalysisResult> {
   const format = parseFormat(extension);
   const inputHash = createHash("sha256").update(input).digest("hex");
-  const runId = randomUUID();
-  const run = await store.saveRunSummary({
-    runId,
-    workflowId: WORKFLOW_ID,
+  const runId = scheduledRunId ?? randomUUID();
+  const existing = scheduledRunId === undefined ? null : await store.getRunSummary(runId);
+  const run = existing ?? await store.saveRunSummary({
+    runId, workflowId: WORKFLOW_ID,
     summary: "Document analysis started; file name, extracted text, sheet names, and cell values are not persisted.",
   });
+  if (run.workflowId !== WORKFLOW_ID || (existing !== null && existing.state !== "awaiting_approval")) {
+    throw new DocumentWorkflowError("Scheduled document run is not awaiting fresh approval.");
+  }
   await store.updateRunState(runId, "running");
   await store.appendRunEvent({ runId, eventId: randomUUID(), type: "run_started" });
   return executeAnalysis(store, run, format, input, inputHash, false);

@@ -1,4 +1,5 @@
 import { MongoClient, type Collection, type Document } from "mongodb";
+import { createHash } from "node:crypto";
 import { extname, isAbsolute } from "node:path";
 import { parseConfiguration } from "./config.js";
 
@@ -8,7 +9,7 @@ export interface RunSummaryInput {
   readonly summary: string;
 }
 
-export type RunState = "created" | "running" | "completed" | "failed" | "cancelled" | "uncertain";
+export type RunState = "created" | "awaiting_approval" | "running" | "completed" | "failed" | "cancelled" | "uncertain";
 
 export interface RunSummary extends RunSummaryInput {
   readonly state: RunState;
@@ -60,6 +61,7 @@ export type ScheduleStatus = "active" | "paused" | "completed" | "deleted";
 export type ScheduleOccurrenceStatus = "awaiting_approval" | "missed" | "completed" | "failed";
 
 export interface ScheduleOccurrence {
+  readonly runId: string;
   readonly scheduledFor: Date;
   readonly status: ScheduleOccurrenceStatus;
   readonly missedCount: number;
@@ -157,7 +159,8 @@ const EVENT_TYPES: ReadonlySet<string> = new Set([
 ]);
 const TERMINAL_STATES = new Set<RunState>(["completed", "failed", "cancelled"]);
 const ALLOWED_RUN_TRANSITIONS: Readonly<Record<RunState, ReadonlySet<RunState>>> = {
-  created: new Set(["running", "failed", "cancelled", "uncertain"]),
+  created: new Set(["awaiting_approval", "running", "failed", "cancelled", "uncertain"]),
+  awaiting_approval: new Set(["running", "failed", "cancelled"]),
   running: new Set(["completed", "failed", "cancelled", "uncertain"]),
   completed: new Set(),
   failed: new Set(),
@@ -269,7 +272,7 @@ function parseRunEventInput(value: unknown): RunEventInput {
 }
 
 function isRunState(value: unknown): value is RunState {
-  return value === "created" || value === "running" || value === "completed" ||
+  return value === "created" || value === "awaiting_approval" || value === "running" || value === "completed" ||
     value === "failed" || value === "cancelled" || value === "uncertain";
 }
 
@@ -360,19 +363,28 @@ function parseScheduleDefinition(value: unknown): ScheduleDefinition {
   };
 }
 
-function parseScheduleOccurrence(value: unknown): ScheduleOccurrence {
+function parseScheduleOccurrence(value: unknown, scheduleId?: string): ScheduleOccurrence {
   if (!isRecord(value)) throw new DatabasePersistenceError();
   const scheduledFor = value["scheduledFor"];
   const recordedAt = value["recordedAt"];
   const status = value["status"];
   const missedCount = value["missedCount"];
+  const runIdValue = value["runId"];
   if (
     !(scheduledFor instanceof Date) || Number.isNaN(scheduledFor.getTime()) ||
     !(recordedAt instanceof Date) || Number.isNaN(recordedAt.getTime()) ||
     (status !== "awaiting_approval" && status !== "missed" && status !== "completed" && status !== "failed") ||
-    typeof missedCount !== "number" || !Number.isSafeInteger(missedCount) || missedCount < 0 || missedCount > 100_000
+    typeof missedCount !== "number" || !Number.isSafeInteger(missedCount) || missedCount < 0 || missedCount > 100_000 ||
+    (runIdValue !== undefined && (typeof runIdValue !== "string" || runIdValue.length > 128))
   ) throw new DatabasePersistenceError();
-  return { scheduledFor, recordedAt, status, missedCount };
+  const runId = typeof runIdValue === "string"
+    ? runIdValue
+    : scheduleId === undefined ? "legacy-occurrence" : scheduleOccurrenceRunId(scheduleId, scheduledFor);
+  return { runId, scheduledFor, recordedAt, status, missedCount };
+}
+
+function scheduleOccurrenceRunId(scheduleId: string, scheduledFor: Date): string {
+  return `schedule-${createHash("sha256").update(`${scheduleId}:${scheduledFor.getTime()}`).digest("hex")}`;
 }
 
 function parseStoredSchedule(value: unknown): ScheduleRecord {
@@ -406,8 +418,8 @@ function parseStoredSchedule(value: unknown): ScheduleRecord {
     status,
     createdAt,
     updatedAt,
-    occurrences: occurrencesValue.map(parseScheduleOccurrence),
-    ...(pendingOccurrenceValue === undefined ? {} : { pendingOccurrence: parseScheduleOccurrence(pendingOccurrenceValue) }),
+    occurrences: occurrencesValue.map((occurrence) => parseScheduleOccurrence(occurrence, definition.scheduleId)),
+    ...(pendingOccurrenceValue === undefined ? {} : { pendingOccurrence: parseScheduleOccurrence(pendingOccurrenceValue, definition.scheduleId) }),
     ...(typeof dispatchOwnerValue === "string" && dispatchStartedAtValue instanceof Date
       ? { dispatchOwner: dispatchOwnerValue, dispatchStartedAt: dispatchStartedAtValue }
       : {}),
@@ -560,6 +572,25 @@ export class MongoStore {
     }
 
     return parseStoredRunSummary(document);
+  }
+
+  private async ensureScheduledRun(schedule: ScheduleRecord, occurrence: ScheduleOccurrence): Promise<void> {
+    let run = await this.getRunSummary(occurrence.runId);
+    if (run === null) {
+      try {
+        run = await this.saveRunSummary({
+          runId: occurrence.runId,
+          workflowId: schedule.workflowId,
+          summary: "Scheduled run is awaiting fresh user approval; no input has been read.",
+        });
+      } catch {
+        // Another scheduler may have repaired the same deterministic occurrence concurrently.
+        run = await this.getRunSummary(occurrence.runId);
+        if (run === null) throw new DatabasePersistenceError();
+      }
+    }
+    if (run.workflowId !== schedule.workflowId) throw new DatabasePersistenceError();
+    if (run.state === "created") await this.updateRunState(run.runId, "awaiting_approval");
   }
 
   async updateRunSummary(runIdValue: unknown, summaryValue: unknown): Promise<RunSummary> {
@@ -896,7 +927,10 @@ export class MongoStore {
         ? scheduledFor
         : new Date(scheduledFor.getTime() + Math.max(1, missedCount) * intervalMs);
       const status: ScheduleStatus = intervalMs === undefined ? "completed" : "active";
-      const occurrence: ScheduleOccurrence = { scheduledFor, status: outcome, missedCount, recordedAt: nowValue };
+      const occurrence: ScheduleOccurrence = {
+        runId: scheduleOccurrenceRunId(current.scheduleId, scheduledFor),
+        scheduledFor, status: outcome, missedCount, recordedAt: nowValue,
+      };
       try {
         const update: Document = {
           $set: {
@@ -913,7 +947,9 @@ export class MongoStore {
           { returnDocument: "after" },
         );
         if (updated !== null) {
-          claims.push({ schedule: parseStoredSchedule(updated), occurrence });
+          const savedSchedule = parseStoredSchedule(updated);
+          if (outcome === "awaiting_approval") await this.ensureScheduledRun(savedSchedule, occurrence);
+          claims.push({ schedule: savedSchedule, occurrence });
         }
       } catch {
         throw new DatabasePersistenceError();
@@ -942,6 +978,7 @@ export class MongoStore {
     for (const candidate of candidates) {
       if (candidate.schedule.dispatchOwner !== undefined) continue;
       try {
+        await this.ensureScheduledRun(candidate.schedule, candidate.occurrence);
         const updated = await this.schedules.findOneAndUpdate(
           {
             _id: candidate.schedule.scheduleId,
@@ -975,6 +1012,27 @@ export class MongoStore {
       if (result.modifiedCount !== 1) throw new PersistenceInputError("Schedule occurrence claim was not found.");
     } catch (error: unknown) {
       if (error instanceof PersistenceInputError) throw error;
+      throw new DatabasePersistenceError();
+    }
+  }
+
+  async recoverScheduleOccurrenceClaim(scheduleIdValue: unknown, scheduledForValue: unknown): Promise<boolean> {
+    const scheduleId = parseIdentifier(scheduleIdValue, "Schedule id");
+    if (!(scheduledForValue instanceof Date) || Number.isNaN(scheduledForValue.getTime())) {
+      throw new PersistenceInputError("A valid scheduled occurrence time is required.");
+    }
+    try {
+      const result = await this.schedules.updateOne(
+        {
+          _id: scheduleId,
+          dispatchOwner: { $exists: true },
+          "pendingOccurrence.scheduledFor": scheduledForValue,
+          "pendingOccurrence.status": "awaiting_approval",
+        },
+        { $unset: { dispatchOwner: "", dispatchStartedAt: "" }, $set: { updatedAt: new Date() } },
+      );
+      return result.modifiedCount === 1;
+    } catch {
       throw new DatabasePersistenceError();
     }
   }

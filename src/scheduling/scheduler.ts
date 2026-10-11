@@ -1,12 +1,13 @@
-import type { MongoStore, ScheduleRecord } from "../mongo-store.js";
+import type { MongoStore, ScheduleOccurrence, ScheduleRecord } from "../mongo-store.js";
 import { setTimeout as delay } from "node:timers/promises";
 
 const SCHEDULER_GRACE_MS = 30_000;
 const DEFAULT_POLL_INTERVAL_MS = 10_000;
+const STALE_RUN_AGE_MS = 2 * 60_000;
 
 type SchedulerPersistence = Pick<
   MongoStore,
-  "claimDueSchedules" | "claimPendingScheduleOccurrences" | "releaseScheduleOccurrenceClaim" | "listPendingScheduleOccurrences" | "finishScheduleOccurrence"
+  "claimDueSchedules" | "claimPendingScheduleOccurrences" | "releaseScheduleOccurrenceClaim" | "listPendingScheduleOccurrences" | "finishScheduleOccurrence" | "getRunSummary" | "recoverStaleRun"
 >;
 
 export interface SchedulerTickResult {
@@ -21,7 +22,7 @@ export interface SchedulerTickOptions {
   readonly now: Date;
   readonly userPresent: boolean;
   readonly confirm: (schedule: ScheduleRecord, scheduledFor: Date) => Promise<boolean>;
-  readonly execute: (schedule: ScheduleRecord) => Promise<boolean>;
+  readonly execute: (schedule: ScheduleRecord, occurrence: ScheduleOccurrence) => Promise<boolean>;
   readonly attemptedOccurrences: Set<string>;
   readonly ownerId: string;
 }
@@ -50,6 +51,25 @@ export async function runSchedulerTick(
       continue;
     }
     options.attemptedOccurrences.add(key);
+    const existingRun = await store.getRunSummary(entry.occurrence.runId);
+    if (existingRun?.state === "completed") {
+      await store.finishScheduleOccurrence(entry.schedule.scheduleId, entry.occurrence.scheduledFor, "completed", options.ownerId);
+      completed += 1;
+      continue;
+    }
+    if (existingRun?.state === "failed" || existingRun?.state === "cancelled") {
+      await store.finishScheduleOccurrence(entry.schedule.scheduleId, entry.occurrence.scheduledFor, "failed", options.ownerId);
+      failed += 1;
+      continue;
+    }
+    if (existingRun?.state === "running") {
+      const recovered = await store.recoverStaleRun(entry.occurrence.runId, new Date(options.now.getTime() - STALE_RUN_AGE_MS));
+      if (!recovered) {
+        await store.releaseScheduleOccurrenceClaim(entry.schedule.scheduleId, entry.occurrence.scheduledFor, options.ownerId);
+        options.attemptedOccurrences.delete(key);
+        continue;
+      }
+    }
     let approved: boolean;
     try {
       approved = await options.confirm(entry.schedule, entry.occurrence.scheduledFor);
@@ -62,7 +82,7 @@ export async function runSchedulerTick(
       continue;
     }
     try {
-      const didRun = await options.execute(entry.schedule);
+      const didRun = await options.execute(entry.schedule, entry.occurrence);
       if (!didRun) {
         await store.releaseScheduleOccurrenceClaim(entry.schedule.scheduleId, entry.occurrence.scheduledFor, options.ownerId);
         continue;
@@ -70,8 +90,17 @@ export async function runSchedulerTick(
       await store.finishScheduleOccurrence(entry.schedule.scheduleId, entry.occurrence.scheduledFor, "completed", options.ownerId);
       completed += 1;
     } catch {
-      await store.finishScheduleOccurrence(entry.schedule.scheduleId, entry.occurrence.scheduledFor, "failed", options.ownerId);
-      failed += 1;
+      const afterFailure = await store.getRunSummary(entry.occurrence.runId);
+      if (afterFailure?.state === "completed") {
+        await store.finishScheduleOccurrence(entry.schedule.scheduleId, entry.occurrence.scheduledFor, "completed", options.ownerId);
+        completed += 1;
+      } else if (afterFailure?.state === "running" || afterFailure?.state === "uncertain") {
+        await store.releaseScheduleOccurrenceClaim(entry.schedule.scheduleId, entry.occurrence.scheduledFor, options.ownerId);
+        options.attemptedOccurrences.delete(key);
+      } else {
+        await store.finishScheduleOccurrence(entry.schedule.scheduleId, entry.occurrence.scheduledFor, "failed", options.ownerId);
+        failed += 1;
+      }
     }
   }
   const remaining = await store.listPendingScheduleOccurrences();

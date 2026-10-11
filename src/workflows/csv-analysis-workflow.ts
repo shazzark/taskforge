@@ -102,14 +102,17 @@ async function executeAnalysis(
 export async function runCsvAnalysisWorkflow(
   store: MongoStore,
   input: Uint8Array,
+  scheduledRunId?: string,
 ): Promise<CsvWorkflowResult> {
   const inputHash = createHash("sha256").update(input).digest("hex");
-  const runId = randomUUID();
-  const run = await store.saveRunSummary({
-    runId,
-    workflowId: WORKFLOW_ID,
-    summary: "CSV analysis started; input content is not persisted.",
+  const runId = scheduledRunId ?? randomUUID();
+  const existing = scheduledRunId === undefined ? null : await store.getRunSummary(runId);
+  const run = existing ?? await store.saveRunSummary({
+    runId, workflowId: WORKFLOW_ID, summary: "CSV analysis started; input content is not persisted.",
   });
+  if (run.workflowId !== WORKFLOW_ID || (existing !== null && existing.state !== "awaiting_approval")) {
+    throw new CsvWorkflowError("Scheduled CSV run is not awaiting fresh approval.");
+  }
   await store.updateRunState(runId, "running");
   await store.appendRunEvent({ runId, eventId: randomUUID(), type: "run_started" });
   return executeAnalysis(store, run, inputHash, input, false);

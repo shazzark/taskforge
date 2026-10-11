@@ -36,7 +36,7 @@ import type { ScheduleRecord, ScheduleWorkflowId } from "./mongo-store.js";
 
 const helpText = `TaskForge ${packageJson.version} (early development)
 
-Usage: taskforge [--help | --version | config | doctor | model-check | chat | run csv-analyze --input <path> | run document-analyze --input <path> | run pdf-report --input <json> --output <new.pdf> | run draft --input <draft.json> --output <new.md> | run specialist-review --root <directory> --file <relative-path> [...] | run research --query <question> | run browser-audit --url <loopback-url> | run repo-inspect --root <directory> | run source-review --root <directory> --file <relative-path> [...] | run model-investigate --root <directory> --file <relative-path> [...] | run github-issues --repository <owner/name> | run file-patch --root <directory> --target <relative-path> --content-file <relative-path> | run git-diff --root <directory> | run software-check --root <directory> --check <node-test|typescript-check> | resume <run-id> --input <path> | history list | schedule add/list/pause/resume/delete/run]
+Usage: taskforge [--help | --version | config | doctor | model-check | chat | run csv-analyze --input <path> | run document-analyze --input <path> | run pdf-report --input <json> --output <new.pdf> | run draft --input <draft.json> --output <new.md> | run specialist-review --root <directory> --file <relative-path> [...] | run research --query <question> | run browser-audit --url <loopback-url> | run repo-inspect --root <directory> | run source-review --root <directory> --file <relative-path> [...] | run model-investigate --root <directory> --file <relative-path> [...] | run github-issues --repository <owner/name> | run file-patch --root <directory> --target <relative-path> --content-file <relative-path> | run git-diff --root <directory> | run software-check --root <directory> --check <node-test|typescript-check> | resume <run-id> --input <path> | history list | schedule add/list/pause/resume/delete/recover/run]
 
 The config command validates local settings and prints a redacted summary.
 The doctor command checks configured MongoDB connectivity and reports available setup areas.
@@ -268,14 +268,20 @@ async function askScheduleQuestion(question: string): Promise<boolean> {
   }
 }
 
-async function executeScheduledWorkflow(store: MongoStore, schedule: ScheduleRecord): Promise<boolean> {
+async function executeScheduledWorkflow(store: MongoStore, schedule: ScheduleRecord, occurrence: { readonly runId: string }): Promise<boolean> {
   const input = await readApprovedInputFile(schedule.inputPath);
   if (input === undefined) return false;
   if (schedule.workflowId === "csv-analyze") {
-    const result = await runCsvAnalysisWorkflow(store, input);
+    const current = await store.getRunSummary(occurrence.runId);
+    const result = current?.state === "uncertain"
+      ? await resumeCsvAnalysisWorkflow(store, occurrence.runId, input)
+      : await runCsvAnalysisWorkflow(store, input, occurrence.runId);
     process.stdout.write(`Scheduled run ${result.run.runId} completed: ${result.analysis.rowCount} CSV rows.\n`);
   } else {
-    const result = await analyzeDocument(store, extname(schedule.inputPath).toLowerCase(), input);
+    const current = await store.getRunSummary(occurrence.runId);
+    const result = current?.state === "uncertain"
+      ? await resumeDocumentAnalysisWorkflow(store, occurrence.runId, extname(schedule.inputPath).toLowerCase(), input)
+      : await analyzeDocument(store, extname(schedule.inputPath).toLowerCase(), input, occurrence.runId);
     process.stdout.write(`Scheduled run ${result.run.runId} completed: ${result.analysis.format}, ${result.analysis.wordCount} words.\n`);
   }
   return true;
@@ -336,6 +342,27 @@ async function runScheduleCommand(commandArgs: readonly string[]): Promise<void>
     if (schedule !== undefined) process.stdout.write(`Schedule ${schedule.scheduleId}: ${schedule.status}.\n`);
     return;
   }
+  if (action === "recover" && commandArgs.length === 2 && commandArgs[1] !== undefined) {
+    if (!process.stdin.isTTY || !process.stdout.isTTY) {
+      process.stderr.write("Recovering a claimed occurrence requires an interactive terminal.\n");
+      process.exitCode = 2;
+      return;
+    }
+    await withMongoStore(async (store) => {
+      const schedule = (await store.listSchedules(true)).find((entry) => entry.scheduleId === commandArgs[1]);
+      if (schedule?.pendingOccurrence === undefined || schedule.dispatchOwner === undefined) {
+        process.stderr.write("No claimed pending occurrence was found for that schedule.\n");
+        return;
+      }
+      const approved = await askScheduleQuestion(
+        `Confirm the prior scheduler process is stopped and release its claim for ${schedule.pendingOccurrence.scheduledFor.toISOString()}? A fresh run and file approval will still be required.`,
+      );
+      if (!approved) return;
+      const recovered = await store.recoverScheduleOccurrenceClaim(schedule.scheduleId, schedule.pendingOccurrence.scheduledFor);
+      process.stdout.write(recovered ? "Occurrence claim released; the next scheduler run will request fresh approval.\n" : "Occurrence claim changed before recovery; no change made.\n");
+    });
+    return;
+  }
   if (action === "run" && (commandArgs.length === 1 || (commandArgs.length === 2 && commandArgs[1] === "--once"))) {
     const controller = new AbortController();
     const handleInterrupt = (): void => controller.abort();
@@ -351,7 +378,7 @@ async function runScheduleCommand(commandArgs: readonly string[]): Promise<void>
             attemptedOccurrences: attempted,
             ownerId,
             confirm: async (schedule, scheduledFor) => askScheduleQuestion(`Run ${schedule.workflowId} for ${basename(schedule.inputPath)} scheduled at ${scheduledFor.toISOString()}?`),
-            execute: (schedule) => executeScheduledWorkflow(store, schedule),
+            execute: (schedule, occurrence) => executeScheduledWorkflow(store, schedule, occurrence),
           });
           if (result.claimed > 0 || result.missed > 0 || result.completed > 0 || result.failed > 0) {
             process.stdout.write(`Scheduler tick: claimed=${result.claimed}, pending=${result.pending}, missed=${result.missed}, completed=${result.completed}, failed=${result.failed}.\n`);
@@ -369,7 +396,7 @@ async function runScheduleCommand(commandArgs: readonly string[]): Promise<void>
     }
     return;
   }
-  process.stderr.write("Expected schedule add|list|pause|resume|delete|run [--once].\n");
+  process.stderr.write("Expected schedule add|list|pause|resume|delete|recover|run [--once].\n");
   process.exitCode = 1;
 }
 
