@@ -1,15 +1,18 @@
 # Third-party license review notes
 
-This file records the reviewed findings for the currently installed dependency tree. It is not legal advice; a release owner should confirm distribution obligations for the final locked tree.
+This records the reviewed production dependency findings for the current lockfile. It is not legal advice; the release owner must recheck the final distributed dependency tree and its notices.
 
 ## License metadata findings
 
-- `png-js@2.0.0` is a transitive dependency of `pdfkit@0.20.2`. Its package metadata omits an SPDX license field, but the installed upstream `LICENSE` file states MIT and names Devon Govett, copyright 2017. The MIT license text is included in the package's installed `node_modules/png-js/LICENSE`.
-- `jszip@3.10.2` declares `MIT OR GPL-3.0-or-later`. The upstream `LICENSE.markdown` explicitly permits either choice. TaskForge selects the MIT option for this dependency and its notice. The package's installed file includes both license texts.
-- `buffers@0.1.1` currently appears through ExcelJS → unzipper → binary and has no license metadata or package license file. This is unresolved and is a release blocker until the dependency is removed or an acceptable license is independently established.
+- `archiver@7.0.1` and `unzipper@0.12.5` declare MIT. Both are ExcelJS-scoped overrides; their licenses are present in their installed packages.
+- `glob@13.0.6` declares Blue Oak Model License 1.0.0. TaskForge's installed copy includes the license text. The license requires recipients of copies to receive the license text or a link; use [the Blue Oak Model License 1.0.0](https://blueoakcouncil.org/license/1.0.0).
+- `png-js@2.0.0`, a PDFKit transitive dependency, omits an SPDX field but the installed upstream `LICENSE` states MIT and names Devon Govett, copyright 2017.
+- `jszip@3.10.2` declares `MIT OR GPL-3.0-or-later`. TaskForge selects the MIT option; the installed package contains both license texts.
 
-The selected MIT notices are retained with the installed packages and can be inspected in a clean install. Exact package versions must be rechecked when the lockfile changes.
+## Dependency and deprecation findings
 
-## Deprecation findings
+ExcelJS 4.4.0 now resolves `archiver@7.0.1` and `unzipper@0.12.5`. This removes `buffers@0.1.1`, which had no license metadata or license file, as well as the deprecated `inflight@1.0.6` and `glob@7.2.3` chain. `glob@13.0.6` is used through archiver-utils and supports TaskForge's Node.js >=22.13 baseline. The ExcelJS API compatibility overrides are verified by the full document fixture suite, including DOCX and XLSX extraction and malformed/formula-bearing XLSX rejection. The unzipper advisory is internally inconsistent: its title says versions through 0.12.4, its affected-version body says through 0.12.3, and it lists no patched release. Installed 0.12.5 is outside both stated ranges, but upstream does not explicitly certify it as patched. ExcelJS's installed reader uses unzipper's streaming `Parse` API, while the advisory concerns extraction-to-filesystem path validation. Recheck the upstream advisory and package behavior before release; npm audit's zero-vulnerability result does not settle this separate GitHub advisory.
 
-`glob@7.2.3` and `inflight@1.0.6` are deprecated transitive dependencies in the ExcelJS archive path. Do not force a major-version override without verified compatibility. Registry access and DOCX/XLSX regression verification are required before changing this tree. The 2026-10-11 installed-tree scan still reports these packages; this note does not claim remediation.
+Upstream evidence: [ExcelJS issue #2866](https://github.com/exceljs/exceljs/issues/2866) reports that unzipper 0.12.3 removes the unlicensed buffers package and notes no interference with ExcelJS 4.4.0; [unzipper security advisory GHSA-2756-j7rr-9464](https://github.com/ZJONSSON/node-unzipper/security/advisories/GHSA-2756-j7rr-9464); [glob 13.0.6 package metadata](https://github.com/isaacs/node-glob/blob/v13.0.6/package.json); [glob 13.0.6 license](https://github.com/isaacs/node-glob/blob/v13.0.6/LICENSE.md); [archiver 7.0.1 changelog](https://github.com/archiverjs/node-archiver/blob/7.0.1/CHANGELOG.md).
+
+`npm audit --omit=dev --audit-level=high` reported zero production vulnerabilities. The installed production tree passed `npm ls --omit=dev --all --parseable`. Exact versions and upstream license/deprecation data must be rechecked when dependencies change. These notes record evidence, not a legal determination.

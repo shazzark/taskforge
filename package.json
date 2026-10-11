@@ -11,7 +11,8 @@
   "files": [
     "dist",
     "README.md",
-    "LICENSE"
+    "LICENSE",
+    "THIRD_PARTY_NOTICES.md"
   ],
   "bin": {
     "taskforge": "dist/cli.js"
@@ -43,6 +44,11 @@
     "yauzl": "^3.4.0"
   },
   "overrides": {
+    "exceljs": {
+      "archiver": "^7.0.1",
+      "unzipper": "^0.12.3"
+    },
+    "glob": "^13.0.6",
     "uuid": "^11.1.1"
   }
 }
