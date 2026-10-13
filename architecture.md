@@ -16,6 +16,8 @@ Phase 3.1 provides a library foundation for explicit realpath-resolved roots, se
 
 Phase 3.4 adds MongoDB `folder_approvals` records with canonical absolute paths, independent read/write scopes, active/revoked status, and interactive `permissions approve/list/revoke` CLI commands. Revocation is soft and retained for audit. CLI file and repository workflows check that an active grant covers the canonical target path and required access scope before creating their operation-scoped in-memory path policy. A stale or unavailable database fails closed; secret-path and symlink/junction checks remain in force.
 
+Phase 4.10 adds optional JSON, CSV, and Markdown exports for `csv-analyze`. These reports contain aggregate row, duplicate-row, and missing-cell counts only. The user reviews the content and confirms a path and digest; persistent folder write permission and create-only hash-verified artifact output are required.
+
 ## Commands and browser risks
 A shell process can bypass a simple file-reader restriction. Initial command tooling therefore uses reviewed executable/argument combinations, working directories, environment filtering and explicit approvals. This is not an OS sandbox. General unrestricted shell mode cannot claim secret-file protection; keep it out until isolation and disclosure are implemented. Browser profiles must not inherit all personal sessions. Use explicit contexts/accounts, prevent credentials entering logs, and gate form submissions. Untrusted webpages, files and tool outputs are data, never authority to change permissions.
 

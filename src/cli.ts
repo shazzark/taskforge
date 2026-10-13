@@ -19,7 +19,7 @@ import {
 import { createModelProvider } from "./providers/create-provider.js";
 import { ModelProviderError } from "./providers/types.js";
 import { PathPolicyError, WorkspacePathPolicy } from "./security/path-policy.js";
-import { CsvWorkflowError, resumeCsvAnalysisWorkflow, runCsvAnalysisWorkflow } from "./workflows/csv-analysis-workflow.js";
+import { CsvWorkflowError, resumeCsvAnalysisWorkflow, runCsvAnalysisWorkflow, type CsvWorkflowResult } from "./workflows/csv-analysis-workflow.js";
 import { inspectRepository, RepositoryInspectionError } from "./workflows/repository-inspection-workflow.js";
 import { analyzeDocument, DocumentWorkflowError, resumeDocumentAnalysisWorkflow } from "./workflows/document-analysis-workflow.js";
 import { runReviewedCommand, type ReviewedCommandId, ReviewedCommandError } from "./software/reviewed-command.js";
@@ -30,7 +30,8 @@ import { prepareFilePatch, applyPreparedFilePatch, PatchApplicationError } from 
 import { GitDiffReviewError, listGitDiffFiles, readGitDiff } from "./software/git-diff-review.js";
 import { investigateSource, ModelInvestigationError } from "./software/model-investigation.js";
 import { GitHubReadError, readPublicIssues } from "./integrations/github-public-issues.js";
-import { DraftArtifactError, parseLocalDraftInput, previewTextArtifact, writeApprovedTextArtifact } from "./artifacts/drafts.js";
+import { DraftArtifactError, parseLocalDraftInput, previewPlainTextArtifact, previewTextArtifact, writeApprovedTextArtifact } from "./artifacts/drafts.js";
+import { csvAnalysisExportFormat, CsvAnalysisExportError, renderCsvAnalysisExport, type CsvAnalysisExportFormat } from "./artifacts/csv-analysis-export.js";
 import { escapeTerminalControls } from "./security/terminal-text.js";
 import { BrowserSearchError, GroqBrowserResearch } from "./integrations/groq-browser-search.js";
 import { BrowserAuditError, runBrowserAudit, validateLoopbackBrowserTarget } from "./workflows/browser-audit-workflow.js";
@@ -39,7 +40,7 @@ import type { ScheduleRecord, ScheduleWorkflowId } from "./mongo-store.js";
 
 const helpText = `TaskForge ${packageJson.version} (early development)
 
-Usage: taskforge [--help | --version | config | doctor | model-check | chat | permissions approve/list/revoke | run ... | resume <run-id> --input <path> | history list | schedule ...]
+Usage: taskforge [--help | --version | config | doctor | model-check | chat | permissions approve/list/revoke | run csv-analyze --input <path> [--output <new.json|csv|md>] | run ... | resume <run-id> --input <path> | history list | schedule ...]
 
 The config command validates local settings and prints a redacted summary.
 The doctor command checks configured MongoDB connectivity and reports available setup areas.
@@ -234,27 +235,68 @@ async function runPermissionsCommand(commandArgs: readonly string[]): Promise<vo
 }
 
 async function runCsvWorkflowCommand(commandArgs: readonly string[]): Promise<void> {
-  const inputPath = inputPathArgument(commandArgs);
-  if (inputPath === undefined) {
-    process.stderr.write("Expected --input followed by a file path.\n");
+  const inputPath = commandArgs.length >= 2 && commandArgs[0] === "--input" ? commandArgs[1] : undefined;
+  const outputPath = commandArgs.length === 4 && commandArgs[2] === "--output" ? commandArgs[3] : undefined;
+  if (inputPath === undefined || (commandArgs.length !== 2 && (commandArgs.length !== 4 || outputPath === undefined))) {
+    process.stderr.write("Expected --input <path> [--output <new.json|new.csv|new.md>].\n");
     process.exitCode = 1;
     return;
+  }
+  let exportFormat: CsvAnalysisExportFormat | undefined;
+  if (outputPath !== undefined) {
+    try {
+      exportFormat = csvAnalysisExportFormat(outputPath);
+    } catch (error: unknown) {
+      process.stderr.write(`${error instanceof CsvAnalysisExportError ? error.message : "CSV export path was rejected."}\n`);
+      process.exitCode = 1;
+      return;
+    }
   }
   const input = await readApprovedInputFile(inputPath);
   if (input === undefined) {
     return;
   }
+  let result: CsvWorkflowResult | undefined;
   try {
-    const result = await withMongoStore((store) => runCsvAnalysisWorkflow(store, input));
-    if (result !== undefined) {
-      const totals = Object.entries(result.analysis.numericTotals).map(([column, total]) => `${column}=${total}`);
-      process.stdout.write(`Run ${result.run.runId} ${result.resumed ? "resumed" : "completed"}: ${result.analysis.rowCount} rows, ${result.analysis.duplicateRowCount} duplicate rows.\n`);
-      if (totals.length > 0) {
-        process.stdout.write(`Numeric totals: ${totals.join(", ")}\n`);
-      }
-    }
+    result = await withMongoStore((store) => runCsvAnalysisWorkflow(store, input));
   } catch (error: unknown) {
     process.stderr.write(error instanceof CsvWorkflowError ? `CSV workflow failed: ${error.message}\n` : "CSV workflow failed; run state was preserved where possible.\n");
+    process.exitCode = 3;
+    return;
+  }
+  if (result === undefined) return;
+  const totals = Object.entries(result.analysis.numericTotals).map(([column, total]) => `${column}=${total}`);
+  process.stdout.write(`Run ${result.run.runId} ${result.resumed ? "resumed" : "completed"}: ${result.analysis.rowCount} rows, ${result.analysis.duplicateRowCount} duplicate rows.\n`);
+  if (totals.length > 0) process.stdout.write(`Numeric totals: ${totals.join(", ")}\n`);
+  if (outputPath === undefined || exportFormat === undefined) return;
+  try {
+    const requestedOutput = resolve(outputPath);
+    const policy = new WorkspacePathPolicy();
+    const outputRoot = await policy.approveRoot(dirname(requestedOutput));
+    await requirePersistentFolderApproval(outputRoot.path, "write");
+    const approvals = new ActionApprovalRegistry(policy);
+    const content = renderCsvAnalysisExport(result.analysis, exportFormat);
+    const pending = await previewPlainTextArtifact(content, requestedOutput, outputRoot, policy, approvals);
+    process.stdout.write(`\n--- CSV AGGREGATE EXPORT PREVIEW ---\n${escapeTerminalControls(pending.content)}\n`);
+    const consent = createInterface({ input: process.stdin, output: process.stdout });
+    let answer: string;
+    try {
+      answer = await consent.question(`Create this new ${exportFormat} aggregate report?\nPath: ${escapeTerminalControls(pending.preview.targetPath)}\nBytes: ${Buffer.byteLength(pending.content, "utf8")}\nSHA-256: ${pending.digest}\nSource headers and cell values are excluded. [y/N] `);
+    } finally {
+      consent.close();
+    }
+    if (answer.trim().toLowerCase() !== "y") {
+      approvals.discard(pending.preview.previewId);
+      process.stdout.write("CSV analysis completed; export cancelled before writing.\n");
+      return;
+    }
+    const written = await writeApprovedTextArtifact(pending, approvals.approve(pending.preview.previewId), outputRoot, policy, approvals);
+    process.stdout.write(`Aggregate report created: ${written.byteCount} bytes; SHA-256 ${written.sha256}.\n`);
+  } catch (error: unknown) {
+    const detail = error instanceof CsvAnalysisExportError || error instanceof DraftArtifactError || error instanceof PersistentFolderApprovalError
+      ? error.message
+      : "the aggregate report could not be created safely";
+    process.stderr.write(`CSV export failed: ${detail}\n`);
     process.exitCode = 3;
   }
 }

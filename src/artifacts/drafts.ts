@@ -143,12 +143,31 @@ export async function previewTextArtifact(
 ): Promise<PendingTextArtifact> {
   if (typeof targetPath !== "string" || targetPath.trim().length === 0) throw new DraftArtifactError("An output path is required.");
   try {
+    const content = renderLocalDraft(input);
+    return await previewPlainTextArtifact(content, targetPath, root, policy, approvals);
+  } catch (error: unknown) {
+    if (error instanceof DraftArtifactError) throw error;
+    throw new DraftArtifactError();
+  }
+}
+
+export async function previewPlainTextArtifact(
+  content: unknown,
+  targetPath: unknown,
+  root: ApprovedRoot,
+  policy: WorkspacePathPolicy,
+  approvals: ActionApprovalRegistry,
+): Promise<PendingTextArtifact> {
+  if (typeof content !== "string" || content.length === 0 || Buffer.byteLength(content, "utf8") > MAX_DRAFT_BYTES) {
+    throw new DraftArtifactError("Text artifact must be non-empty and within the 64 KiB limit.");
+  }
+  if (typeof targetPath !== "string" || targetPath.trim().length === 0) throw new DraftArtifactError("An output path is required.");
+  try {
     if (!policy.listApprovedRoots().some((entry) => resolve(entry.path) === resolve(root.path))) throw new DraftArtifactError("Output root approval is required.");
     const target = await policy.authorizePath(targetPath, "write");
-    if (resolve(target.root) !== resolve(root.path) || target.exists) throw new DraftArtifactError("Draft output must be a new file inside the approved root.");
-    const content = renderLocalDraft(input);
+    if (resolve(target.root) !== resolve(root.path) || target.exists) throw new DraftArtifactError("Output must be a new file inside the approved root.");
     const preview = await approvals.preview({ kind: "write", targetPath: target.path, content });
-    if (preview.targetExists) throw new DraftArtifactError("Draft output already exists; choose a new file path.");
+    if (preview.targetExists) throw new DraftArtifactError("Output already exists; choose a new file path.");
     return { preview, content, digest: sha256(content) };
   } catch (error: unknown) {
     if (error instanceof DraftArtifactError) throw error;
@@ -167,15 +186,15 @@ export async function writeApprovedTextArtifact(
   try {
     const currentPreview = await approvals.revalidate(approval);
     if (currentPreview.previewId !== pending.preview.previewId || currentPreview.kind !== "write" || currentPreview.targetExists) {
-      throw new DraftArtifactError("Draft output approval is invalid or stale.");
+      throw new DraftArtifactError("Text artifact approval is invalid or stale.");
     }
     const authorized = await policy.authorizePath(currentPreview.targetPath, "write");
     if (resolve(authorized.root) !== resolve(root.path) ||
         !policy.listApprovedRoots().some((entry) => resolve(entry.path) === resolve(root.path)) || authorized.exists) {
-      throw new DraftArtifactError("Draft output must remain a new file inside the approved root.");
+      throw new DraftArtifactError("Text artifact must remain a new file inside the approved root.");
     }
     const canonicalDirectory = await realpath(dirname(authorized.path));
-    if (canonicalDirectory !== dirname(authorized.path) || sha256(pending.content) !== pending.digest) throw new DraftArtifactError("Draft output changed after preview.");
+    if (canonicalDirectory !== dirname(authorized.path) || sha256(pending.content) !== pending.digest) throw new DraftArtifactError("Text artifact changed after preview.");
     temporaryPath = resolve(canonicalDirectory, `.taskforge-${randomUUID()}.tmp`);
     const handle = await open(temporaryPath, "wx", 0o600);
     try {
@@ -188,11 +207,11 @@ export async function writeApprovedTextArtifact(
     await unlink(temporaryPath);
     temporaryPath = undefined;
     const outputPath = await realpath(authorized.path);
-    if (outputPath !== authorized.path) throw new DraftArtifactError("Written draft path changed during verification.");
+    if (outputPath !== authorized.path) throw new DraftArtifactError("Written text artifact path changed during verification.");
     const output = await open(outputPath, "r");
     try {
       const bytes = await output.readFile();
-      if (sha256(bytes) !== pending.digest) throw new DraftArtifactError("Written draft failed hash verification.");
+      if (sha256(bytes) !== pending.digest) throw new DraftArtifactError("Written text artifact failed hash verification.");
       approvals.discard(pending.preview.previewId);
       return { path: outputPath, byteCount: bytes.byteLength, sha256: pending.digest };
     } finally {
