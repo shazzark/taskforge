@@ -1545,7 +1545,7 @@ async function runBrowserAuditCommand(commandArgs: readonly string[]): Promise<v
   let answer: string;
   try {
     answer = await consent.question(
-      `Open this exact loopback page in an isolated, unauthenticated Chromium context?\n${escapeTerminalControls(target.toString())}\nOnly same-origin GET/HEAD navigation is allowed; cross-origin and unsafe methods are blocked. Aggregate counts only are stored; page text, URL, links and console messages are not. [y/N] `,
+      `Open this exact loopback page in an isolated, unauthenticated Chromium context?\n${escapeTerminalControls(target.toString())}\nOnly same-origin GET/HEAD navigation is allowed; cross-origin and unsafe methods are blocked. Aggregate counts only are stored. Bounded design observations are displayed locally and are not persisted. [y/N] `,
     );
   } finally {
     consent.close();
@@ -1570,6 +1570,8 @@ async function runBrowserAuditCommand(commandArgs: readonly string[]): Promise<v
         `${metrics.blockedExternalRequestCount} external requests blocked, ${metrics.blockedUnsafeMethodCount} unsafe methods blocked, ` +
         `${metrics.blockedRequestLimitCount} requests blocked at the limit.\n`,
       );
+      process.stdout.write("Design observations (inferred from this fixture; not original design tokens):\n");
+      for (const observation of metrics.designObservations) process.stdout.write(`- ${escapeTerminalControls(observation)}\n`);
       process.exitCode = browserAuditExitCode(result.run.state);
     }
   } catch (error: unknown) {

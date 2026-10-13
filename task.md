@@ -279,6 +279,14 @@ Added `run research --query <question>`. It requires a TTY and explicit confirma
 
 **Remaining Phase 6:** The verified local fixture browser foundation is complete. Broader audit/design workflows and an explicitly approved real-site journey remain pending.
 
+#### Phase 6.4 — Fixture design observations — COMPLETE (loopback fixture slice)
+
+The loopback browser audit displays bounded CSS custom-property names and counts of semantic/component-like elements. Results are escaped for terminal display and are excluded from MongoDB summaries/events. This is a fixture-only observation slice and does not claim original design-system recovery.
+
+**Checks:** `npm run typecheck`, `npm run build`, and `node --test test/browser-audit.test.mjs` passed (5/5). Full `npm test` with `TASKFORGE_TEST_MONGODB_URI=mongodb://127.0.0.1:27017/taskforge_test` passed (120 passed, 0 skipped, 0 failed), including the dedicated live MongoDB persistence test. The fixture verifies bounded safe CSS custom-property names and component counts appear in the local report, bidi controls are excluded, and design values/observations are absent from persisted metadata. Independent review found no remaining actionable boundedness or privacy findings after limiting the CSS scan, ASCII-filtering emitted names, and capping DOM traversal at 2,000 elements.
+
+**Remaining Phase 6:** Owner-provided real-site target and journey are still required before live navigation. Research comparison and broader design/accessibility/security workflows remain incomplete.
+
 ### Phase 7 — Connections, scheduling and specialist agents — IN PROGRESS
 
 **Goal:** Add GitHub read/drafts, local schedules, email drafts and bounded delegation.
@@ -319,7 +327,7 @@ Workers now run through the shared `AgentBudgetLedger` and can receive an explic
 
 **Checks:** `npm run typecheck` and `npm run build` passed; focused specialist and permission CLI tests passed (13/13). The full isolated MongoDB suite passed (120 passed, 0 failed, 0 skipped), including shared request/action budget exhaustion and tool-action status coverage. Independent permission review found no actionable findings after the status-classification fix. `git diff --check` passed.
 
-**Remaining:** Browser/data specialist integrations are not implemented.
+**Changed files:** `src/agent/specialist-review.ts`, `src/cli.ts`, `test/specialist-review.test.mjs`, README, architecture, TRD, implementation plan, and this tracker. Commit: `ccf97ca`.\n\n**Remaining:** Browser/data specialist integrations are not implemented.
 
 ### Phase 8 — Release gate — IN PROGRESS
 
@@ -359,7 +367,7 @@ Added ExcelJS-scoped overrides to `archiver@7.0.1` and `unzipper@0.12.5`, plus a
 
 ## Recovery
 
-- **Latest checkpoint:** Phase 5.7 targeted Node test execution is committed as `bb5adb4`. Phase 4.10–4.15 are committed through `f5ffdbe`; Phases 3–5 are COMPLETE for their declared v1 workflows, including Phase 5.8 TypeScript build support (`a14c4e1`, tracker correction `0485de7`). Phase 6.3 local browser reporting is committed and verified (110 tests, zero skipped); broad design inference and real-site acceptance remain pending owner journey/setup details. Phase 7.5 verification is COMPLETE and its local commit is pending; browser/data specialist integrations remain. Phase 8 independent developer trial remains external and pending. Resume with `git status --short` and `git log -1 --oneline`.
+- **Latest checkpoint:** Phase 5.7 targeted Node test execution is committed as `bb5adb4`. Phase 4.10–4.15 are committed through `f5ffdbe`; Phases 3–5 are COMPLETE for their declared v1 workflows, including Phase 5.8 TypeScript build support (`a14c4e1`, tracker correction `0485de7`). Phase 6.3 local browser reporting is committed and verified (110 tests, zero skipped); broad design inference and real-site acceptance remain pending owner journey/setup details. Phase 7.5 is COMPLETE for the approved-source search slice (commit `ccf97ca`); browser/data specialist integrations remain. Phase 8 independent developer trial remains external and pending. Resume with `git status --short` and `git log -1 --oneline`.
 - **Phase 4.10 evidence:** `npm run typecheck` passed; the loopback isolated MongoDB test suite passed (98 passed, 0 failed, 0 skipped); independent review reported no findings; CLI tests verify invalid formats and interactive approval gates. Changed files: `src/cli.ts`, `src/artifacts/drafts.ts`, `src/artifacts/csv-analysis-export.ts`, `test/csv-analysis-export.test.mjs`, `test/csv-analysis-cli.test.mjs`, README, architecture, implementation plan, and this tracker. `git diff --check` passed.
 - **Current phase/subphase:** Phases 2–5 are COMPLETE for their declared bounded v1 workflows. Phase 6.1 local loopback foundation and 6.2 query-only Groq research are COMPLETE for their bounded slices; broader browser/design workflows and owner-approved target acceptance remain. Phase 7.1–7.4 are COMPLETE for their stated slices; Phase 7.5 is COMPLETE for the bounded approved-source search tool; browser/data specialist integrations remain, so Phase 7 is IN PROGRESS. Phase 8.1–8.2 and 8.4 dependency remediation are verified; the independent developer trial remains pending, so Phase 8 is IN PROGRESS.
 - **Last completed work:** Phase 8.1 offline cached Windows consumer and dependency-tree verification; Phase 8.2 contributor guidance/package-content audit; Phase 6.2 consented live-verified Groq browser research (`af724b7`); Phase 7.3 bounded read-only specialist review (`d1c0a01`).

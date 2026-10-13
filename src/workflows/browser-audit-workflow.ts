@@ -27,8 +27,10 @@ export interface BrowserAuditResult {
     readonly blockedExternalRequestCount: number;
     readonly blockedUnsafeMethodCount: number;
     readonly blockedRequestLimitCount: number;
+    readonly designObservations: readonly string[];
     readonly navigationFailed: boolean;
     readonly pageInspectionFailed: boolean;
+    readonly designInspectionFailed: boolean;
     readonly durationMs: number;
   };
 }
@@ -96,8 +98,10 @@ export async function auditLoopbackPage(
     blockedExternalRequestCount: 0,
     blockedUnsafeMethodCount: 0,
     blockedRequestLimitCount: 0,
+    designObservations: [] as string[],
     navigationFailed: false,
     pageInspectionFailed: false,
+    designInspectionFailed: false,
     durationMs: 0,
   };
   if (isAborted(signal)) throw new BrowserAuditError("Browser audit was cancelled.");
@@ -195,6 +199,61 @@ export async function auditLoopbackPage(
         metrics.pageInspectionFailed = true;
       }
 
+      try {
+        metrics.designObservations = await page.evaluate(() => {
+          const observations: string[] = [];
+          const customProperties = new Set<string>();
+          let inspectedRules = 0;
+          let inspectedDeclarations = 0;
+          for (let sheetIndex = 0; sheetIndex < document.styleSheets.length && sheetIndex < 32 && inspectedRules < 256; sheetIndex += 1) {
+            const sheet = document.styleSheets.item(sheetIndex);
+            if (sheet === null) continue;
+            let rules: CSSRuleList;
+            try { rules = sheet.cssRules; } catch { continue; }
+            for (let ruleIndex = 0; ruleIndex < rules.length && ruleIndex < 256 && inspectedRules < 256; ruleIndex += 1) {
+              const rule = rules.item(ruleIndex);
+              if (rule === null) continue;
+              inspectedRules += 1;
+              if (!(rule instanceof CSSStyleRule)) continue;
+              for (let declarationIndex = 0; declarationIndex < rule.style.length && inspectedDeclarations < 512; declarationIndex += 1) {
+                inspectedDeclarations += 1;
+                const property = rule.style.item(declarationIndex);
+                if (/^--[A-Za-z0-9_-]{1,78}$/.test(property) && customProperties.size < 64) {
+                  customProperties.add(property);
+                }
+              }
+            }
+          }
+          for (const property of customProperties) {
+            if (observations.length >= 16) break;
+            observations.push(`inferred CSS custom-property name: ${property.slice(0, 80)}`);
+          }
+          const componentSelectors = [["navigation", "nav"], ["header", "header"], ["main", "main"], ["footer", "footer"], ["form", "form"], ["button", "button"], ["card-like class", "[class*=card i]"]] as const;
+          const componentCounts = componentSelectors.map(() => 0);
+          const componentWalker = document.createTreeWalker(document.documentElement, NodeFilter.SHOW_ELEMENT);
+          let inspectedElements = 0;
+          while (inspectedElements < 2_000 && componentWalker.nextNode() !== null) {
+            const element = componentWalker.currentNode;
+            if (!(element instanceof Element)) continue;
+            inspectedElements += 1;
+            for (let selectorIndex = 0; selectorIndex < componentSelectors.length; selectorIndex += 1) {
+              const selector = componentSelectors[selectorIndex]?.[1];
+              if (selector !== undefined && element.matches(selector)) componentCounts[selectorIndex] = (componentCounts[selectorIndex] ?? 0) + 1;
+            }
+          }
+          for (let selectorIndex = 0; selectorIndex < componentSelectors.length; selectorIndex += 1) {
+            const label = componentSelectors[selectorIndex]?.[0];
+            const count = componentCounts[selectorIndex];
+            if (label !== undefined && count !== undefined && count > 0) observations.push(`observed component ${label}: ${count}`);
+            if (observations.length >= 31) break;
+          }
+          if (inspectedElements === 2_000 && observations.length < 32) observations.push("component counts sampled from first 2000 elements");
+          return observations.slice(0, 32);
+        });
+      } catch {
+        metrics.designInspectionFailed = true;
+      }
+
       let hrefValues: unknown;
       try {
         hrefValues = await page.locator("a").evaluateAll(
@@ -242,7 +301,7 @@ export async function auditLoopbackPage(
 }
 
 function summarize(metrics: BrowserAuditResult["metrics"]): string {
-  return `Local browser audit ${metrics.navigationFailed || metrics.pageInspectionFailed ? "incomplete" : "complete"}: navigation failed=${metrics.navigationFailed}, page inspection failed=${metrics.pageInspectionFailed}, ${metrics.httpErrorCount} HTTP errors, ${metrics.networkFailureCount} failed same-origin requests excluding policy blocks, ${metrics.brokenLinkCount}/${metrics.linksChecked} broken local links, ${metrics.consoleErrorCount} console errors, ${metrics.pageErrorCount} page errors, ${metrics.missingAltCount} images missing alt text, ${metrics.unnamedControlCount} unnamed visible controls (heuristic), mobile overflow=${metrics.mobileHorizontalOverflow}, desktop overflow=${metrics.desktopHorizontalOverflow}, ${metrics.missingSecurityHeaderCount}/${metrics.securityHeadersChecked} checked passive security headers missing, mixed-content check=${metrics.mixedContentCheck}, ${metrics.blockedExternalRequestCount} external requests blocked, ${metrics.blockedUnsafeMethodCount} unsafe methods blocked, ${metrics.blockedRequestLimitCount} requests blocked at the limit.`;
+  return `Local browser audit ${metrics.navigationFailed || metrics.pageInspectionFailed || metrics.designInspectionFailed ? "incomplete" : "complete"}: navigation failed=${metrics.navigationFailed}, page inspection failed=${metrics.pageInspectionFailed}, design inspection failed=${metrics.designInspectionFailed}, ${metrics.httpErrorCount} HTTP errors, ${metrics.networkFailureCount} failed same-origin requests excluding policy blocks, ${metrics.brokenLinkCount}/${metrics.linksChecked} broken local links, ${metrics.consoleErrorCount} console errors, ${metrics.pageErrorCount} page errors, ${metrics.missingAltCount} images missing alt text, ${metrics.unnamedControlCount} unnamed visible controls (heuristic), mobile overflow=${metrics.mobileHorizontalOverflow}, desktop overflow=${metrics.desktopHorizontalOverflow}, ${metrics.missingSecurityHeaderCount}/${metrics.securityHeadersChecked} checked passive security headers missing, mixed-content check=${metrics.mixedContentCheck}, ${metrics.blockedExternalRequestCount} external requests blocked, ${metrics.blockedUnsafeMethodCount} unsafe methods blocked, ${metrics.blockedRequestLimitCount} requests blocked at the limit.`;
 }
 
 export async function runBrowserAudit(
@@ -263,7 +322,7 @@ export async function runBrowserAudit(
   await store.appendRunEvent({ runId, eventId: randomUUID(), type: "step_started", stepId: STEP_ID });
   await store.updateRunSummary(runId, summarize(metrics));
   await store.appendRunEvent({ runId, eventId: randomUUID(), type: "step_finished", stepId: STEP_ID });
-  const inspectionFailed = metrics.navigationFailed || metrics.pageInspectionFailed;
+  const inspectionFailed = metrics.navigationFailed || metrics.pageInspectionFailed || metrics.designInspectionFailed;
   const finished = await store.updateRunState(runId, inspectionFailed ? "failed" : "completed");
   await store.appendRunEvent({ runId, eventId: randomUUID(), type: inspectionFailed ? "run_failed" : "run_finished" });
   return { run: finished, metrics };

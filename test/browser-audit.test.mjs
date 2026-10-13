@@ -39,7 +39,7 @@ async function startFixture() {
     }
     if (request.url === "/") {
       response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
-      response.end(`<!doctype html><html><head><title>Private fixture title</title><meta name="viewport" content="width=device-width, initial-scale=1"></head><body>
+      response.end(`<!doctype html><html><head><title>Private fixture title</title><meta name="viewport" content="width=device-width, initial-scale=1"><style>:root { --brand-accent: #123456; --bad\u202Ename: red; } body { font-family: Arial, sans-serif; }</style></head><body>
         <p>Private page text must not be persisted.</p><a href="/missing">Missing local page</a><img src="/image.png"><img alt="Not found" src="/status-error"><button></button><button aria-labelledby="accessible-name"></button><span id="accessible-name">Accessible name</span><button aria-hidden="true"></button><button hidden></button><button style="display:none"></button><button style="visibility:hidden"></button><div style="width:1600px">wide fixture</div>
         <script>
           console.error("fixture console problem");
@@ -81,6 +81,11 @@ test("browser fixture audit blocks external/unsafe requests and persists aggrega
     assert.equal(result.metrics.securityHeadersChecked, 3);
     assert.equal(result.metrics.missingSecurityHeaderCount, 3);
     assert.equal(result.metrics.mixedContentCheck, "skipped_http_target");
+    assert.ok(result.metrics.designObservations.some((observation) => observation.includes("--brand-accent")));
+    assert.ok(result.metrics.designObservations.every((observation) => !observation.includes("\u202E")));
+    assert.ok(result.metrics.designObservations.some((observation) => observation.includes("observed component button: 6")));
+    assert.ok(result.metrics.designObservations.length <= 32);
+    assert.ok(result.metrics.designObservations.every((observation) => observation.length <= 250));
     assert.equal(fixture.requests.some((request) => request.url === "/mutate"), false);
     assert.equal(fixture.requests.some((request) => request.url === "/missing"), true);
     assert.equal(persistence.state.status, "completed");
@@ -91,6 +96,9 @@ test("browser fixture audit blocks external/unsafe requests and persists aggrega
     assert.equal(stored.includes("Private page text"), false);
     assert.equal(stored.includes("fixture console problem"), false);
     assert.equal(stored.includes("example.invalid"), false);
+    assert.equal(stored.includes("brand-accent"), false);
+    assert.equal(stored.includes("#123456"), false);
+    assert.equal(stored.includes("Arial"), false);
   } finally {
     await new Promise((resolve, reject) => fixture.server.close((error) => error === undefined ? resolve() : reject(error)));
   }
