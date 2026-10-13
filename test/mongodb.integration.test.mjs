@@ -284,6 +284,22 @@ test(
       assert.equal(csvRun.run.state, "completed");
       assert.equal(csvRun.analysis.rowCount, 3);
       assert.equal(csvRun.analysis.duplicateRowCount, 1);
+      const artifactInput = {
+        artifactId: randomUUID(),
+        runId: csvRun.run.runId,
+        relativePath: "reports/summary.json",
+        type: "csv-analysis-json",
+        sha256: createHash("sha256").update("aggregate-only").digest("hex"),
+        bytes: Buffer.byteLength("aggregate-only"),
+      };
+      const artifactReference = await store.saveArtifactReference(artifactInput);
+      assert.equal(artifactReference.relativePath, "reports/summary.json");
+      assert.deepEqual(await store.listArtifactReferences(csvRun.run.runId), [artifactReference]);
+      await assert.rejects(store.saveArtifactReference({ ...artifactInput, artifactId: randomUUID(), relativePath: "../secret.csv" }), PersistenceInputError);
+      await assert.rejects(store.saveArtifactReference({ ...artifactInput, artifactId: randomUUID(), absolutePath: "C:\\secret.csv" }), PersistenceInputError);
+      const storedArtifact = await rawClient.db().collection("artifacts").findOne({ _id: artifactInput.artifactId });
+      assert.equal(JSON.stringify(storedArtifact).includes("aggregate-only"), false);
+      assert.equal(JSON.stringify(storedArtifact).includes(repositoryFixturePath), false);
 
       const scheduledRunId = `schedule-test-${randomUUID()}`;
       await store.saveRunSummary({ runId: scheduledRunId, workflowId: "csv-analyze", summary: "Scheduled fixture awaiting approval." });

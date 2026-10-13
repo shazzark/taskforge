@@ -14,6 +14,7 @@ import {
   DatabaseShutdownError,
   MongoStore,
   PersistenceInputError,
+  type ArtifactType,
   type FolderApproval,
 } from "./mongo-store.js";
 import { createModelProvider } from "./providers/create-provider.js";
@@ -269,6 +270,7 @@ async function runCsvWorkflowCommand(commandArgs: readonly string[]): Promise<vo
   process.stdout.write(`Run ${result.run.runId} ${result.resumed ? "resumed" : "completed"}: ${result.analysis.rowCount} rows, ${result.analysis.duplicateRowCount} duplicate rows.\n`);
   if (totals.length > 0) process.stdout.write(`Numeric totals: ${totals.join(", ")}\n`);
   if (outputPath === undefined || exportFormat === undefined) return;
+  let createdArtifact: { readonly path: string; readonly byteCount: number; readonly sha256: string } | undefined;
   try {
     const requestedOutput = resolve(outputPath);
     const policy = new WorkspacePathPolicy();
@@ -291,9 +293,29 @@ async function runCsvWorkflowCommand(commandArgs: readonly string[]): Promise<vo
       return;
     }
     const written = await writeApprovedTextArtifact(pending, approvals.approve(pending.preview.previewId), outputRoot, policy, approvals);
+    createdArtifact = written;
+    const artifactType: ArtifactType = exportFormat === "json" ? "csv-analysis-json" : exportFormat === "csv" ? "csv-analysis-csv" : "csv-analysis-markdown";
+    const references = await withMongoStore((store) => store.saveArtifactReference({
+      artifactId: randomUUID(),
+      runId: result.run.runId,
+      relativePath: basename(written.path),
+      type: artifactType,
+      sha256: written.sha256,
+      bytes: written.byteCount,
+    }));
+    if (references === undefined) {
+      process.stderr.write(`Aggregate report was created at ${escapeTerminalControls(written.path)}, but its database reference could not be saved.\n`);
+      process.exitCode = 3;
+      return;
+    }
     process.stdout.write(`Aggregate report created: ${written.byteCount} bytes; SHA-256 ${written.sha256}.\n`);
   } catch (error: unknown) {
-    const detail = error instanceof CsvAnalysisExportError || error instanceof DraftArtifactError || error instanceof PersistentFolderApprovalError
+    if (createdArtifact !== undefined) {
+      process.stderr.write(`Aggregate report exists at ${escapeTerminalControls(createdArtifact.path)}, but its database reference could not be saved.\n`);
+      process.exitCode = 3;
+      return;
+    }
+    const detail = error instanceof CsvAnalysisExportError || error instanceof DraftArtifactError || error instanceof PersistentFolderApprovalError || error instanceof PersistenceInputError || error instanceof DatabasePersistenceError
       ? error.message
       : "the aggregate report could not be created safely";
     process.stderr.write(`CSV export failed: ${detail}\n`);
@@ -541,23 +563,31 @@ async function runScheduleCommand(commandArgs: readonly string[]): Promise<void>
 }
 
 async function listRunHistory(): Promise<void> {
-  let runs: Awaited<ReturnType<MongoStore["listRunSummaries"]>> | undefined;
+  let history: { readonly runs: Awaited<ReturnType<MongoStore["listRunSummaries"]>>; readonly artifacts: ReadonlyMap<string, Awaited<ReturnType<MongoStore["listArtifactReferences"]>>> } | undefined;
   try {
-    runs = await withMongoStore((store) => store.listRunSummaries());
+    history = await withMongoStore(async (store) => {
+      const runs = await store.listRunSummaries();
+      const artifacts = new Map<string, Awaited<ReturnType<MongoStore["listArtifactReferences"]>>>();
+      for (const run of runs) artifacts.set(run.runId, await store.listArtifactReferences(run.runId));
+      return { runs, artifacts };
+    });
   } catch {
     process.stderr.write("Unable to read TaskForge run history.\n");
     process.exitCode = 2;
     return;
   }
-  if (runs === undefined) {
+  if (history === undefined) {
     return;
   }
-  if (runs.length === 0) {
+  if (history.runs.length === 0) {
     process.stdout.write("No TaskForge runs found.\n");
     return;
   }
-  for (const run of runs) {
+  for (const run of history.runs) {
     process.stdout.write(`${run.runId}\t${run.state}\t${run.workflowId}\t${run.summary}\n`);
+    for (const artifact of history.artifacts.get(run.runId) ?? []) {
+      process.stdout.write(`  artifact\t${artifact.type}\t${escapeTerminalControls(artifact.relativePath)}\t${artifact.bytes} bytes\tSHA-256 ${artifact.sha256}\n`);
+    }
   }
 }
 

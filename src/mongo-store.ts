@@ -96,6 +96,17 @@ export interface FolderApproval {
   readonly updatedAt: Date;
 }
 
+export type ArtifactType = "csv-analysis-json" | "csv-analysis-csv" | "csv-analysis-markdown";
+export interface ArtifactReference {
+  readonly artifactId: string;
+  readonly runId: string;
+  readonly relativePath: string;
+  readonly type: ArtifactType;
+  readonly sha256: string;
+  readonly bytes: number;
+  readonly createdAt: Date;
+}
+
 interface StoredRunSummary extends Document {
   readonly _id: string;
   readonly runId: string;
@@ -153,6 +164,17 @@ interface StoredFolderApproval extends Document {
   readonly status: "active" | "revoked";
   readonly createdAt: Date;
   readonly updatedAt: Date;
+}
+
+interface StoredArtifactReference extends Document {
+  readonly _id: string;
+  readonly artifactId: string;
+  readonly runId: string;
+  readonly relativePath: string;
+  readonly type: ArtifactType;
+  readonly sha256: string;
+  readonly bytes: number;
+  readonly createdAt: Date;
 }
 
 const MAX_EVENTS_PER_RUN = 300;
@@ -421,6 +443,32 @@ function parseStoredFolderApproval(value: unknown): FolderApproval {
   return { path, access, status, createdAt, updatedAt };
 }
 
+function parseArtifactReference(value: unknown): ArtifactReference {
+  if (!isRecord(value)) throw new PersistenceInputError("Artifact reference must be an object.");
+  const artifactId = parseIdentifier(value["artifactId"], "Artifact id");
+  const runId = parseIdentifier(value["runId"], "Artifact runId");
+  const relativePathValue = value["relativePath"];
+  if (typeof relativePathValue !== "string" || relativePathValue.length === 0 || relativePathValue.length > 512 ||
+      relativePathValue.startsWith("/") || relativePathValue.includes("\\") ||
+      relativePathValue.split("/").some((segment) => segment.length === 0 || segment === "." || segment === "..")) {
+    throw new PersistenceInputError("Artifact relativePath must be a bounded, non-traversing relative path.");
+  }
+  const typeValue = value["type"];
+  if (typeValue !== "csv-analysis-json" && typeValue !== "csv-analysis-csv" && typeValue !== "csv-analysis-markdown") {
+    throw new PersistenceInputError("Artifact type is unsupported.");
+  }
+  const sha256 = parseHash(value["sha256"], "Artifact SHA-256");
+  const bytes = value["bytes"];
+  if (typeof bytes !== "number" || !Number.isSafeInteger(bytes) || bytes < 1 || bytes > 64 * 1024) {
+    throw new PersistenceInputError("Artifact byte count is outside supported limits.");
+  }
+  const createdAtValue = value["createdAt"];
+  if (!(createdAtValue instanceof Date) || !Number.isFinite(createdAtValue.getTime())) {
+    throw new PersistenceInputError("Artifact timestamp is invalid.");
+  }
+  return { artifactId, runId, relativePath: relativePathValue, type: typeValue, sha256, bytes, createdAt: createdAtValue };
+}
+
 function parseScheduleOccurrence(value: unknown, scheduleId?: string): ScheduleOccurrence {
   if (!isRecord(value)) throw new DatabasePersistenceError();
   const scheduledFor = value["scheduledFor"];
@@ -575,6 +623,7 @@ export class MongoStore {
   private readonly checkpoints: Collection<StoredRunCheckpoint>;
   private readonly schedules: Collection<StoredSchedule>;
   private readonly folderApprovals: Collection<StoredFolderApproval>;
+  private readonly artifacts: Collection<StoredArtifactReference>;
 
   private constructor(client: MongoClient) {
     this.client = client;
@@ -584,6 +633,7 @@ export class MongoStore {
     this.checkpoints = database.collection<StoredRunCheckpoint>("run_checkpoints");
     this.schedules = database.collection<StoredSchedule>("schedules");
     this.folderApprovals = database.collection<StoredFolderApproval>("folder_approvals");
+    this.artifacts = database.collection<StoredArtifactReference>("artifacts");
   }
 
   static async connect(configuration: unknown): Promise<MongoStore> {
@@ -683,6 +733,37 @@ export class MongoStore {
       const documents = await this.runs.find({}).sort({ createdAt: -1 }).limit(50).toArray();
       return documents.map((document) => parseStoredRunSummary(document));
     } catch {
+      throw new DatabasePersistenceError();
+    }
+  }
+
+  async saveArtifactReference(value: unknown): Promise<ArtifactReference> {
+    if (!isRecord(value) || Object.keys(value).some((key) => !["artifactId", "runId", "relativePath", "type", "sha256", "bytes"].includes(key))) {
+      throw new PersistenceInputError("Artifact reference contains unsupported fields.");
+    }
+    const now = new Date();
+    const parsed = parseArtifactReference({ ...value, createdAt: now });
+    try {
+      const run = await this.runs.findOne({ _id: parsed.runId });
+      if (run === null || run.workflowId !== "csv-analyze" || run.state !== "completed") {
+        throw new PersistenceInputError("Artifact references require a completed CSV analysis run.");
+      }
+      const document: StoredArtifactReference = { _id: parsed.artifactId, ...parsed };
+      await this.artifacts.insertOne(document);
+      return parsed;
+    } catch (error: unknown) {
+      if (error instanceof PersistenceInputError) throw error;
+      throw new DatabasePersistenceError();
+    }
+  }
+
+  async listArtifactReferences(runIdValue: unknown): Promise<readonly ArtifactReference[]> {
+    const runId = parseIdentifier(runIdValue, "Artifact runId");
+    try {
+      const documents = await this.artifacts.find({ runId }).sort({ createdAt: 1 }).limit(50).toArray();
+      return documents.map(parseArtifactReference);
+    } catch (error: unknown) {
+      if (error instanceof PersistenceInputError) throw error;
       throw new DatabasePersistenceError();
     }
   }

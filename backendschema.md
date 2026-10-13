@@ -9,7 +9,7 @@ workflows: workflowId, version, definitionHash, source, metadata, inputSchema, d
 runs: runId, workflowId/version/hash, redactedGoal, state, provider/model, authorizedRoots, budgetLimits/counters, summary, verificationStatus, createdAt, updatedAt, expiresAt.
 events: eventId, runId, sequence, eventType, agentId, redactedPayload, payloadBytes, createdAt, expiresAt. Unique (runId, sequence). Payload bounded; no raw binaries.
 checkpoints: checkpointId, runId, schemaVersion, nextStep, completedActionIds, inputHashes, outstandingActionIds, stateReferences and createdAt. No reusable approval grants.
-artifacts: artifactId, runId, relativePath, type, sha256, bytes, evidenceReferences, createdAt. File content stays local.
+artifacts: artifactId, runId, relativePath, type, sha256, bytes, evidenceReferences, createdAt. File content and absolute output paths stay local. The current CSV aggregate export reference stores a filename relative to its approved output folder, format, hash, byte count, run link, and timestamp.
 schedules: scheduleId, workflow/version, redactedInputs, timezone, trigger, enabled, nextRunAt, leaseUntil, lastRunId and createdAt. Validate inputs and avoid duplicate overlapping runs.
 
 ## Indexes and deletion

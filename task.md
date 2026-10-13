@@ -189,6 +189,12 @@ Added optional `run csv-analyze --input <path> --output <new.json|new.csv|new.md
 
 **Checks:** `npm run typecheck` passed with strict TypeScript settings. Full `npm test` passed against `mongodb://127.0.0.1:27017/taskforge_test` (98 passed, 0 failed, 0 skipped), including isolated MongoDB integration/cleanup and new format, privacy, suffix, invalid-metric, and noninteractive approval-gate tests. `npm run build` passed as part of the test command. Independent review reported no findings.
 
+#### Phase 4.11 — CSV artifact references — COMPLETE (metadata-only)
+
+Added a metadata-only MongoDB `artifacts` collection reference for completed CSV aggregate exports. It links the completed run to a filename relative to the approved output folder and records format, SHA-256, byte count, and timestamp; it rejects absolute/traversing paths, unsupported fields/types, oversized values, and references to incomplete or non-CSV runs. `history list` prints linked artifact metadata with terminal controls escaped. If metadata persistence fails after file creation, the CLI reports that the file exists and the reference was not saved; it does not delete user output.
+
+**Checks:** `npm run typecheck` and full `npm test` passed with `TASKFORGE_TEST_MONGODB_URI=mongodb://127.0.0.1:27017/taskforge_test` (98 passed, 0 failed, 0 skipped). Integration verified completed-run linking, listing, traversal/extra-field rejection, and absence of artifact content/absolute paths in MongoDB; the harness dropped its unique database. Independent review found one post-write error-reporting gap, which was fixed and confirmed resolved with no other findings. `git diff --check` passed.
+
 ### Phase 5 — Software workflow — IN PROGRESS
 
 **Goal:** Support repository inspection, seeded bug investigation, approved patches, reviewed command execution and local diffs.
@@ -335,7 +341,7 @@ Added ExcelJS-scoped overrides to `archiver@7.0.1` and `unzipper@0.12.5`, plus a
 
 ## Recovery
 
-- **Latest checkpoint:** Phase 4.10 aggregate CSV report exports are verified. Phase 4 remains IN PROGRESS because rich artifact references, document conversion, and additional file workflows remain. Resume with `git status --short` and `git log -1 --oneline`; continue Phase 4 against the current requirements. The independent developer trial remains pending until another developer performs it.
+- **Latest checkpoint:** Phase 4.10 aggregate CSV report exports are locally committed as `570e0c0`; Phase 4.11 artifact references now pass review and verification and are ready for local commit. Phase 4 remains IN PROGRESS because document conversion and additional file workflows remain. Resume with `git status --short` and `git log -1 --oneline`; commit 4.11 before continuing. The independent developer trial remains pending until another developer performs it.
 - **Phase 4.10 evidence:** `npm run typecheck` passed; the loopback isolated MongoDB test suite passed (98 passed, 0 failed, 0 skipped); independent review reported no findings; CLI tests verify invalid formats and interactive approval gates. Changed files: `src/cli.ts`, `src/artifacts/drafts.ts`, `src/artifacts/csv-analysis-export.ts`, `test/csv-analysis-export.test.mjs`, `test/csv-analysis-cli.test.mjs`, README, architecture, implementation plan, and this tracker. `git diff --check` passed.
 - **Current phase/subphase:** Phase 2.1 and live Phase 2.2 are COMPLETE for their stated slices; Phase 2 is COMPLETE. Phases 3.1–3.4 and 4.1–4.9 have verified bounded foundations; richer artifact references/report workflows remain. Phase 5.1–5.6 foundations are COMPLETE. Phase 6.1 local loopback foundation and 6.2 query-only Groq research are COMPLETE for their bounded slices; broader browser/design workflows and owner-approved target acceptance remain. Phase 7.1–7.4 are COMPLETE for their stated slices; tool-bearing/browser/data specialist integrations remain, so Phase 7 remains IN PROGRESS. Phase 8.1–8.2 and 8.4 dependency remediation are verified; Phase 8.3's prepared independent developer trial remains pending, so Phase 8 is IN PROGRESS.
 - **Last completed work:** Phase 8.1 offline cached Windows consumer and dependency-tree verification; Phase 8.2 contributor guidance/package-content audit; Phase 6.2 consented live-verified Groq browser research (`af724b7`); Phase 7.3 bounded read-only specialist review (`d1c0a01`).
