@@ -29,6 +29,18 @@ test("file move refuses noninteractive execution before path access", () => {
   assert.match(result.stderr, /interactive terminal/u);
 });
 
+test("software check refuses a selected test in noninteractive mode before path access", () => {
+  const result = spawnSync(process.execPath, [cliPath, "run", "software-check", "--root", "missing-root", "--check", "node-test", "--test", "test/example.test.mjs"], {
+    encoding: "utf8",
+    timeout: 5_000,
+    windowsHide: true,
+  });
+
+  assert.equal(result.status, 2);
+  assert.match(result.stderr, /interactive terminal/u);
+  assert.doesNotMatch(result.stderr, /missing-root/u);
+});
+
 test("permission list reports database unavailability without exposing a stack trace", () => {
   const result = spawnSync(process.execPath, [cliPath, "permissions", "list"], {
     encoding: "utf8",

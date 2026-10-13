@@ -1,15 +1,16 @@
 import { spawn } from "node:child_process";
-import { randomUUID } from "node:crypto";
-import { realpath } from "node:fs/promises";
-import { join, resolve } from "node:path";
+import { createHash, randomUUID } from "node:crypto";
+import { lstat, readFile, realpath, stat } from "node:fs/promises";
+import { extname, isAbsolute, join, resolve } from "node:path";
 import type { MongoStore, RunSummary } from "../mongo-store.js";
 import type { ApprovedRoot, WorkspacePathPolicy } from "../security/path-policy.js";
 
 const MAX_RUNTIME_MS = 120_000;
 const MAX_CAPTURED_OUTPUT_BYTES = 64 * 1024;
+const MAX_SELECTED_TEST_BYTES = 2 * 1024 * 1024;
 const WORKFLOW_ID = "software-check";
 
-export type ReviewedCommandId = "node-test" | "typescript-check";
+export type ReviewedCommandId = "node-test" | "node-test-selected" | "typescript-check";
 export type ReviewedCommandStatus = "passed" | "failed" | "timed_out" | "could_not_start";
 
 export interface ReviewedCommandResult {
@@ -37,6 +38,16 @@ interface ProcessResult {
   readonly durationMs: number;
   readonly outputTruncated: boolean;
   readonly observedOutputBytes: number;
+}
+
+interface SelectedTestIdentity {
+  readonly relativePath: string;
+  readonly canonicalPath: string;
+  readonly size: number;
+  readonly modifiedAt: number;
+  readonly ino: number;
+  readonly dev: number;
+  readonly sha256: string;
 }
 
 function safeEnvironment(): NodeJS.ProcessEnv {
@@ -158,11 +169,46 @@ function summary(command: ReviewedCommandId, status: ReviewedCommandStatus, exit
   return `Reviewed ${command} check ${status.replaceAll("_", " ")}; exit code ${exitCode === null ? "unavailable" : exitCode}. Output and repository paths were not persisted.`;
 }
 
+async function selectedNodeTestPath(root: ApprovedRoot, policy: WorkspacePathPolicy, value: unknown): Promise<SelectedTestIdentity> {
+  if (typeof value !== "string" || value.trim().length === 0 || value.length > 1_024 || value.includes("\u0000") || isAbsolute(value)) {
+    throw new ReviewedCommandError("Selected tests require one in-root relative JavaScript test file.");
+  }
+  const requested = resolve(root.path, value);
+  try {
+    const lexicalStats = await lstat(requested);
+    if (!lexicalStats.isFile() || lexicalStats.isSymbolicLink()) throw new ReviewedCommandError();
+    const authorized = await policy.authorizePath(requested, "read");
+    const canonical = await realpath(authorized.path);
+    const canonicalStats = await stat(canonical);
+    if (canonical !== authorized.path || !canonicalStats.isFile() || ![".js", ".cjs", ".mjs"].includes(extname(canonical).toLowerCase())) {
+      throw new ReviewedCommandError("Selected test must be an in-root regular .js, .cjs, or .mjs file.");
+    }
+    if (canonicalStats.size > MAX_SELECTED_TEST_BYTES) throw new ReviewedCommandError("Selected test file exceeds the 2 MiB review limit.");
+    const contents = await readFile(canonical);
+    const afterRead = await stat(canonical);
+    if (afterRead.ino !== canonicalStats.ino || afterRead.size !== canonicalStats.size || afterRead.mtimeMs !== canonicalStats.mtimeMs ||
+        (process.platform !== "win32" && afterRead.dev !== canonicalStats.dev)) throw new ReviewedCommandError("Selected test changed while it was being approved.");
+    return {
+      relativePath: value,
+      canonicalPath: canonical,
+      size: afterRead.size,
+      modifiedAt: afterRead.mtimeMs,
+      ino: afterRead.ino,
+      dev: afterRead.dev,
+      sha256: createHash("sha256").update(contents).digest("hex"),
+    };
+  } catch (error: unknown) {
+    if (error instanceof ReviewedCommandError) throw error;
+    throw new ReviewedCommandError("Selected test must be an existing in-root regular .js, .cjs, or .mjs file.");
+  }
+}
+
 export async function runReviewedCommand(
   store: Persistence,
   root: ApprovedRoot,
   policy: WorkspacePathPolicy,
   command: unknown,
+  selectedTestPath?: unknown,
 ): Promise<ReviewedCommandResult> {
   if (command !== "node-test" && command !== "typescript-check") {
     throw new ReviewedCommandError("Allowed checks are node-test and typescript-check.");
@@ -173,7 +219,15 @@ export async function runReviewedCommand(
   }
 
   let executable = process.execPath;
+  let effectiveCommand: ReviewedCommandId = command;
+  let selectedTest: SelectedTestIdentity | undefined;
   let arguments_: readonly string[] = command === "node-test" ? ["--test"] : [];
+  if (selectedTestPath !== undefined) {
+    if (command !== "node-test") throw new ReviewedCommandError("Selected test files are supported only with node-test.");
+    selectedTest = await selectedNodeTestPath(root, policy, selectedTestPath);
+    arguments_ = ["--test", selectedTest.canonicalPath];
+    effectiveCommand = "node-test-selected";
+  }
   if (command === "typescript-check") {
     executable = process.execPath;
     arguments_ = [await approvedTscPath(root, policy), "--noEmit"];
@@ -183,22 +237,42 @@ export async function runReviewedCommand(
   await store.saveRunSummary({
     runId,
     workflowId: WORKFLOW_ID,
-    summary: `Reviewed ${command} check is pending; command output is not persisted.`,
+    summary: `Reviewed ${effectiveCommand} check is pending; command output is not persisted.`,
   });
   await store.updateRunState(runId, "running");
   await store.appendRunEvent({ runId, eventId: randomUUID(), type: "run_started" });
-  await store.appendRunEvent({ runId, eventId: randomUUID(), type: "step_started", stepId: command });
+  await store.appendRunEvent({ runId, eventId: randomUUID(), type: "step_started", stepId: effectiveCommand });
 
-  const processResult = await runChildProcess(executable, arguments_, approvedRoot);
+  let processResult: ProcessResult;
+  try {
+    if (selectedTest !== undefined) {
+      const current = await selectedNodeTestPath(root, policy, selectedTest.relativePath);
+      if (current.canonicalPath !== selectedTest.canonicalPath || current.size !== selectedTest.size ||
+          current.modifiedAt !== selectedTest.modifiedAt || current.ino !== selectedTest.ino ||
+          (process.platform !== "win32" && current.dev !== selectedTest.dev) || current.sha256 !== selectedTest.sha256) {
+        throw new ReviewedCommandError("Selected test changed after approval; approve a fresh test snapshot.");
+      }
+    }
+    processResult = await runChildProcess(executable, arguments_, approvedRoot);
+  } catch (error: unknown) {
+    if (!(error instanceof ReviewedCommandError)) throw error;
+    processResult = {
+      exitCode: null,
+      status: "could_not_start",
+      durationMs: 0,
+      outputTruncated: false,
+      observedOutputBytes: 0,
+    };
+  }
   const status = statusFor(processResult);
-  const finalSummary = summary(command, status, processResult.exitCode);
+  const finalSummary = summary(effectiveCommand, status, processResult.exitCode);
   await store.updateRunSummary(runId, finalSummary);
   await store.updateRunState(runId, status === "passed" ? "completed" : "failed");
   await store.appendRunEvent({
     runId,
     eventId: randomUUID(),
     type: status === "passed" ? "step_finished" : "run_failed",
-    ...(status === "passed" ? { stepId: command } : { toolName: command }),
+    ...(status === "passed" ? { stepId: effectiveCommand } : { toolName: effectiveCommand }),
   });
   if (status === "passed") {
     await store.appendRunEvent({ runId, eventId: randomUUID(), type: "run_finished" });
@@ -211,7 +285,7 @@ export async function runReviewedCommand(
       state: status === "passed" ? "completed" : "failed",
       createdAt: new Date(),
     },
-    command,
+    command: effectiveCommand,
     status,
     exitCode: processResult.exitCode,
     durationMs: processResult.durationMs,

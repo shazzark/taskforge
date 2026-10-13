@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, rename, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -78,5 +78,72 @@ test("reviewed command requires exact in-memory root approval and a fixed comman
     assert.equal(persistence.state.runs.size, 0);
   } finally {
     await rm(rootPath, { recursive: true, force: true });
+  }
+});
+
+test("selected Node test runs only the exact in-root file and rejects unsafe selections", async () => {
+  const rootPath = await mkdtemp(join(tmpdir(), "taskforge-selected-test-"));
+  try {
+    const testDirectory = join(rootPath, "test");
+    await mkdir(testDirectory);
+    await writeFile(join(testDirectory, "selected.test.mjs"), "import assert from 'node:assert/strict';\nassert.equal(2, 2);\n", "utf8");
+    await writeFile(join(testDirectory, "unselected.test.mjs"), "import assert from 'node:assert/strict';\nassert.equal(1, 2, 'must not run');\n", "utf8");
+    const policy = new WorkspacePathPolicy();
+    const root = await policy.approveRoot(rootPath);
+    const persistence = createPersistenceRecorder();
+    const result = await runReviewedCommand(persistence, root, policy, "node-test", "test/selected.test.mjs");
+    assert.equal(result.command, "node-test-selected");
+    assert.equal(result.status, "passed");
+    assert.equal(result.run.state, "completed");
+    assert.doesNotMatch(result.run.summary, /selected\.test\.mjs/u);
+    for (const invalid of ["../outside.test.mjs", ".\\..\\outside.test.mjs", "test/missing.test.mjs", "test/data.json", join(testDirectory, "selected.test.mjs")]) {
+      await assert.rejects(runReviewedCommand(persistence, root, policy, "node-test", invalid), ReviewedCommandError);
+    }
+    await assert.rejects(runReviewedCommand(persistence, root, policy, "typescript-check", "test/selected.test.mjs"), ReviewedCommandError);
+  } finally {
+    await rm(rootPath, { recursive: true, force: true });
+  }
+});
+
+test("selected Node test revalidates its path after approval and refuses a junction swap", async (context) => {
+  const rootPath = await mkdtemp(join(tmpdir(), "taskforge-selected-race-"));
+  const outsidePath = await mkdtemp(join(tmpdir(), "taskforge-selected-outside-"));
+  const testDirectory = join(rootPath, "test");
+  const selectedPath = join(testDirectory, "selected.test.mjs");
+  const markerPath = join(outsidePath, "executed.txt");
+  try {
+    await mkdir(testDirectory);
+    await writeFile(selectedPath, "import assert from 'node:assert/strict';\nassert.ok(true);\n", "utf8");
+    await writeFile(join(outsidePath, "selected.test.mjs"), `import { writeFileSync } from 'node:fs';\nwriteFileSync(${JSON.stringify(markerPath)}, 'escaped');\n`, "utf8");
+    const policy = new WorkspacePathPolicy();
+    const root = await policy.approveRoot(rootPath);
+    const persistence = createPersistenceRecorder();
+    const append = persistence.appendRunEvent.bind(persistence);
+    let swapped = false;
+    persistence.appendRunEvent = async (event) => {
+      const saved = await append(event);
+      if (!swapped && event.type === "step_started") {
+        swapped = true;
+        await rename(testDirectory, join(rootPath, "test-original"));
+        try {
+          await symlink(outsidePath, testDirectory, "junction");
+        } catch (error) {
+          if (typeof error === "object" && error !== null && "code" in error && ["EPERM", "EACCES"].includes(error.code)) {
+            context.skip("Windows does not permit creating a test junction in this environment.");
+            return saved;
+          }
+          throw error;
+        }
+      }
+      return saved;
+    };
+    const result = await runReviewedCommand(persistence, root, policy, "node-test", "test/selected.test.mjs");
+    assert.equal(result.status, "could_not_start");
+    assert.equal(result.run.state, "failed");
+    assert.equal(persistence.state.events.at(-1)?.type, "run_failed");
+    await assert.rejects(import("node:fs/promises").then(({ access }) => access(markerPath)), (error) => error.code === "ENOENT");
+  } finally {
+    await rm(rootPath, { recursive: true, force: true });
+    await rm(outsidePath, { recursive: true, force: true });
   }
 });
