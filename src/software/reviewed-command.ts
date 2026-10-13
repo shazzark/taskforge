@@ -1,6 +1,6 @@
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { lstat, readFile, realpath, stat } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, readFile, realpath, stat } from "node:fs/promises";
 import { extname, isAbsolute, join, resolve } from "node:path";
 import type { MongoStore, RunSummary } from "../mongo-store.js";
 import type { ApprovedRoot, WorkspacePathPolicy } from "../security/path-policy.js";
@@ -10,7 +10,7 @@ const MAX_CAPTURED_OUTPUT_BYTES = 64 * 1024;
 const MAX_SELECTED_TEST_BYTES = 2 * 1024 * 1024;
 const WORKFLOW_ID = "software-check";
 
-export type ReviewedCommandId = "node-test" | "node-test-selected" | "typescript-check";
+export type ReviewedCommandId = "node-test" | "node-test-selected" | "typescript-check" | "typescript-build";
 export type ReviewedCommandStatus = "passed" | "failed" | "timed_out" | "could_not_start";
 
 export interface ReviewedCommandResult {
@@ -68,6 +68,53 @@ async function approvedTscPath(root: ApprovedRoot, policy: WorkspacePathPolicy):
     return canonicalPath;
   } catch {
     throw new ReviewedCommandError("TypeScript is not installed under the approved repository root.");
+  }
+}
+
+async function buildArguments(root: ApprovedRoot, policy: WorkspacePathPolicy): Promise<readonly string[]> {
+  const rootPath = resolve(root.path);
+  try {
+    const compilerPath = await approvedTscPath(root, policy);
+    const configResult = spawnSync(process.execPath, [compilerPath, "--showConfig"], {
+      cwd: rootPath, env: safeEnvironment(), shell: false, windowsHide: true,
+      encoding: "utf8", timeout: 5_000, maxBuffer: 1024 * 1024,
+    });
+    if (configResult.error !== undefined || configResult.status !== 0 || configResult.stdout === null || configResult.stdout.length > 1024 * 1024) {
+      throw new ReviewedCommandError("TypeScript configuration could not be inspected safely.");
+    }
+    let effectiveConfig: unknown;
+    try { effectiveConfig = JSON.parse(configResult.stdout) as unknown; }
+    catch { throw new ReviewedCommandError("TypeScript configuration is invalid."); }
+    if (typeof effectiveConfig !== "object" || effectiveConfig === null || !("compilerOptions" in effectiveConfig)) {
+      throw new ReviewedCommandError("TypeScript configuration is invalid.");
+    }
+    const options: unknown = effectiveConfig.compilerOptions;
+    if (typeof options !== "object" || options === null || Array.isArray(options)) throw new ReviewedCommandError("TypeScript configuration is invalid.");
+    if ("outFile" in options && options.outFile !== undefined) throw new ReviewedCommandError("TypeScript build does not support configured outFile targets.");
+    if (("generateTrace" in options && options.generateTrace !== undefined && options.generateTrace !== false) ||
+        ("generateCpuProfile" in options && options.generateCpuProfile !== undefined && options.generateCpuProfile !== false)) {
+      throw new ReviewedCommandError("TypeScript trace and CPU profile output options are not supported by the approved build.");
+    }
+
+    const outputDirectory = await mkdtemp(join(rootPath, ".taskforge-build-"));
+    if ((await realpath(outputDirectory)) !== outputDirectory) throw new ReviewedCommandError("The build output directory must remain under the approved root.");
+    const declarationDirectory = join(outputDirectory, "types");
+    const arguments_: string[] = [
+      compilerPath,
+      "--outDir", outputDirectory,
+    ];
+    if (("declaration" in options && options.declaration === true) || ("composite" in options && options.composite === true)) {
+      await mkdir(declarationDirectory);
+      if ((await realpath(declarationDirectory)) !== declarationDirectory) throw new ReviewedCommandError("The declaration output directory must remain under the approved root.");
+      arguments_.push("--declarationDir", declarationDirectory);
+    }
+    if (("incremental" in options && options.incremental === true) || ("composite" in options && options.composite === true)) {
+      arguments_.push("--tsBuildInfoFile", join(outputDirectory, "taskforge.tsbuildinfo"));
+    }
+    return arguments_;
+  } catch (error: unknown) {
+    if (error instanceof ReviewedCommandError) throw error;
+    throw new ReviewedCommandError("TypeScript build configuration or output path could not be validated.");
   }
 }
 
@@ -210,8 +257,8 @@ export async function runReviewedCommand(
   command: unknown,
   selectedTestPath?: unknown,
 ): Promise<ReviewedCommandResult> {
-  if (command !== "node-test" && command !== "typescript-check") {
-    throw new ReviewedCommandError("Allowed checks are node-test and typescript-check.");
+  if (command !== "node-test" && command !== "typescript-check" && command !== "typescript-build") {
+    throw new ReviewedCommandError("Allowed checks are node-test, typescript-check, and typescript-build.");
   }
   const approvedRoot = resolve(root.path);
   if (!policy.listApprovedRoots().some((entry) => resolve(entry.path) === approvedRoot)) {
@@ -228,9 +275,11 @@ export async function runReviewedCommand(
     arguments_ = ["--test", selectedTest.canonicalPath];
     effectiveCommand = "node-test-selected";
   }
-  if (command === "typescript-check") {
+  if (command === "typescript-check" || command === "typescript-build") {
     executable = process.execPath;
-    arguments_ = [await approvedTscPath(root, policy), "--noEmit"];
+    arguments_ = command === "typescript-check"
+      ? [await approvedTscPath(root, policy), "--noEmit"]
+      : await buildArguments(root, policy);
   }
 
   const runId = randomUUID();

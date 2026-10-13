@@ -20,6 +20,8 @@ Requirements: Node.js 22.13.0 or later and npm.
 
 `run document-analyze --input <path> [--output <new.json|new.csv|new.md>]` can write a metadata-only aggregate report. The export shows format and parser counts; it excludes document text, paths, sheet names, and cell values. Output requires a persistent folder write grant and interactive preview/hash approval, creates a new file only, and links a metadata-only artifact reference to the completed run. Without `--output`, the command only displays the analysis summary.
 
+`run software-check --root <directory> --check typescript-build` executes the repository-local TypeScript compiler after explicit root and command approval. Emitted files and build info go to a newly created `.taskforge-build-*` folder under the approved root; configured `outFile`, trace, and CPU-profile outputs are rejected. `typescript-check` remains no-emit; Node test commands retain their fixed runner and output-suppression behavior. Repository code and build configuration are executable inputs, so these commands are not an OS sandbox.
+
 Folder approval records are stored in the configured MongoDB database and enforced by file workflows. Grant a canonical folder scope with `permissions approve --root <folder> --access <read|write>`, inspect it with `permissions list [--all]`, and revoke it with `permissions revoke --root <folder> --access <read|write>`. Read workflows require a covering read grant; file patching requires both read and write; artifact creation and repository command execution require write scope. Each workflow still asks for its separate operation approval, and protected secret paths remain denied. Revoked records remain visible to `permissions list --all` and do not block future grants.
 
 ```powershell

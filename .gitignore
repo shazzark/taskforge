@@ -81,6 +81,7 @@ out
 # Nuxt.js build / generate output
 .nuxt
 dist
+.taskforge-build-*/
 .output
 
 # Gatsby files

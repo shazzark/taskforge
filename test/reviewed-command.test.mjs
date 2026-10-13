@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, rename, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, readdir, rename, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import test from "node:test";
 import { WorkspacePathPolicy } from "../dist/security/path-policy.js";
 import { runReviewedCommand, ReviewedCommandError } from "../dist/software/reviewed-command.js";
@@ -77,6 +77,40 @@ test("reviewed command requires exact in-memory root approval and a fixed comman
     );
     assert.equal(persistence.state.runs.size, 0);
   } finally {
+    await rm(rootPath, { recursive: true, force: true });
+  }
+});
+
+test("approved TypeScript build invokes only the local compiler and records build status", async () => {
+  const rootPath = await mkdtemp(join(tmpdir(), "taskforge-typescript-build-"));
+  const outsideBundle = join(rootPath, "..", `${basename(rootPath)}-outside.js`);
+  try {
+    await mkdir(join(rootPath, "src"));
+    const compilerPath = join(rootPath, "node_modules", "typescript", "bin", "tsc");
+    await mkdir(join(rootPath, "node_modules", "typescript", "bin"), { recursive: true });
+    await writeFile(compilerPath, "import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';\nif (process.argv.includes('--showConfig')) { console.log(JSON.stringify({ compilerOptions: JSON.parse(readFileSync('tsconfig.json', 'utf8')).compilerOptions })); } else { const output = process.argv[process.argv.indexOf('--outDir') + 1]; mkdirSync(output, { recursive: true }); writeFileSync(`${output}/build-marker.txt`, 'built'); }\n", "utf8");
+    await writeFile(join(rootPath, "src", "index.ts"), "export const marker = true;\n", "utf8");
+    const escapingOutput = join(rootPath, "..", "outside-build-output");
+    await writeFile(join(rootPath, "tsconfig.json"), JSON.stringify({ compilerOptions: { outDir: escapingOutput, declarationDir: escapingOutput, tsBuildInfoFile: join(escapingOutput, "build.tsbuildinfo") }, include: ["src/**/*.ts"] }));
+    const policy = new WorkspacePathPolicy();
+    const root = await policy.approveRoot(rootPath);
+    const persistence = createPersistenceRecorder();
+    const result = await runReviewedCommand(persistence, root, policy, "typescript-build");
+    assert.equal(result.command, "typescript-build");
+    assert.equal(result.status, "passed");
+    assert.equal(result.exitCode, 0);
+    assert.equal(result.run.state, "completed");
+    const outputDirectories = (await readdir(rootPath)).filter((entry) => entry.startsWith(".taskforge-build-"));
+    assert.equal(outputDirectories.length, 1);
+    assert.equal((await readFile(join(rootPath, outputDirectories[0], "build-marker.txt"), "utf8")), "built");
+    assert.equal(JSON.stringify([...persistence.state.runs.values()]).includes("build-marker"), false);
+    await writeFile(outsideBundle, "// outside target\n", "utf8");
+    await writeFile(join(rootPath, "tsconfig.json"), JSON.stringify({ compilerOptions: { outFile: outsideBundle }, include: ["src/**/*.ts"] }));
+    await assert.rejects(runReviewedCommand(persistence, root, policy, "typescript-build"), /does not support configured outFile/u);
+    await writeFile(join(rootPath, "tsconfig.json"), JSON.stringify({ compilerOptions: { generateTrace: join(rootPath, "..", "outside-trace") }, include: ["src/**/*.ts"] }));
+    await assert.rejects(runReviewedCommand(persistence, root, policy, "typescript-build"), /trace and CPU profile output/u);
+  } finally {
+    await rm(outsideBundle, { force: true });
     await rm(rootPath, { recursive: true, force: true });
   }
 });

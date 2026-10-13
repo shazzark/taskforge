@@ -218,6 +218,9 @@ test(
       const typecheckRun = await runReviewedCommand(store, approvedProjectRoot, projectPolicy, "typescript-check");
       assert.equal(typecheckRun.status, "passed");
       assert.equal((await store.getRunSummary(typecheckRun.run.runId))?.state, "completed");
+      const buildRun = await runReviewedCommand(store, approvedProjectRoot, projectPolicy, "typescript-build");
+      assert.equal(buildRun.status, "passed");
+      assert.equal((await store.getRunSummary(buildRun.run.runId))?.state, "completed");
 
       const created = await store.saveRunSummary({
         runId,

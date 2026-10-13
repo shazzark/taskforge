@@ -41,6 +41,15 @@ test("software check refuses a selected test in noninteractive mode before path 
   assert.doesNotMatch(result.stderr, /missing-root/u);
 });
 
+test("software build refuses noninteractive execution before repository access", () => {
+  const result = spawnSync(process.execPath, [cliPath, "run", "software-check", "--root", "missing-root", "--check", "typescript-build"], {
+    encoding: "utf8", timeout: 5_000, windowsHide: true,
+  });
+  assert.equal(result.status, 2);
+  assert.match(result.stderr, /interactive terminal/u);
+  assert.doesNotMatch(result.stderr, /missing-root/u);
+});
+
 test("permission list reports database unavailability without exposing a stack trace", () => {
   const result = spawnSync(process.execPath, [cliPath, "permissions", "list"], {
     encoding: "utf8",

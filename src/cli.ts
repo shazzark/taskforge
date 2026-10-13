@@ -65,7 +65,7 @@ The document-analyze workflow parses one approved TXT, Markdown, text PDF, DOCX,
 The document-convert workflow extracts one approved document to a new bounded plain-text artifact after preview and hash confirmation.
 The schedule command stores one-time or recurring CSV/document workflows; execution occurs only while its foreground scheduler is running and every occurrence requires fresh interactive approval.
 The pdf-report workflow renders an approved JSON report and creates a new approved PDF artifact after a content-bound confirmation.
-The software-check workflow runs only an explicitly approved Node test suite, one explicitly selected in-root JavaScript test file, or TypeScript no-emit check in one approved root.
+The software-check workflow runs only an explicitly approved Node test suite, one explicitly selected in-root JavaScript test file, TypeScript no-emit check, or local TypeScript build in one approved root.
 The resume command reacquires input-file approval, rechecks input and workflow hashes, then resumes an uncertain CSV or document analysis.
 History list prints up to 50 redacted run summaries.
 Permissions are stored in the configured local MongoDB database. Approvals are scoped to a canonical folder and exactly read or write access; revoke disables that scope.
@@ -813,10 +813,10 @@ async function runSoftwareCheckCommand(commandArgs: readonly string[]): Promise<
   if (
     (commandArgs.length !== 4 && selectedTestFile === undefined) || commandArgs[0] !== "--root" || rootValue === undefined ||
     rootValue.trim().length === 0 || commandArgs[2] !== "--check" ||
-    (checkValue !== "node-test" && checkValue !== "typescript-check") ||
+    (checkValue !== "node-test" && checkValue !== "typescript-check" && checkValue !== "typescript-build") ||
     (selectedTestFile !== undefined && checkValue !== "node-test")
   ) {
-    process.stderr.write("Expected --root <directory> --check <node-test|typescript-check> [--test <relative-file for node-test>].\n");
+    process.stderr.write("Expected --root <directory> --check <node-test|typescript-check|typescript-build> [--test <relative-file for node-test>].\n");
     process.exitCode = 1;
     return;
   }
@@ -848,7 +848,7 @@ async function runSoftwareCheckCommand(commandArgs: readonly string[]): Promise<
       ? selectedTestFile === undefined
         ? "node --test (runs the repository test code)"
         : `node --test for ${escapeTerminalControls(selectedTestFile)} (runs that repository test file)`
-      : "local TypeScript compiler --noEmit";
+      : command === "typescript-check" ? "local TypeScript compiler --noEmit" : "local TypeScript compiler build (outputs go to a new .taskforge-build-* folder under the approved root; configured outFile is rejected)";
     const commandConsent = createInterface({ input: process.stdin, output: process.stdout });
     let commandAnswer: string;
     try {
