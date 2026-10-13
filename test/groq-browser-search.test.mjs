@@ -11,6 +11,7 @@ const validResponse = {
       search_results: { results: [
         { title: "Official result", url: "https://example.com/doc", content: "Evidence excerpt." },
         { title: "Unsafe URL", url: "http://example.com/unsafe", content: "discarded" },
+        { title: "Bidi URL", url: "https://example.com/\u202Etxt", content: "discarded" },
       ] },
     }],
   } }],
@@ -42,6 +43,21 @@ test("browser research uses the selected model consistently when it is on the su
   });
   const result = await research.search("supported model check");
   assert.equal(result.model, configurationWith120B.model);
+});
+
+test("research comparison runs two bounded searches and reports exact shared source URLs", async () => {
+  const requests = [];
+  const research = new GroqBrowserResearch(configuration, async (request) => {
+    requests.push(request);
+    return validResponse;
+  });
+  const result = await research.compare("claim A", "claim B");
+  assert.equal(requests.length, 2);
+  assert.equal(requests[0].messages[0].content, "claim A");
+  assert.equal(requests[1].messages[0].content, "claim B");
+  assert.deepEqual(result.sharedSourceUrls, ["https://example.com/doc"]);
+  assert.equal(result.left.answer, "A bounded answer.");
+  assert.equal(result.right.sources[0].excerpt, "Evidence excerpt.");
 });
 
 test("browser research rejects unsupported models, invalid queries, unsafe tool execution and missing sources", async () => {

@@ -28,6 +28,12 @@ export interface ResearchResult {
   readonly model: string;
 }
 
+export interface ResearchComparisonResult {
+  readonly left: ResearchResult;
+  readonly right: ResearchResult;
+  readonly sharedSourceUrls: readonly string[];
+}
+
 export class BrowserSearchError extends Error {
   constructor(readonly kind: ProviderErrorKind) {
     super(`Browser research failed (${kind}).`);
@@ -46,7 +52,7 @@ function nonEmptyText(value: unknown, limit: number): string | undefined {
 }
 
 function safeSourceUrl(value: unknown): string | undefined {
-  if (typeof value !== "string" || value.length > 2_048) return undefined;
+  if (typeof value !== "string" || value.length > 2_048 || /[\u202A-\u202E\u2066-\u2069]/u.test(value)) return undefined;
   try {
     const url = new URL(value);
     if (url.protocol !== "https:" || url.username.length > 0 || url.password.length > 0) return undefined;
@@ -157,5 +163,19 @@ export class GroqBrowserResearch {
     } catch (error: unknown) {
       throw classifyError(error);
     }
+  }
+
+  async compare(leftQuery: string, rightQuery: string, signal?: AbortSignal): Promise<ResearchComparisonResult> {
+    if (leftQuery.trim().length === 0 || leftQuery.trim().length > MAX_QUERY_LENGTH ||
+        rightQuery.trim().length === 0 || rightQuery.trim().length > MAX_QUERY_LENGTH) {
+      throw new BrowserSearchError("invalid_response");
+    }
+    const left = await this.search(leftQuery, signal);
+    const right = await this.search(rightQuery, signal);
+    const rightUrls = new Set(right.sources.map((source) => source.url));
+    const sharedSourceUrls = left.sources
+      .filter((source) => rightUrls.has(source.url))
+      .map((source) => source.url);
+    return { left, right, sharedSourceUrls };
   }
 }

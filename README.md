@@ -8,7 +8,7 @@ Repository: https://github.com/shazzark/taskforge
 
 ## Local development
 
-`run research --query "..."` sends only the approved query to Groq's built-in browser search after an interactive prompt. It requires the selected model to be one of Groq's supported GPT OSS models, displays bounded validated sources and an unverified answer, and persists nothing. It uses the existing Groq configuration and has no separate search key; see [Groq Browser Search](https://console.groq.com/docs/tool-use/built-in-tools/browser-search) for current limits and service details.
+`run research --query "..."` sends only the approved query to Groq's built-in browser search after an interactive prompt. `run research --compare "..." --against "..."` performs two separate searches and displays the answers and validated source excerpts side by side, with exact shared URLs identified mechanically. It does not claim claim-level agreement or contradiction. Both modes persist nothing and use the existing Groq configuration; see [Groq Browser Search](https://console.groq.com/docs/tool-use/built-in-tools/browser-search) for current limits and service details.
 
 Contributor setup and review expectations are in [CONTRIBUTING.md](CONTRIBUTING.md).
 

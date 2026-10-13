@@ -58,8 +58,8 @@ The git-diff workflow displays a bounded, locally redacted staged diff after exa
 The model-investigate workflow sends selected, heuristically redacted source to the configured model only after an additional explicit transfer confirmation; it runs no tools and persists no source or findings.
 The github-issues workflow reads at most 20 open issue titles from one public repository without a token; it excludes pull requests and writes nothing.
 The draft workflow creates a new local Markdown GitHub issue or email draft from an explicitly approved JSON input; it never contacts GitHub or an email service.
-The specialist-review workflow sends approved, heuristically redacted source excerpts to up to two read-only specialist prompts and asks the same configured model to review their findings; workers have no tools, cannot spawn workers, share one run-wide request/action budget, and do not persist source or findings.
-The research workflow sends only the exact approved query to Groq browser search, then displays bounded source metadata and answer; it makes no project-file access or persistence and requires a supported Groq model.
+The specialist-review workflow sends approved, heuristically redacted source excerpts to up to two read-only specialists and asks the same configured model to review their findings; workers can use only literal search over those excerpts, share one run-wide request/action budget, and cannot spawn workers.
+The research workflow sends an approved query to Groq browser search, then displays bounded source metadata and an unverified answer; --compare <question> --against <question> runs two searches and shows source excerpts and exact shared URLs side by side without inferring source agreement.
 The browser-audit workflow visits one explicitly approved loopback HTTP URL in isolated Chromium, blocks cross-origin and non-GET/HEAD requests, checks same-origin links, HTTP/network/console/page errors, basic image/control accessibility, mobile/desktop overflow, and selected passive response headers. It reports aggregate findings only; mixed-content checks are explicitly skipped for HTTP-only fixtures.
 The document-analyze workflow parses one approved TXT, Markdown, text PDF, DOCX, or XLSX file and stores counts only; optional JSON, CSV, or Markdown exports contain counts only and require separate output approval.
 The document-convert workflow extracts one approved document to a new bounded plain-text artifact after preview and hash confirmation.
@@ -1471,8 +1471,11 @@ async function runGitHubIssuesCommand(commandArgs: readonly string[]): Promise<v
 }
 
 async function runResearchCommand(commandArgs: readonly string[]): Promise<void> {
-  if (commandArgs.length !== 2 || commandArgs[0] !== "--query" || commandArgs[1] === undefined || commandArgs[1].trim().length === 0 || commandArgs[1].length > 512) {
-    process.stderr.write("Expected --query <question> with 1–512 characters.\n");
+  const comparison = commandArgs.length === 4 && commandArgs[0] === "--compare" && commandArgs[2] === "--against";
+  const queryMode = commandArgs.length === 2 && commandArgs[0] === "--query";
+  if ((!comparison && !queryMode) || commandArgs[1] === undefined || commandArgs[1].trim().length === 0 || commandArgs[1].length > 512 ||
+      (comparison && (commandArgs[3] === undefined || commandArgs[3].trim().length === 0 || commandArgs[3].length > 512))) {
+    process.stderr.write("Expected --query <question> or --compare <question> --against <question>, each 1–512 characters.\n");
     process.exitCode = 1;
     return;
   }
@@ -1488,12 +1491,15 @@ async function runResearchCommand(commandArgs: readonly string[]): Promise<void>
       process.exitCode = 2;
       return;
     }
-    const query = commandArgs[1].trim();
+    const leftQuery = commandArgs[1].trim();
+    const rightQuery = comparison ? commandArgs[3]?.trim() : undefined;
     const consent = createInterface({ input: process.stdin, output: process.stdout });
     let answer: string;
     try {
       answer = await consent.question(
-        `Send this exact query to Groq browser search (${provider.model})? Groq reports search is powered by Exa. No project files are sent and no results are persisted. [y/N]\n${escapeTerminalControls(query)}\n> `,
+        comparison
+          ? `Send these exact queries as two separate searches to Groq browser search (${provider.model})? Results will show each answer and its retrieved excerpts side by side; shared source URLs are identified mechanically. This does not determine whether sources agree. No project files are sent and no results are persisted. [y/N]\nA: ${escapeTerminalControls(leftQuery)}\nB: ${escapeTerminalControls(rightQuery ?? "")}\n> `
+          : `Send this exact query to Groq browser search (${provider.model})? Groq reports search is powered by Exa. No project files are sent and no results are persisted. [y/N]\n${escapeTerminalControls(leftQuery)}\n> `,
       );
     } finally {
       consent.close();
@@ -1506,10 +1512,24 @@ async function runResearchCommand(commandArgs: readonly string[]): Promise<void>
     const interrupt = (): void => controller.abort();
     process.once("SIGINT", interrupt);
     try {
-      const result = await new GroqBrowserResearch(provider).search(query, controller.signal);
-      process.stdout.write(`Research answer (unverified; retrieved ${result.retrievedAt}; model ${result.model}):\n${escapeTerminalControls(result.answer)}\n\nSources (${result.sources.length}):\n`);
-      for (const source of result.sources) {
-        process.stdout.write(`- ${escapeTerminalControls(source.title)}\n  ${source.url}\n  ${escapeTerminalControls(source.excerpt)}\n`);
+      const research = new GroqBrowserResearch(provider);
+      if (comparison && rightQuery !== undefined) {
+        const result = await research.compare(leftQuery, rightQuery, controller.signal);
+        const printSide = (label: string, side: typeof result.left): void => {
+          process.stdout.write(`\n${label} answer (model synthesis; unverified; retrieved ${side.retrievedAt}):\n${escapeTerminalControls(side.answer)}\n\n${label} sources and excerpts (${side.sources.length}):\n`);
+          for (const source of side.sources) {
+            process.stdout.write(`- ${escapeTerminalControls(source.title)}\n  ${escapeTerminalControls(source.url)}\n  ${escapeTerminalControls(source.excerpt)}\n`);
+          }
+        };
+        printSide("A", result.left);
+        printSide("B", result.right);
+        process.stdout.write(`\nShared source URLs (${result.sharedSourceUrls.length}; exact URL matches only):\n${result.sharedSourceUrls.map((url) => `- ${url}`).join("\n") || "None"}\nCompare the excerpts directly; no claim-level agreement or contradiction was inferred.\n`);
+      } else {
+        const result = await research.search(leftQuery, controller.signal);
+        process.stdout.write(`Research answer (unverified; retrieved ${result.retrievedAt}; model ${result.model}):\n${escapeTerminalControls(result.answer)}\n\nSources (${result.sources.length}):\n`);
+        for (const source of result.sources) {
+          process.stdout.write(`- ${escapeTerminalControls(source.title)}\n  ${escapeTerminalControls(source.url)}\n  ${escapeTerminalControls(source.excerpt)}\n`);
+        }
       }
     } finally {
       process.removeListener("SIGINT", interrupt);

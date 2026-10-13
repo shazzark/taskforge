@@ -11,6 +11,8 @@ Phase 4.13 wires explicitly selected numeric CSV columns into the persisted work
 
 Phase 6.3 extends the loopback browser fixture command with aggregate HTTP/request failures, console/page errors, bounded link checks, basic accessibility heuristics, mobile/desktop overflow, and selected passive response-header checks. Mixed-content coverage is marked skipped for HTTP fixtures. Strict typecheck, all 110 isolated MongoDB tests, fixture checks, and independent review passed. Real-site scope remains owner-provided and pending.
 
+Phase 6.5 adds two-query research comparison. It performs two separately consented-in-one-prompt Groq browser searches, shows each unverified synthesis with its validated source excerpts, and marks exact shared URL matches without inferring claim-level agreement. Strict typecheck/build, focused contracts, 121 full isolated MongoDB tests, and independent review passed; live research remains optional and uses the existing Groq consent/configuration boundary.
+
 ## Phase 0 - Baseline and Windows setup (8-9 October)
 Goal: reviewed documents, public repository, local folder and skills/tool inventory. Scope: README, MIT, Node ignore rules, root planning Markdown files and phase tracker. Repository: https://github.com/shazzark/taskforge (origin URL verified). Acceptance: requirements and unresolved proposals visible; local Git baseline is recorded. Checks: planning baseline commit `45c949e` exists; Node/npm/Git and Codex versions, skills and current AGENTS instructions inspected; no secrets printed. No runtime implementation.
 
