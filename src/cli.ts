@@ -33,6 +33,7 @@ import { investigateSource, ModelInvestigationError } from "./software/model-inv
 import { GitHubReadError, readPublicIssues } from "./integrations/github-public-issues.js";
 import { DraftArtifactError, parseLocalDraftInput, previewPlainTextArtifact, previewTextArtifact, writeApprovedTextArtifact } from "./artifacts/drafts.js";
 import { csvAnalysisExportFormat, CsvAnalysisExportError, renderCsvAnalysisExport, type CsvAnalysisExportFormat } from "./artifacts/csv-analysis-export.js";
+import { convertDocumentToPlainText, DocumentConversionError } from "./documents/plain-text-conversion.js";
 import { escapeTerminalControls } from "./security/terminal-text.js";
 import { BrowserSearchError, GroqBrowserResearch } from "./integrations/groq-browser-search.js";
 import { BrowserAuditError, runBrowserAudit, validateLoopbackBrowserTarget } from "./workflows/browser-audit-workflow.js";
@@ -41,7 +42,7 @@ import type { ScheduleRecord, ScheduleWorkflowId } from "./mongo-store.js";
 
 const helpText = `TaskForge ${packageJson.version} (early development)
 
-Usage: taskforge [--help | --version | config | doctor | model-check | chat | permissions approve/list/revoke | run csv-analyze --input <path> [--output <new.json|csv|md>] | run ... | resume <run-id> --input <path> | history list | schedule ...]
+Usage: taskforge [--help | --version | config | doctor | model-check | chat | permissions approve/list/revoke | run csv-analyze --input <path> [--output <new.json|csv|md>] | run document-convert --input <path> --output <new.txt> | run ... | resume <run-id> --input <path> | history list | schedule ...]
 
 The config command validates local settings and prints a redacted summary.
 The doctor command checks configured MongoDB connectivity and reports available setup areas.
@@ -59,6 +60,7 @@ The specialist-review workflow sends approved, heuristically redacted source exc
 The research workflow sends only the exact approved query to Groq browser search, then displays bounded source metadata and answer; it makes no project-file access or persistence and requires a supported Groq model.
 The browser-audit workflow visits one explicitly approved loopback HTTP URL in an isolated Chromium context, blocks cross-origin requests and non-GET/HEAD methods, checks bounded same-origin links, and stores aggregate counts only.
 The document-analyze workflow parses one approved TXT, Markdown, text PDF, DOCX, or XLSX file and stores counts only.
+The document-convert workflow extracts one approved document to a new bounded plain-text artifact after preview and hash confirmation.
 The schedule command stores one-time or recurring CSV/document workflows; execution occurs only while its foreground scheduler is running and every occurrence requires fresh interactive approval.
 The pdf-report workflow renders an approved JSON report and creates a new approved PDF artifact after a content-bound confirmation.
 The software-check workflow runs only an explicitly approved Node test or TypeScript no-emit check in one approved root.
@@ -390,6 +392,78 @@ async function runDocumentAnalysisCommand(commandArgs: readonly string[]): Promi
   } catch (error: unknown) {
     const message = error instanceof DocumentWorkflowError ? error.message : "Document analysis failed safely.";
     process.stderr.write(`Document analysis failed: ${message}\n`);
+    process.exitCode = 3;
+  }
+}
+
+async function runDocumentConversionCommand(commandArgs: readonly string[]): Promise<void> {
+  if (commandArgs.length !== 4 || commandArgs[0] !== "--input" || commandArgs[1] === undefined || commandArgs[2] !== "--output" || commandArgs[3] === undefined || extname(commandArgs[3]).toLowerCase() !== ".txt") {
+    process.stderr.write("Expected --input <path> --output <new.txt>.\n");
+    process.exitCode = 1;
+    return;
+  }
+  const inputPath = commandArgs[1];
+  const outputPath = commandArgs[3];
+  const input = await readApprovedInputFile(inputPath);
+  if (input === undefined) return;
+  let createdArtifact: { readonly path: string; readonly byteCount: number; readonly sha256: string } | undefined;
+  let attemptedOutputPath: string | undefined;
+  try {
+    const extension = extname(inputPath).toLowerCase();
+    const analysis = await withMongoStore((store) => analyzeDocument(store, extension, input));
+    if (analysis === undefined) return;
+    const content = await convertDocumentToPlainText(extension, input);
+    const requestedOutput = resolve(outputPath);
+    const policy = new WorkspacePathPolicy();
+    const outputRoot = await policy.approveRoot(dirname(requestedOutput));
+    await requirePersistentFolderApproval(outputRoot.path, "write");
+    const approvals = new ActionApprovalRegistry(policy);
+    const pending = await previewPlainTextArtifact(content, requestedOutput, outputRoot, policy, approvals);
+    process.stdout.write(`\n--- DOCUMENT TEXT EXPORT PREVIEW ---\n${escapeTerminalControls(pending.content)}\n`);
+    const consent = createInterface({ input: process.stdin, output: process.stdout });
+    let answer: string;
+    try {
+      answer = await consent.question(`Create this new plain-text export?\nPath: ${escapeTerminalControls(pending.preview.targetPath)}\nBytes: ${Buffer.byteLength(pending.content, "utf8")}\nSHA-256: ${pending.digest}\nSource text will be copied into this local file. [y/N] `);
+    } finally {
+      consent.close();
+    }
+    if (answer.trim().toLowerCase() !== "y") {
+      approvals.discard(pending.preview.previewId);
+      process.stdout.write("Document analysis completed; text export cancelled before writing.\n");
+      return;
+    }
+    attemptedOutputPath = pending.preview.targetPath;
+    const written = await writeApprovedTextArtifact(pending, approvals.approve(pending.preview.previewId), outputRoot, policy, approvals);
+    createdArtifact = written;
+    const reference = await withMongoStore((store) => store.saveArtifactReference({
+      artifactId: randomUUID(),
+      runId: analysis.run.runId,
+      relativePath: basename(written.path),
+      type: "document-plain-text",
+      sha256: written.sha256,
+      bytes: written.byteCount,
+    }));
+    if (reference === undefined) {
+      process.stderr.write(`Plain-text export was created at ${escapeTerminalControls(written.path)}, but its database reference could not be saved.\n`);
+      process.exitCode = 3;
+      return;
+    }
+    process.stdout.write(`Plain-text export created: ${written.byteCount} bytes; SHA-256 ${written.sha256}.\n`);
+  } catch (error: unknown) {
+    if (createdArtifact !== undefined) {
+      process.stderr.write(`Plain-text export exists at ${escapeTerminalControls(createdArtifact.path)}, but its database reference could not be saved.\n`);
+      process.exitCode = 3;
+      return;
+    }
+    if (attemptedOutputPath !== undefined) {
+      process.stderr.write(`Document export writing or verification failed. Check whether a file exists at ${escapeTerminalControls(attemptedOutputPath)} before retrying; existing files are never replaced.\n`);
+      process.exitCode = 3;
+      return;
+    }
+    const detail = error instanceof DocumentConversionError || error instanceof DocumentWorkflowError || error instanceof DraftArtifactError || error instanceof PersistentFolderApprovalError || error instanceof DatabasePersistenceError || error instanceof PersistenceInputError
+      ? error.message
+      : "document conversion failed safely";
+    process.stderr.write(`Document conversion failed: ${detail}\n`);
     process.exitCode = 3;
   }
 }
@@ -1582,6 +1656,8 @@ if (args.length === 0 || (args.length === 1 && (args[0] === "--help" || args[0] 
   await runRepositoryInspectionCommand(args.slice(2));
 } else if (args.length >= 2 && args[0] === "run" && args[1] === "document-analyze") {
   await runDocumentAnalysisCommand(args.slice(2));
+} else if (args.length >= 2 && args[0] === "run" && args[1] === "document-convert") {
+  await runDocumentConversionCommand(args.slice(2));
 } else if (args.length >= 2 && args[0] === "run" && args[1] === "software-check") {
   await runSoftwareCheckCommand(args.slice(2));
 } else if (args.length >= 2 && args[0] === "run" && args[1] === "source-review") {

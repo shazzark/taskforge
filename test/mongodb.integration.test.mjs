@@ -138,6 +138,17 @@ test(
       assert.equal(persistedDocumentRun?.state, "completed");
       assert.equal(persistedDocumentRun?.summary.includes(documentMarker), false);
       assert.equal(documentEvents.some((event) => event.type === "run_finished"), true);
+      const documentArtifactInput = {
+        artifactId: randomUUID(),
+        runId: documentRun.run.runId,
+        relativePath: "text-export.txt",
+        type: "document-plain-text",
+        sha256: createHash("sha256").update(documentMarker).digest("hex"),
+        bytes: Buffer.byteLength(documentMarker),
+      };
+      await store.saveArtifactReference(documentArtifactInput);
+      assert.equal((await store.listArtifactReferences(documentRun.run.runId))[0]?.type, "document-plain-text");
+      await assert.rejects(store.saveArtifactReference({ ...documentArtifactInput, artifactId: randomUUID(), type: "csv-analysis-json" }), PersistenceInputError);
 
       const resumableDocumentId = randomUUID();
       const resumableDocumentInput = Buffer.from("resumable approved document fixture", "utf8");

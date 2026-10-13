@@ -5,6 +5,8 @@ Phase 0 inspection and document alignment are COMPLETE. Planning baseline commit
 
 Phase 4.10 adds verified aggregate-only CSV exports in JSON, CSV, or Markdown. It uses persistent write-scope approval plus an interactive content/path/hash confirmation and create-only hash-verified output. Phase 4.11 links those exports to completed CSV runs through metadata-only artifact references. The implementation passed strict typecheck and the full isolated MongoDB suite (98 passed, zero skipped); peer review found one reporting gap, which was fixed and confirmed resolved. Phase 4 remains IN PROGRESS because document conversion and additional file workflow families remain.
 
+Phase 4.12 implements plain-text conversion for bounded TXT, Markdown, text PDF, DOCX, and XLSX inputs, with a 64 KiB output limit, fresh folder/write approval, create-only hash verification, and metadata-only document-run artifact references. Strict typecheck and the full isolated MongoDB suite passed (101 passed, zero skipped); independent review findings were fixed. Phase 4 remains IN PROGRESS because additional file workflow families remain.
+
 ## Phase 0 - Baseline and Windows setup (8-9 October)
 Goal: reviewed documents, public repository, local folder and skills/tool inventory. Scope: README, MIT, Node ignore rules, root planning Markdown files and phase tracker. Repository: https://github.com/shazzark/taskforge (origin URL verified). Acceptance: requirements and unresolved proposals visible; local Git baseline is recorded. Checks: planning baseline commit `45c949e` exists; Node/npm/Git and Codex versions, skills and current AGENTS instructions inspected; no secrets printed. No runtime implementation.
 

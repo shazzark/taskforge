@@ -23,3 +23,14 @@ test("CSV export does not proceed without interactive exact-file approval", () =
   assert.match(result.stderr, /interactive terminal for explicit read approval/u);
   assert.doesNotMatch(result.stdout, /Aggregate report created/u);
 });
+
+test("document conversion does not read a file without interactive approval", () => {
+  const result = spawnSync(process.execPath, ["dist/cli.js", "run", "document-convert", "--input", "missing.docx", "--output", "report.txt"], {
+    encoding: "utf8",
+    env: { ...process.env, TASKFORGE_MONGODB_URI: undefined },
+    timeout: 10_000,
+  });
+  assert.equal(result.status, 2);
+  assert.match(result.stderr, /interactive terminal for explicit read approval/u);
+  assert.doesNotMatch(result.stdout, /export created/u);
+});
