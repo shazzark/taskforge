@@ -49,5 +49,7 @@ Implementation may delegate independent adapter/tool work after shared contracts
 
 Phase 4.14 adds a persistent-scope-gated exact-file move for supported document/data suffixes. It refuses existing destinations and uses a verified same-volume hard link before unlinking the source. Acceptance includes source digest/path revalidation, collision/change tests, interactive CLI gating, and independent review; the full isolated MongoDB suite is required before completion.
 
+Phase 4.15 adds optional aggregate JSON, CSV, and Markdown exports for document analysis, with validated count-only output, persistent write grants, exact path/content-hash consent, create-only verification, and metadata-only artifact references. It remains IN PROGRESS until strict typecheck, focused tests, isolated MongoDB integration, independent review, and local commit are recorded.
+
 
 Phase 5.7 adds an exact relative-file selector to the reviewed Node test runner. Only in-root regular .js, .cjs, and .mjs test files are allowed; it adds no arbitrary runner flags or shell. Targeted-vs-unselected fixtures and path/race rejection passed; strict typecheck and the full isolated MongoDB suite passed (113 tests, zero skipped), and independent review found no remaining issues.

@@ -33,6 +33,7 @@ import { investigateSource, ModelInvestigationError } from "./software/model-inv
 import { GitHubReadError, readPublicIssues } from "./integrations/github-public-issues.js";
 import { DraftArtifactError, parseLocalDraftInput, previewPlainTextArtifact, previewTextArtifact, writeApprovedTextArtifact } from "./artifacts/drafts.js";
 import { csvAnalysisExportFormat, CsvAnalysisExportError, renderCsvAnalysisExport, type CsvAnalysisExportFormat } from "./artifacts/csv-analysis-export.js";
+import { documentAnalysisExportFormat, DocumentAnalysisExportError, renderDocumentAnalysisExport, type DocumentAnalysisExportFormat } from "./artifacts/document-analysis-export.js";
 import { convertDocumentToPlainText, DocumentConversionError } from "./documents/plain-text-conversion.js";
 import { escapeTerminalControls } from "./security/terminal-text.js";
 import { BrowserSearchError, GroqBrowserResearch } from "./integrations/groq-browser-search.js";
@@ -42,7 +43,7 @@ import type { ScheduleRecord, ScheduleWorkflowId } from "./mongo-store.js";
 
 const helpText = `TaskForge ${packageJson.version} (early development)
 
-Usage: taskforge [--help | --version | config | doctor | model-check | chat | permissions approve/list/revoke | run csv-analyze --input <path> [--numeric-column <header>]... [--output <new.json|csv|md>] | run document-convert --input <path> --output <new.txt> | run file-move --source <file> --target <new-file> | run ... | resume <run-id> --input <path> [--numeric-column <header>]... | history list | schedule ...]
+Usage: taskforge [--help | --version | config | doctor | model-check | chat | permissions approve/list/revoke | run csv-analyze --input <path> [--numeric-column <header>]... [--output <new.json|csv|md>] | run document-analyze --input <path> [--output <new.json|csv|md>] | run document-convert --input <path> --output <new.txt> | run file-move --source <file> --target <new-file> | run ... | resume <run-id> --input <path> [--numeric-column <header>]... | history list | schedule ...]
 
 The config command validates local settings and prints a redacted summary.
 The doctor command checks configured MongoDB connectivity and reports available setup areas.
@@ -60,7 +61,7 @@ The draft workflow creates a new local Markdown GitHub issue or email draft from
 The specialist-review workflow sends approved, heuristically redacted source excerpts to up to two read-only specialist prompts and asks the same configured model to review their findings; workers have no tools, cannot spawn workers, share one run-wide request/action budget, and do not persist source or findings.
 The research workflow sends only the exact approved query to Groq browser search, then displays bounded source metadata and answer; it makes no project-file access or persistence and requires a supported Groq model.
 The browser-audit workflow visits one explicitly approved loopback HTTP URL in isolated Chromium, blocks cross-origin and non-GET/HEAD requests, checks same-origin links, HTTP/network/console/page errors, basic image/control accessibility, mobile/desktop overflow, and selected passive response headers. It reports aggregate findings only; mixed-content checks are explicitly skipped for HTTP-only fixtures.
-The document-analyze workflow parses one approved TXT, Markdown, text PDF, DOCX, or XLSX file and stores counts only.
+The document-analyze workflow parses one approved TXT, Markdown, text PDF, DOCX, or XLSX file and stores counts only; optional JSON, CSV, or Markdown exports contain counts only and require separate output approval.
 The document-convert workflow extracts one approved document to a new bounded plain-text artifact after preview and hash confirmation.
 The schedule command stores one-time or recurring CSV/document workflows; execution occurs only while its foreground scheduler is running and every occurrence requires fresh interactive approval.
 The pdf-report workflow renders an approved JSON report and creates a new approved PDF artifact after a content-bound confirmation.
@@ -402,14 +403,27 @@ async function resumeWorkflowCommand(runId: string, commandArgs: readonly string
 }
 
 async function runDocumentAnalysisCommand(commandArgs: readonly string[]): Promise<void> {
-  const inputPath = inputPathArgument(commandArgs);
-  if (inputPath === undefined) {
-    process.stderr.write("Expected --input followed by a file path.\n");
+  const parsed = parseCsvCommandArguments(commandArgs);
+  if (parsed === undefined || parsed.numericColumns.length > 0) {
+    process.stderr.write("Expected --input <path> [--output <new.json|new.csv|new.md>].\n");
     process.exitCode = 1;
     return;
   }
+  const { inputPath, outputPath } = parsed;
+  let exportFormat: DocumentAnalysisExportFormat | undefined;
+  if (outputPath !== undefined) {
+    try {
+      exportFormat = documentAnalysisExportFormat(outputPath);
+    } catch (error: unknown) {
+      process.stderr.write(`${error instanceof DocumentAnalysisExportError ? error.message : "Document export path was rejected."}\n`);
+      process.exitCode = 1;
+      return;
+    }
+  }
   const input = await readApprovedInputFile(inputPath);
   if (input === undefined) return;
+  let createdArtifact: { readonly path: string; readonly byteCount: number; readonly sha256: string } | undefined;
+  let attemptedOutputPath: string | undefined;
   try {
     const extension = extname(inputPath).toLowerCase();
     const result = await withMongoStore((store) => analyzeDocument(store, extension, input));
@@ -422,9 +436,54 @@ async function runDocumentAnalysisCommand(commandArgs: readonly string[]): Promi
         (analysis.sheetCount === undefined ? "" : `, ${analysis.sheetCount} sheets, ${analysis.rowCount ?? 0} rows, ${analysis.cellCount ?? 0} cells`) +
         `.\n`,
       );
+      if (outputPath !== undefined && exportFormat !== undefined) {
+        const content = renderDocumentAnalysisExport(analysis, exportFormat);
+        const requestedOutput = resolve(outputPath);
+        const policy = new WorkspacePathPolicy();
+        const outputRoot = await policy.approveRoot(dirname(requestedOutput));
+        await requirePersistentFolderApproval(outputRoot.path, "write");
+        const approvals = new ActionApprovalRegistry(policy);
+        const pending = await previewPlainTextArtifact(content, requestedOutput, outputRoot, policy, approvals);
+        process.stdout.write(`\n--- DOCUMENT AGGREGATE EXPORT PREVIEW ---\n${escapeTerminalControls(pending.content)}\n`);
+        const consent = createInterface({ input: process.stdin, output: process.stdout });
+        let answer: string;
+        try {
+          answer = await consent.question(`Create this new ${exportFormat} aggregate report?\nPath: ${escapeTerminalControls(pending.preview.targetPath)}\nBytes: ${Buffer.byteLength(content, "utf8")}\nSHA-256: ${pending.digest}\nDocument text, file paths, sheet names, and cell values are excluded. [y/N] `);
+        } finally { consent.close(); }
+        if (answer.trim().toLowerCase() !== "y") {
+          approvals.discard(pending.preview.previewId);
+          process.stdout.write("Document analysis completed; aggregate export cancelled before writing.\n");
+          return;
+        }
+        attemptedOutputPath = pending.preview.targetPath;
+        const written = await writeApprovedTextArtifact(pending, approvals.approve(pending.preview.previewId), outputRoot, policy, approvals);
+        createdArtifact = written;
+        const artifactType: ArtifactType = exportFormat === "json" ? "document-analysis-json" : exportFormat === "csv" ? "document-analysis-csv" : "document-analysis-markdown";
+        const reference = await withMongoStore((store) => store.saveArtifactReference({
+          artifactId: randomUUID(), runId: result.run.runId, relativePath: basename(written.path), type: artifactType,
+          sha256: written.sha256, bytes: written.byteCount,
+        }));
+        if (reference === undefined) {
+          process.stderr.write(`Aggregate report was created at ${escapeTerminalControls(written.path)}, but its database reference could not be saved.\n`);
+          process.exitCode = 3;
+          return;
+        }
+        process.stdout.write(`Document aggregate report created: ${written.byteCount} bytes; SHA-256 ${written.sha256}.\n`);
+      }
     }
   } catch (error: unknown) {
-    const message = error instanceof DocumentWorkflowError ? error.message : "Document analysis failed safely.";
+    if (createdArtifact !== undefined) {
+      process.stderr.write(`Aggregate report exists at ${escapeTerminalControls(createdArtifact.path)}, but its database reference could not be saved.\n`);
+      process.exitCode = 3;
+      return;
+    }
+    if (attemptedOutputPath !== undefined) {
+      process.stderr.write(`Document aggregate report writing or verification failed. Check whether a file exists at ${escapeTerminalControls(attemptedOutputPath)} before retrying; existing files are never replaced.\n`);
+      process.exitCode = 3;
+      return;
+    }
+    const message = error instanceof DocumentWorkflowError || error instanceof DocumentAnalysisExportError || error instanceof DraftArtifactError || error instanceof PersistentFolderApprovalError || error instanceof DatabasePersistenceError || error instanceof PersistenceInputError
+      ? error.message : "Document analysis failed safely.";
     process.stderr.write(`Document analysis failed: ${message}\n`);
     process.exitCode = 3;
   }

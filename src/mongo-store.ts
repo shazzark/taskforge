@@ -96,7 +96,7 @@ export interface FolderApproval {
   readonly updatedAt: Date;
 }
 
-export type ArtifactType = "csv-analysis-json" | "csv-analysis-csv" | "csv-analysis-markdown" | "document-plain-text";
+export type ArtifactType = "csv-analysis-json" | "csv-analysis-csv" | "csv-analysis-markdown" | "document-plain-text" | "document-analysis-json" | "document-analysis-csv" | "document-analysis-markdown";
 export interface ArtifactReference {
   readonly artifactId: string;
   readonly runId: string;
@@ -454,7 +454,7 @@ function parseArtifactReference(value: unknown): ArtifactReference {
     throw new PersistenceInputError("Artifact relativePath must be a bounded, non-traversing relative path.");
   }
   const typeValue = value["type"];
-  if (typeValue !== "csv-analysis-json" && typeValue !== "csv-analysis-csv" && typeValue !== "csv-analysis-markdown" && typeValue !== "document-plain-text") {
+  if (typeValue !== "csv-analysis-json" && typeValue !== "csv-analysis-csv" && typeValue !== "csv-analysis-markdown" && typeValue !== "document-plain-text" && typeValue !== "document-analysis-json" && typeValue !== "document-analysis-csv" && typeValue !== "document-analysis-markdown") {
     throw new PersistenceInputError("Artifact type is unsupported.");
   }
   const sha256 = parseHash(value["sha256"], "Artifact SHA-256");
@@ -745,7 +745,7 @@ export class MongoStore {
     const parsed = parseArtifactReference({ ...value, createdAt: now });
     try {
       const run = await this.runs.findOne({ _id: parsed.runId });
-      const expectedWorkflow = parsed.type === "document-plain-text" ? "document-analyze" : "csv-analyze";
+      const expectedWorkflow = parsed.type.startsWith("document-") ? "document-analyze" : "csv-analyze";
       if (run === null || run.workflowId !== expectedWorkflow || run.state !== "completed") {
         throw new PersistenceInputError("Artifact references require a matching completed workflow run.");
       }

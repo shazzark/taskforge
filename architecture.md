@@ -22,6 +22,8 @@ Phase 4.11 stores a metadata-only reference for a created CSV aggregate report i
 
 Phase 4.12 adds bounded plain-text conversion for TXT, Markdown, text PDF, DOCX, and XLSX. XLSX rows are rendered as escaped tab-separated lines; converted outputs are capped at 64 KiB. The command uses fresh input/output approval and links the created text artifact to the completed document-analysis run; it stores no source or converted text in MongoDB.
 
+Document analysis can optionally export JSON, CSV, or Markdown containing only validated format and aggregate parser counts. It excludes source text, paths, spreadsheet names, and cell values. Output uses the existing persistent folder-write grant and exact path/content-hash approval, creates a new file only, and persists a relative metadata-only artifact reference linked to the completed document run.
+
 CSV workflows may explicitly select numeric headers for exact decimal totals. The selected header names and totals are included in reports, while source cell values remain excluded. The selected headers are included in the workflow state hash, so resume must repeat the same options and cannot silently change calculation scope.
 
 ## Commands and browser risks

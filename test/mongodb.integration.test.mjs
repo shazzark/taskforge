@@ -149,6 +149,11 @@ test(
       await store.saveArtifactReference(documentArtifactInput);
       assert.equal((await store.listArtifactReferences(documentRun.run.runId))[0]?.type, "document-plain-text");
       await assert.rejects(store.saveArtifactReference({ ...documentArtifactInput, artifactId: randomUUID(), type: "csv-analysis-json" }), PersistenceInputError);
+      const documentReport = await store.saveArtifactReference({
+        ...documentArtifactInput, artifactId: randomUUID(), relativePath: "aggregate.json", type: "document-analysis-json",
+        sha256: createHash("sha256").update("aggregate").digest("hex"), bytes: 9,
+      });
+      assert.equal(documentReport.type, "document-analysis-json");
 
       const resumableDocumentId = randomUUID();
       const resumableDocumentInput = Buffer.from("resumable approved document fixture", "utf8");

@@ -18,6 +18,8 @@ The `run browser-audit --url <loopback-url>` slice is available for explicitly a
 
 Requirements: Node.js 22.13.0 or later and npm.
 
+`run document-analyze --input <path> [--output <new.json|new.csv|new.md>]` can write a metadata-only aggregate report. The export shows format and parser counts; it excludes document text, paths, sheet names, and cell values. Output requires a persistent folder write grant and interactive preview/hash approval, creates a new file only, and links a metadata-only artifact reference to the completed run. Without `--output`, the command only displays the analysis summary.
+
 Folder approval records are stored in the configured MongoDB database and enforced by file workflows. Grant a canonical folder scope with `permissions approve --root <folder> --access <read|write>`, inspect it with `permissions list [--all]`, and revoke it with `permissions revoke --root <folder> --access <read|write>`. Read workflows require a covering read grant; file patching requires both read and write; artifact creation and repository command execution require write scope. Each workflow still asks for its separate operation approval, and protected secret paths remain denied. Revoked records remain visible to `permissions list --all` and do not block future grants.
 
 ```powershell
