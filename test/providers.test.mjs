@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { AgentBudgetError, AgentToolError, runToolLoop } from "../dist/agent/tool-loop.js";
-import { ConfigurationError, parseConfiguration } from "../dist/config.js";
+import { ConfigurationError, loadProviderConfiguration, parseConfiguration } from "../dist/config.js";
 import { GroqProvider } from "../dist/providers/groq-provider.js";
 import { OllamaProvider } from "../dist/providers/ollama-provider.js";
 import { ModelProviderError } from "../dist/providers/types.js";
@@ -74,6 +74,7 @@ test("Ollama configuration rejects non-loopback endpoints", () => {
       provider: "ollama",
       ollamaBaseUrl: "http://192.168.1.10:11434",
       ollamaModel: "qwen3:4b-q4_K_M",
+      ollamaContextLength: 4096,
     }),
     ConfigurationError,
   );
@@ -82,8 +83,26 @@ test("Ollama configuration rejects non-loopback endpoints", () => {
     provider: "ollama",
     ollamaBaseUrl: "http://127.0.0.1:11434/",
     ollamaModel: "qwen3:4b-q4_K_M",
+    ollamaContextLength: 4096,
   });
   assert.equal(result.provider.baseUrl, "http://127.0.0.1:11434");
+  assert.equal(result.provider.contextLength, 4096);
+  assert.throws(
+    () => parseConfiguration({
+      mongodbUri: mongoUri,
+      provider: "ollama",
+      ollamaBaseUrl: "http://127.0.0.1:11434",
+      ollamaModel: "qwen3:4b-q4_K_M",
+      ollamaContextLength: 999,
+    }),
+    (error) => error instanceof ConfigurationError && error.message.includes("TASKFORGE_OLLAMA_CONTEXT_LENGTH"),
+  );
+  const environmentConfig = loadProviderConfiguration({
+    TASKFORGE_PROVIDER: "ollama",
+    TASKFORGE_OLLAMA_MODEL: "qwen3:4b-q4_K_M",
+  });
+  assert.equal(environmentConfig.kind, "ollama");
+  assert.equal(environmentConfig.contextLength, 4096);
 });
 
 test("Groq adapter submits a constrained function tool and parses its call", async () => {
@@ -122,17 +141,18 @@ test("Groq adapter classifies auth, quota and invalid provider responses", async
   await assert.rejects(malformed.complete(request), (error) => error.kind === "invalid_response");
 });
 
-test("Ollama adapter sends the local OpenAI-compatible request and normalizes tool calls", async () => {
+test("Ollama adapter sends a bounded native chat request and normalizes tool calls", async () => {
   let observedUrl;
   let observedBody;
   const provider = new OllamaProvider(
-    { kind: "ollama", baseUrl: "http://127.0.0.1:11434", model: "qwen3:4b-q4_K_M" },
+    { kind: "ollama", baseUrl: "http://127.0.0.1:11434", model: "qwen3:4b-q4_K_M", contextLength: 4096 },
     async (url, init) => {
       observedUrl = String(url);
       observedBody = JSON.parse(init.body);
-      return new Response(JSON.stringify(toolCompletion([
-        { name: "read_fixture_status", arguments: { record_id: "fixture-001" } },
-      ])), { status: 200, headers: { "content-type": "application/json" } });
+      return new Response(JSON.stringify({
+        message: { role: "assistant", content: "", tool_calls: [{ function: { name: "read_fixture_status", arguments: { record_id: "fixture-001" } } }] },
+        done_reason: "tool_calls",
+      }), { status: 200, headers: { "content-type": "application/json" } });
     },
   );
   const result = await provider.complete({
@@ -140,22 +160,53 @@ test("Ollama adapter sends the local OpenAI-compatible request and normalizes to
     messages: [{ role: "user", content: "Read the fixture." }],
     tools: [fixtureTool],
   });
-  assert.equal(observedUrl, "http://127.0.0.1:11434/v1/chat/completions");
+  assert.equal(observedUrl, "http://127.0.0.1:11434/api/chat");
   assert.equal(observedBody.model, "qwen3:4b-q4_K_M");
+  assert.equal(observedBody.options.num_ctx, 4096);
   assert.equal(observedBody.tools[0].function.name, "read_fixture_status");
   assert.equal(result.toolCalls[0].name, "read_fixture_status");
   assert.deepEqual(result.toolCalls[0].arguments, { record_id: "fixture-001" });
 });
 
+test("Ollama adapter replays validated tool output using native tool messages", async () => {
+  const observedBodies = [];
+  const responses = [
+    { message: { role: "assistant", content: "", tool_calls: [{ function: { name: "read_fixture_status", arguments: { record_id: "fixture-001" } } }] } },
+    { message: { role: "assistant", content: "The fixture is ready." } },
+  ];
+  const provider = new OllamaProvider(
+    { kind: "ollama", baseUrl: "http://127.0.0.1:11434", model: "qwen3:4b-q4_K_M", contextLength: 4096 },
+    async (_url, init) => {
+      observedBodies.push(JSON.parse(init.body));
+      return new Response(JSON.stringify(responses.shift()), { status: 200 });
+    },
+  );
+  const result = await runToolLoop(
+    provider,
+    "qwen3:4b-q4_K_M",
+    [{ role: "user", content: "Read the fixture." }],
+    [fixtureToolImplementation()],
+    { maxModelRequests: 2, maxToolActions: 1 },
+  );
+  assert.equal(result.content, "The fixture is ready.");
+  assert.equal(observedBodies[1].messages[1].tool_calls[0].function.name, "read_fixture_status");
+  assert.deepEqual(observedBodies[1].messages[2], {
+    role: "tool",
+    tool_name: "read_fixture_status",
+    content: "fixture-001 status=ready",
+  });
+  assert.equal(observedBodies[1].options.num_ctx, 4096);
+});
+
 test("Ollama adapter reports unsupported tools and malformed response without leaking details", async () => {
   const request = { model: "qwen3:4b-q4_K_M", messages: [], tools: [fixtureTool] };
   const unsupported = new OllamaProvider(
-    { kind: "ollama", baseUrl: "http://127.0.0.1:11434", model: "qwen3:4b-q4_K_M" },
+    { kind: "ollama", baseUrl: "http://127.0.0.1:11434", model: "qwen3:4b-q4_K_M", contextLength: 4096 },
     async () => new Response("private server detail", { status: 400 }),
   );
   await assert.rejects(unsupported.complete(request), (error) => error.kind === "unsupported_tool");
   const malformed = new OllamaProvider(
-    { kind: "ollama", baseUrl: "http://127.0.0.1:11434", model: "qwen3:4b-q4_K_M" },
+    { kind: "ollama", baseUrl: "http://127.0.0.1:11434", model: "qwen3:4b-q4_K_M", contextLength: 4096 },
     async () => new Response(JSON.stringify({ unexpected: "shape" }), { status: 200 }),
   );
   await assert.rejects(malformed.complete(request), (error) => error.kind === "invalid_response");

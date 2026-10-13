@@ -35,6 +35,8 @@ The CLI supports help, version output, `config`, `doctor`, `model-check`, `chat`
 
 Most planned software, document, browser, research, connection, scheduling, and specialist-agent workflows remain in progress. The only executable tool currently exposed by the model-check path is a fixed synthetic fixture.
 
+For local Ollama, set `TASKFORGE_PROVIDER=ollama`, `TASKFORGE_OLLAMA_MODEL`, and optionally `TASKFORGE_OLLAMA_CONTEXT_LENGTH` (default 4096; accepted range 1024–131072). The Ollama adapter uses native `/api/chat` requests to apply that context size. The default provider configuration remains Groq.
+
 ### Local schedules
 
 Schedules are stored in the configured MongoDB database and run only while `schedule run` remains active in the foreground. Add a one-time UTC instant with `schedule add --workflow csv-analyze --input <path> --once 2035-01-01T00:00:00.000Z`, or a fixed interval with `--every-minutes <1..10080>`. `schedule list`, `pause <id>`, `resume <id>`, and `delete <id>` manage them (delete is a confirmed soft delete). Each due run asks for approval again and reacquires exact-file read approval. If no interactive user is present, it remains awaiting approval. The runner records missed runs and skips them. No Windows Task Scheduler job or background service is installed.

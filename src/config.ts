@@ -6,10 +6,11 @@ export const GROQ_API_KEY_ENVIRONMENT_VARIABLE = "TASKFORGE_GROQ_API_KEY";
 export const GROQ_MODEL_ENVIRONMENT_VARIABLE = "TASKFORGE_GROQ_MODEL";
 export const OLLAMA_BASE_URL_ENVIRONMENT_VARIABLE = "TASKFORGE_OLLAMA_BASE_URL";
 export const OLLAMA_MODEL_ENVIRONMENT_VARIABLE = "TASKFORGE_OLLAMA_MODEL";
+export const OLLAMA_CONTEXT_LENGTH_ENVIRONMENT_VARIABLE = "TASKFORGE_OLLAMA_CONTEXT_LENGTH";
 
 export type ProviderConfiguration =
   | { readonly kind: "groq"; readonly apiKey: string; readonly model: string }
-  | { readonly kind: "ollama"; readonly baseUrl: string; readonly model: string };
+  | { readonly kind: "ollama"; readonly baseUrl: string; readonly model: string; readonly contextLength: number };
 
 export interface AppConfiguration {
   readonly mongodbUri: string;
@@ -157,7 +158,11 @@ export function parseProviderConfiguration(value: unknown): ProviderConfiguratio
     if (typeof model !== "string" || !/^[a-zA-Z0-9][a-zA-Z0-9._:/-]{0,127}$/u.test(model)) {
       throw new ConfigurationError(`${OLLAMA_MODEL_ENVIRONMENT_VARIABLE} must be a valid model identifier.`);
     }
-    return { kind: "ollama", baseUrl: parsedBaseUrl.toString().replace(/\/$/u, ""), model };
+    const contextLength = value["ollamaContextLength"];
+    if (typeof contextLength !== "number" || !Number.isInteger(contextLength) || contextLength < 1024 || contextLength > 131072) {
+      throw new ConfigurationError(`${OLLAMA_CONTEXT_LENGTH_ENVIRONMENT_VARIABLE} must be an integer from 1024 to 131072.`);
+    }
+    return { kind: "ollama", baseUrl: parsedBaseUrl.toString().replace(/\/$/u, ""), model, contextLength };
   }
 
   throw new ConfigurationError(`${MODEL_PROVIDER_ENVIRONMENT_VARIABLE} must be either groq or ollama.`);
@@ -180,6 +185,7 @@ function providerValues(environment: Readonly<Record<string, string | undefined>
     groqModel: environment[GROQ_MODEL_ENVIRONMENT_VARIABLE] ?? "openai/gpt-oss-20b",
     ollamaBaseUrl: environment[OLLAMA_BASE_URL_ENVIRONMENT_VARIABLE] ?? "http://127.0.0.1:11434",
     ollamaModel: environment[OLLAMA_MODEL_ENVIRONMENT_VARIABLE],
+    ollamaContextLength: Number(environment[OLLAMA_CONTEXT_LENGTH_ENVIRONMENT_VARIABLE] ?? "4096"),
   };
 }
 
@@ -209,6 +215,6 @@ export function formatConfigurationSummary(configuration: AppConfiguration): str
     ? "Model provider: not configured."
     : configuration.provider.kind === "groq"
       ? `Model provider: Groq configured (${configuration.provider.model}; key redacted).`
-      : `Model provider: Ollama configured (${configuration.provider.model}; loopback only).`;
+      : `Model provider: Ollama configured (${configuration.provider.model}; context ${configuration.provider.contextLength}; loopback only).`;
   return `MongoDB configuration: present (connection string redacted).\n${providerSummary}`;
 }
