@@ -42,7 +42,7 @@ This file is the execution status source. Statuses describe verified work only. 
 
 **Checks and evidence:** Clean `npm ci`, `npm run typecheck`, `npm run build`, and `npm test` passed on Windows. All 12 tests passed with no skips against a fresh disposable loopback MongoDB instance. Direct Windows CLI smoke checks passed for help, version, config summary, and doctor unavailable-server exit code 2/redaction. The integrated doctor test reported MongoDB available against the disposable instance, and missing/unavailable config paths remained deterministic. The package's `cli` npm script name conflicted with npm 11 command parsing, so it was removed; README commands invoke the built entry point with `node dist/cli.js`. No registered service was started, no existing connection value was reused, and no changes were pushed. `git diff --check` passed; independent review found no remaining findings.
 
-### Phase 2 — Providers and agent loop — IN PROGRESS
+### Phase 2 — Providers and agent loop — COMPLETE
 
 **Goal:** Add interactive chat, local and free-tier provider adapters, validated tool calls, run budgets and cancellation.
 
@@ -88,7 +88,7 @@ Implemented explicit realpath-resolved root approval, read/write path checks, se
 
 **Checks:** `npm run typecheck` passed; `npm test` passed (28 passed, 1 skipped: the dedicated MongoDB integration lacked its test URI). Approved-root traversal, secret denial, junction escape, content-change invalidation, junction replacement invalidation and preview limits passed.
 
-**Pending:** This general root/preview foundation remains in-memory. `file-patch`, `pdf-report`, and local `draft` each enforce their own approved, content-bound operation path; durable approved-root/approval configuration and additional mutation workflows remain unimplemented.
+**Pending:** This general root/preview foundation remains in-memory. `file-patch`, `pdf-report`, and local `draft` each enforce their own approved, content-bound operation path; durable scoped folder approvals are implemented in Phase 3.4. This preview layer still does not authorize mutations.
 
 #### Phase 3.2 — MongoDB run state, events and checkpoints — COMPLETE (persistence foundation)
 
@@ -102,7 +102,13 @@ Added `run csv-analyze --input <path>`, `resume <run-id> --input <path>`, and `h
 
 **Checks:** `npm run typecheck` passed; `npm test` passed against a unique loopback MongoDB database (47 passed, 0 skipped, 0 failed). Integration covered run summary redaction, events, analysis, history listing, stale-input rejection, crash-age recovery, resume completion, and cleanup of the isolated database.
 
-**Pending:** Additional workflow families, durable approved-root configuration, additional mutation workflows, and rich artifact references remain future subphases. Atlas authenticated ping and isolated local MongoDB integration both pass.
+**Pending:** Additional workflow families, additional mutation workflows, and rich artifact references remain future subphases. Atlas authenticated ping and isolated local MongoDB integration both pass.
+
+#### Phase 3.4 — Persistent folder approvals — COMPLETE
+
+Added validated MongoDB `folder_approvals` records keyed by canonical path and independent `read`/`write` scope, retaining active/revoked status. Added interactive `permissions approve`, `list [--all]`, and `revoke` commands. Roots must resolve to an existing non-sensitive directory; permission changes require a TTY confirmation. CLI file/repository workflows now require an active covering scope before operating. Read workflows need `read`; file patching needs both read and write; artifact creation and repository command execution need write. Existing operation confirmation, secret denial, path canonicalization, and link escape protections remain active. Revocation is soft, and repeat revocation reports no active grant.
+
+**Checks:** `npm run typecheck` passed. `TASKFORGE_TEST_MONGODB_URI=mongodb://127.0.0.1:27017/taskforge_test npm test` passed against a unique generated loopback test database: 94 passed, 0 skipped, 0 failed. Integration covered distinct read/write records, descendant containment, sibling escape denial, wrong-scope denial, revocation, repeat revocation, all-status listing, invalid path/scope rejection, and visibility/enforcement with more than 1,000 stored grants. CLI checks verify permission changes stop with exit code 2 without an interactive terminal and database unavailability is reported without a stack trace or endpoint disclosure. Existing symlink/escape and secret-path tests also passed.
 
 ### Phase 4 — Files, data and report adapters — IN PROGRESS
 
@@ -323,7 +329,7 @@ Added ExcelJS-scoped overrides to `archiver@7.0.1` and `unzipper@0.12.5`, plus a
 
 ## Recovery
 
-- **Current phase/subphase:** Phase 2.1 and live Phase 2.2 are COMPLETE for their stated slices; Phase 2 is COMPLETE. Phases 3.1–3.3 and 4.1–4.9 have verified bounded foundations; richer artifact references/report workflows remain. Phase 5.1–5.6 foundations are COMPLETE. Phase 6.1 local loopback foundation and 6.2 query-only Groq research are COMPLETE for their bounded slices; broader browser/design workflows and owner-approved target acceptance remain. Phase 7.1–7.4 are COMPLETE for their stated slices; tool-bearing/browser/data specialist integrations remain, so Phase 7 remains IN PROGRESS. Phase 8.1–8.2 and 8.4 dependency remediation are verified; Phase 8.3's prepared independent developer trial remains pending, so Phase 8 is IN PROGRESS.
+- **Current phase/subphase:** Phase 2.1 and live Phase 2.2 are COMPLETE for their stated slices; Phase 2 is COMPLETE. Phases 3.1–3.4 and 4.1–4.9 have verified bounded foundations; richer artifact references/report workflows remain. Phase 5.1–5.6 foundations are COMPLETE. Phase 6.1 local loopback foundation and 6.2 query-only Groq research are COMPLETE for their bounded slices; broader browser/design workflows and owner-approved target acceptance remain. Phase 7.1–7.4 are COMPLETE for their stated slices; tool-bearing/browser/data specialist integrations remain, so Phase 7 remains IN PROGRESS. Phase 8.1–8.2 and 8.4 dependency remediation are verified; Phase 8.3's prepared independent developer trial remains pending, so Phase 8 is IN PROGRESS.
 - **Last completed work:** Phase 8.1 offline cached Windows consumer and dependency-tree verification; Phase 8.2 contributor guidance/package-content audit; Phase 6.2 consented live-verified Groq browser research (`af724b7`); Phase 7.3 bounded read-only specialist review (`d1c0a01`).
 - **Checks performed:** Phase 1.1: `npm ci`; typecheck/build; built CLI help/version; package version parity; invalid-argument error and no argument echo; packed Windows consumer and `taskforge.cmd`; review; `git diff --check`. Phase 1.2: `npm ci`; typecheck; tests (8 passed); missing/malformed config exit behavior and redaction; review; diff check. Phase 1.3: `npm ci`; typecheck/build; 10 tests passed against isolated disposable MongoDB; persistence and unavailable-server paths; review; diff check. Phase 1.4: clean `npm ci`; typecheck/build; Windows help/version/config/doctor smoke checks; all 12 tests passed with no skips against isolated disposable MongoDB; doctor success plus missing/unavailable failure paths and redaction; review; `git diff --check`. Registered MongoDB service remains stopped and untouched; no existing connection value was read or reused.
 - **Verified commands/results:** `npm run typecheck` passed; `npm test` passed (21 passed, 1 skipped dedicated MongoDB integration; test command builds). `node dist/cli.js model-check` passed against Groq (1 read-only synthetic tool action, 2 model requests). Safe `mongosh` ping returned `1`; application URI validation failed without revealing the connection string. `git diff --check` must pass before checkpointing.

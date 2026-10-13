@@ -26,6 +26,10 @@ Save detailed run summaries and redacted, truncated tool events by default, not 
 ## Checks by capability
 Files: path escape, junctions, secret filtering, unchanged-content moves, duplicate-name conflicts. Data: known totals, duplicates, missing values, encodings and malformed CSV. Software: reproduce seeded regression, inspect approved diff and rerun relevant tests. Browser: controlled HTTP errors, failed requests, console failures, broken link and mobile overflow; login checks only with supplied accounts. Research: sources actually retrieved, timestamps, contradiction/unsupported-claim handling. Agents: budget sharing, denied tools, write conflicts and parent review. Scheduling: missed runs, duplicate suppression and approval-required state.
 
+## Persistent folder approvals
+
+Persistent folder grants use `permissions approve --root <folder> --access <read|write>`, `permissions list [--all]`, and `permissions revoke --root <folder> --access <read|write>`. The CLI canonicalizes an existing non-sensitive directory and asks interactively before granting or revoking. MongoDB records each access scope separately and retains revoked entries. File and repository workflow entry points require a covering active grant for their canonical root/path and required scope, then continue to require operation-specific confirmation. Grant lookup failure or database unavailability denies access. Secret paths and symlink/junction escapes remain denied by the path policy.
+
 ## Security and privacy
 No credentials in logs, screenshots intended for sharing, reports, fixtures or Git. Explicit online-transfer disclosure and user choice. Restrict network destinations where needed; protect against private-network access when processing untrusted URLs. Browser tests against localhost require explicitly approved local targets. Avoid rendering untrusted HTML directly into reports. No claim of comprehensive penetration testing or security certification.
 

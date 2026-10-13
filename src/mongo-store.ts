@@ -1,6 +1,7 @@
 import { MongoClient, type Collection, type Document } from "mongodb";
 import { createHash } from "node:crypto";
-import { extname, isAbsolute } from "node:path";
+import { extname, isAbsolute, relative, resolve, sep } from "node:path";
+import { platform } from "node:os";
 import { parseConfiguration } from "./config.js";
 
 export interface RunSummaryInput {
@@ -86,6 +87,15 @@ export interface ScheduleRecord extends ScheduleDefinition {
   readonly dispatchStartedAt?: Date;
 }
 
+export type FolderApprovalAccess = "read" | "write";
+export interface FolderApproval {
+  readonly path: string;
+  readonly access: FolderApprovalAccess;
+  readonly status: "active" | "revoked";
+  readonly createdAt: Date;
+  readonly updatedAt: Date;
+}
+
 interface StoredRunSummary extends Document {
   readonly _id: string;
   readonly runId: string;
@@ -134,6 +144,15 @@ interface StoredSchedule extends Document {
   readonly pendingOccurrence?: ScheduleOccurrence;
   readonly dispatchOwner?: string;
   readonly dispatchStartedAt?: Date;
+}
+
+interface StoredFolderApproval extends Document {
+  readonly _id: string;
+  readonly path: string;
+  readonly access: FolderApprovalAccess;
+  readonly status: "active" | "revoked";
+  readonly createdAt: Date;
+  readonly updatedAt: Date;
 }
 
 const MAX_EVENTS_PER_RUN = 300;
@@ -363,6 +382,45 @@ function parseScheduleDefinition(value: unknown): ScheduleDefinition {
   };
 }
 
+function parseApprovedFolderPath(value: unknown): string {
+  if (typeof value !== "string" || value.length < 1 || value.length > 2_048 || !isAbsolute(value) || /[\u0000-\u001f\u007f]/u.test(value)) {
+    throw new PersistenceInputError("Approved folder path must be an absolute path without control characters.");
+  }
+  return value;
+}
+
+function folderApprovalId(path: string, access: FolderApprovalAccess): string {
+  const identity = platform() === "win32" ? path.toLowerCase() : path;
+  return createHash("sha256").update(`${identity}\0${access}`).digest("hex");
+}
+
+function containsFolder(root: string, candidate: string): boolean {
+  const resolvedRoot = resolve(root);
+  const resolvedCandidate = resolve(candidate);
+  const scopedRoot = platform() === "win32" ? resolvedRoot.toLowerCase() : resolvedRoot;
+  const scopedCandidate = platform() === "win32" ? resolvedCandidate.toLowerCase() : resolvedCandidate;
+  const pathFromRoot = relative(scopedRoot, scopedCandidate);
+  return pathFromRoot === "" || (pathFromRoot !== ".." && !pathFromRoot.startsWith(`..${sep}`) && !isAbsolute(pathFromRoot));
+}
+
+function parseFolderApprovalAccess(value: unknown): FolderApprovalAccess {
+  if (value !== "read" && value !== "write") throw new PersistenceInputError("Folder approval access must be read or write.");
+  return value;
+}
+
+function parseStoredFolderApproval(value: unknown): FolderApproval {
+  if (!isRecord(value)) throw new DatabasePersistenceError();
+  const path = parseApprovedFolderPath(value["path"]);
+  const access = parseFolderApprovalAccess(value["access"]);
+  const status = value["status"];
+  const createdAt = value["createdAt"];
+  const updatedAt = value["updatedAt"];
+  if ((status !== "active" && status !== "revoked") || !(createdAt instanceof Date) || !(updatedAt instanceof Date)) {
+    throw new DatabasePersistenceError();
+  }
+  return { path, access, status, createdAt, updatedAt };
+}
+
 function parseScheduleOccurrence(value: unknown, scheduleId?: string): ScheduleOccurrence {
   if (!isRecord(value)) throw new DatabasePersistenceError();
   const scheduledFor = value["scheduledFor"];
@@ -516,6 +574,7 @@ export class MongoStore {
   private readonly events: Collection<StoredRunEvent>;
   private readonly checkpoints: Collection<StoredRunCheckpoint>;
   private readonly schedules: Collection<StoredSchedule>;
+  private readonly folderApprovals: Collection<StoredFolderApproval>;
 
   private constructor(client: MongoClient) {
     this.client = client;
@@ -524,6 +583,7 @@ export class MongoStore {
     this.events = database.collection<StoredRunEvent>("run_events");
     this.checkpoints = database.collection<StoredRunCheckpoint>("run_checkpoints");
     this.schedules = database.collection<StoredSchedule>("schedules");
+    this.folderApprovals = database.collection<StoredFolderApproval>("folder_approvals");
   }
 
   static async connect(configuration: unknown): Promise<MongoStore> {
@@ -860,6 +920,63 @@ export class MongoStore {
         .limit(MAX_SCHEDULES)
         .toArray();
       return documents.map(parseStoredSchedule);
+    } catch {
+      throw new DatabasePersistenceError();
+    }
+  }
+
+  async grantFolderApproval(pathValue: unknown, accessValue: unknown): Promise<FolderApproval> {
+    const path = parseApprovedFolderPath(pathValue);
+    const access = parseFolderApprovalAccess(accessValue);
+    const id = folderApprovalId(path, access);
+    const now = new Date();
+    try {
+      const result = await this.folderApprovals.findOneAndUpdate(
+        { _id: id },
+        { $set: { path, access, status: "active", updatedAt: now }, $setOnInsert: { createdAt: now } },
+        { upsert: true, returnDocument: "after" },
+      );
+      if (result === null) throw new DatabasePersistenceError();
+      return parseStoredFolderApproval(result);
+    } catch (error: unknown) {
+      if (error instanceof PersistenceInputError || error instanceof DatabasePersistenceError) throw error;
+      throw new DatabasePersistenceError();
+    }
+  }
+
+  async listFolderApprovals(includeRevoked = false): Promise<readonly FolderApproval[]> {
+    try {
+      const documents = await this.folderApprovals
+        .find(includeRevoked ? {} : { status: "active" })
+        .sort({ path: 1, access: 1 })
+        .toArray();
+      return documents.map(parseStoredFolderApproval);
+    } catch {
+      throw new DatabasePersistenceError();
+    }
+  }
+
+  async hasFolderApproval(pathValue: unknown, accessValue: unknown): Promise<boolean> {
+    const path = parseApprovedFolderPath(pathValue);
+    const access = parseFolderApprovalAccess(accessValue);
+    try {
+      const documents = await this.folderApprovals.find({ status: "active", access }).toArray();
+      return documents.map(parseStoredFolderApproval).some((approval) => containsFolder(approval.path, path));
+    } catch {
+      throw new DatabasePersistenceError();
+    }
+  }
+
+  async revokeFolderApproval(pathValue: unknown, accessValue: unknown): Promise<boolean> {
+    const path = parseApprovedFolderPath(pathValue);
+    const access = parseFolderApprovalAccess(accessValue);
+    const id = folderApprovalId(path, access);
+    try {
+      const result = await this.folderApprovals.updateOne(
+        { _id: id, status: "active" },
+        { $set: { status: "revoked", updatedAt: new Date() } },
+      );
+      return result.modifiedCount === 1;
     } catch {
       throw new DatabasePersistenceError();
     }

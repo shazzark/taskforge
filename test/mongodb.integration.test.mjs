@@ -87,6 +87,33 @@ test(
 
     try {
       await rawClient.connect();
+      const readFolderApproval = await store.grantFolderApproval(repositoryFixturePath, "read");
+      assert.equal(readFolderApproval.status, "active");
+      assert.equal(readFolderApproval.access, "read");
+      assert.equal(await store.hasFolderApproval(join(repositoryFixturePath, "src"), "read"), true);
+      assert.equal(await store.hasFolderApproval(join(repositoryFixturePath, "..", "outside"), "read"), false);
+      assert.equal(await store.hasFolderApproval(repositoryFixturePath, "write"), false);
+      await store.grantFolderApproval(repositoryFixturePath, "write");
+      for (let index = 0; index < 998; index += 1) {
+        await store.grantFolderApproval(join(repositoryFixturePath, `nested-${index}`), "read");
+      }
+      assert.equal(await store.hasFolderApproval(join(repositoryFixturePath, "nested-997", "child"), "read"), true);
+      await store.grantFolderApproval(join(repositoryFixturePath, "one-more-than-one-thousand"), "read");
+      assert.equal(await store.hasFolderApproval(join(repositoryFixturePath, "one-more-than-one-thousand", "child"), "read"), true);
+      assert.equal((await store.listFolderApprovals(true)).length, 1_001);
+      await store.revokeFolderApproval(join(repositoryFixturePath, "nested-0"), "read");
+      for (let index = 1; index < 998; index += 1) {
+        await store.revokeFolderApproval(join(repositoryFixturePath, `nested-${index}`), "read");
+      }
+      await store.revokeFolderApproval(join(repositoryFixturePath, "one-more-than-one-thousand"), "read");
+      assert.equal((await store.listFolderApprovals()).length, 2);
+      assert.equal(await store.revokeFolderApproval(repositoryFixturePath, "read"), true);
+      assert.equal(await store.hasFolderApproval(join(repositoryFixturePath, "src"), "read"), false);
+      assert.equal(await store.revokeFolderApproval(repositoryFixturePath, "read"), false);
+      assert.equal((await store.listFolderApprovals()).length, 1);
+      assert.equal((await store.listFolderApprovals(true)).length, 1_001);
+      await assert.rejects(store.grantFolderApproval("relative/path", "read"), PersistenceInputError);
+      await assert.rejects(store.grantFolderApproval(repositoryFixturePath, "admin"), PersistenceInputError);
       await mkdir(join(repositoryFixturePath, "src"));
       await mkdir(join(repositoryFixturePath, "test"));
       await writeFile(join(repositoryFixturePath, "src", "buggy.ts"), "export const result = 1;", "utf8");

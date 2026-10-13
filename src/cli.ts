@@ -10,8 +10,11 @@ import { AgentBudgetLedger, AgentToolError, runToolLoop } from "./agent/tool-loo
 import { runSpecialistReview, type SpecialistTask, SpecialistReviewError } from "./agent/specialist-review.js";
 import {
   DatabaseConnectionError,
+  DatabasePersistenceError,
   DatabaseShutdownError,
   MongoStore,
+  PersistenceInputError,
+  type FolderApproval,
 } from "./mongo-store.js";
 import { createModelProvider } from "./providers/create-provider.js";
 import { ModelProviderError } from "./providers/types.js";
@@ -36,7 +39,7 @@ import type { ScheduleRecord, ScheduleWorkflowId } from "./mongo-store.js";
 
 const helpText = `TaskForge ${packageJson.version} (early development)
 
-Usage: taskforge [--help | --version | config | doctor | model-check | chat | run csv-analyze --input <path> | run document-analyze --input <path> | run pdf-report --input <json> --output <new.pdf> | run draft --input <draft.json> --output <new.md> | run specialist-review --root <directory> --file <relative-path> [...] | run research --query <question> | run browser-audit --url <loopback-url> | run repo-inspect --root <directory> | run source-review --root <directory> --file <relative-path> [...] | run model-investigate --root <directory> --file <relative-path> [...] | run github-issues --repository <owner/name> | run file-patch --root <directory> --target <relative-path> --content-file <relative-path> | run git-diff --root <directory> | run software-check --root <directory> --check <node-test|typescript-check> | resume <run-id> --input <path> | history list | schedule add/list/pause/resume/delete/recover/run]
+Usage: taskforge [--help | --version | config | doctor | model-check | chat | permissions approve/list/revoke | run ... | resume <run-id> --input <path> | history list | schedule ...]
 
 The config command validates local settings and prints a redacted summary.
 The doctor command checks configured MongoDB connectivity and reports available setup areas.
@@ -59,6 +62,7 @@ The pdf-report workflow renders an approved JSON report and creates a new approv
 The software-check workflow runs only an explicitly approved Node test or TypeScript no-emit check in one approved root.
 The resume command reacquires input-file approval, rechecks input and workflow hashes, then resumes an uncertain CSV or document analysis.
 History list prints up to 50 redacted run summaries.
+Permissions are stored in the configured local MongoDB database. Approvals are scoped to a canonical folder and exactly read or write access; revoke disables that scope.
 `;
 
 const args = process.argv.slice(2);
@@ -91,6 +95,7 @@ async function readApprovedInputFile(pathValue: string): Promise<Uint8Array | un
   }
   try {
     const policy = new WorkspacePathPolicy();
+    await requirePersistentFolderApproval(dirname(absolutePath), "read");
     await policy.approveRoot(dirname(absolutePath));
     const authorized = await policy.authorizePath(absolutePath, "read");
     const canonicalPath = await realpath(authorized.path);
@@ -134,6 +139,98 @@ async function withMongoStore<T>(action: (store: MongoStore) => Promise<T>): Pro
   } finally {
     await store.close();
   }
+}
+
+class PersistentFolderApprovalError extends Error {
+  constructor() {
+    super("No active persistent folder approval covers this path and access scope. Grant the exact folder scope with the permissions command.");
+    this.name = "PersistentFolderApprovalError";
+  }
+}
+
+async function requirePersistentFolderApproval(pathValue: string, access: "read" | "write"): Promise<void> {
+  let canonicalPath: string;
+  try {
+    canonicalPath = await realpath(resolve(pathValue));
+  } catch {
+    throw new PersistentFolderApprovalError();
+  }
+  const approved = await withMongoStore((store) => store.hasFolderApproval(canonicalPath, access));
+  if (approved !== true) throw new PersistentFolderApprovalError();
+}
+
+async function runPermissionsCommand(commandArgs: readonly string[]): Promise<void> {
+  const action = commandArgs[0];
+  if (action === "list" && (commandArgs.length === 1 || (commandArgs.length === 2 && commandArgs[1] === "--all"))) {
+    let approvals: readonly FolderApproval[] | undefined;
+    try {
+      approvals = await withMongoStore((store) => store.listFolderApprovals(commandArgs[1] === "--all"));
+    } catch (error: unknown) {
+      const detail = error instanceof DatabasePersistenceError || error instanceof PersistenceInputError
+        ? error.message
+        : "the approval records could not be read safely";
+      process.stderr.write(`Permission list failed: ${detail}.\n`);
+      process.exitCode = 2;
+      return;
+    }
+    if (approvals !== undefined) {
+      if (approvals.length === 0) process.stdout.write("No folder approvals are stored.\n");
+      for (const approval of approvals) process.stdout.write(`${approval.status} ${approval.access} ${escapeTerminalControls(approval.path)}\n`);
+    }
+    return;
+  }
+  if ((action !== "approve" && action !== "revoke") || commandArgs.length !== 5 || commandArgs[1] !== "--root" || commandArgs[3] !== "--access" ||
+    (commandArgs[4] !== "read" && commandArgs[4] !== "write")) {
+    process.stderr.write("Expected permissions list [--all], permissions approve --root <folder> --access <read|write>, or permissions revoke --root <folder> --access <read|write>.\n");
+    process.exitCode = 1;
+    return;
+  }
+  if (!process.stdin.isTTY || !process.stdout.isTTY) {
+    process.stderr.write("Folder permission changes require interactive confirmation.\n");
+    process.exitCode = 2;
+    return;
+  }
+  let canonicalRoot: string;
+  try {
+    canonicalRoot = await realpath(resolve(commandArgs[2] ?? ""));
+    if (/[\u0000-\u001f\u007f]/u.test(canonicalRoot)) throw new Error("control character in directory path");
+    if (!(await stat(canonicalRoot)).isDirectory()) throw new Error("not a directory");
+    const validator = new WorkspacePathPolicy();
+    await validator.approveRoot(canonicalRoot);
+  } catch (error: unknown) {
+    process.stderr.write(`Folder permission change rejected: ${error instanceof PathPolicyError ? error.message : "root must be an existing, non-sensitive directory"}\n`);
+    process.exitCode = 2;
+    return;
+  }
+  const access = commandArgs[4];
+  const consent = createInterface({ input: process.stdin, output: process.stdout });
+  let answer: string;
+  try {
+    answer = await consent.question(action === "approve"
+      ? `Persist ${access} access for this exact folder and descendants?\n${escapeTerminalControls(canonicalRoot)}\nThis does not approve individual reads, writes, or actions. [y/N] `
+      : `Revoke the persisted ${access} approval for this exact folder?\n${escapeTerminalControls(canonicalRoot)}\n[y/N] `);
+  } finally {
+    consent.close();
+  }
+  if (answer.trim().toLowerCase() !== "y") {
+    process.stdout.write("Folder permission change cancelled.\n");
+    return;
+  }
+  let changed: boolean | undefined;
+  try {
+    changed = await withMongoStore(async (store) => action === "approve"
+      ? (await store.grantFolderApproval(canonicalRoot, access), true)
+      : store.revokeFolderApproval(canonicalRoot, access));
+  } catch (error: unknown) {
+    const detail = error instanceof DatabasePersistenceError || error instanceof PersistenceInputError
+      ? error.message
+      : "the approval change could not be stored safely";
+    process.stderr.write(`Permission change failed: ${detail}.\n`);
+    process.exitCode = 2;
+    return;
+  }
+  if (changed === true) process.stdout.write(action === "approve" ? `Persisted ${access} approval for ${escapeTerminalControls(canonicalRoot)}.\n` : `Revoked ${access} approval for ${escapeTerminalControls(canonicalRoot)}.\n`);
+  else if (action === "revoke" && changed === false) process.stdout.write("No active matching folder approval was found.\n");
 }
 
 async function runCsvWorkflowCommand(commandArgs: readonly string[]): Promise<void> {
@@ -304,6 +401,7 @@ async function runScheduleCommand(commandArgs: readonly string[]): Promise<void>
     const absolutePath = resolve(definition.inputPath);
     try {
       const policy = new WorkspacePathPolicy();
+      await requirePersistentFolderApproval(dirname(absolutePath), "read");
       const approvedRoot = await policy.approveRoot(dirname(absolutePath));
       const authorized = await policy.authorizePath(absolutePath, "read");
       const canonicalPath = await realpath(authorized.path);
@@ -452,6 +550,7 @@ async function runRepositoryInspectionCommand(commandArgs: readonly string[]): P
   try {
     const policy = new WorkspacePathPolicy();
     const approvedRoot = await policy.approveRoot(requestedRoot);
+    await requirePersistentFolderApproval(approvedRoot.path, "read");
     const result = await withMongoStore((store) => inspectRepository(store, approvedRoot, policy));
     if (result !== undefined) {
       const inventory = result.inventory;
@@ -462,7 +561,7 @@ async function runRepositoryInspectionCommand(commandArgs: readonly string[]): P
       );
     }
   } catch (error: unknown) {
-    const message = error instanceof RepositoryInspectionError ? error.message : "Repository inspection failed safely.";
+    const message = error instanceof RepositoryInspectionError || error instanceof PersistentFolderApprovalError ? error.message : "Repository inspection failed safely.";
     process.stderr.write(`Repository inspection failed: ${message}\n`);
     process.exitCode = 3;
   }
@@ -503,6 +602,7 @@ async function runSoftwareCheckCommand(commandArgs: readonly string[]): Promise<
   try {
     const policy = new WorkspacePathPolicy();
     const approvedRoot = await policy.approveRoot(requestedRoot);
+    await requirePersistentFolderApproval(approvedRoot.path, "write");
     const commandLabel = command === "node-test" ? "node --test (runs the repository test code)" : "local TypeScript compiler --noEmit";
     const commandConsent = createInterface({ input: process.stdin, output: process.stdout });
     let commandAnswer: string;
@@ -527,7 +627,7 @@ async function runSoftwareCheckCommand(commandArgs: readonly string[]): Promise<
       if (result.status !== "passed") process.exitCode = 3;
     }
   } catch (error: unknown) {
-    const message = error instanceof ReviewedCommandError ? error.message : "Software check failed safely.";
+    const message = error instanceof ReviewedCommandError || error instanceof PersistentFolderApprovalError ? error.message : "Software check failed safely.";
     process.stderr.write(`Software check failed: ${message}\n`);
     process.exitCode = 3;
   }
@@ -578,12 +678,13 @@ async function runSourceReviewCommand(commandArgs: readonly string[]): Promise<v
   try {
     const policy = new WorkspacePathPolicy();
     const approvedRoot = await policy.approveRoot(canonicalRoot);
+    await requirePersistentFolderApproval(approvedRoot.path, "read");
     const files = await reviewSourceFiles(approvedRoot, policy, paths);
     for (const file of files) {
       process.stdout.write(`\n--- ${file.path} (${file.byteCount} bytes, ${file.lineCount} lines) ---\n${file.content}\n`);
     }
   } catch (error: unknown) {
-    const message = error instanceof SourceReviewError ? error.message : "Source review failed safely.";
+    const message = error instanceof SourceReviewError || error instanceof PersistentFolderApprovalError ? error.message : "Source review failed safely.";
     process.stderr.write(`Source review failed: ${message}\n`);
     process.exitCode = 3;
   }
@@ -617,6 +718,7 @@ async function runPdfReportCommand(commandArgs: readonly string[]): Promise<void
   try {
     const policy = new WorkspacePathPolicy();
     const outputRoot = await policy.approveRoot(dirname(requestedOutput));
+    await requirePersistentFolderApproval(outputRoot.path, "write");
     const approvals = new ActionApprovalRegistry(policy);
     const pending = await previewPdfArtifact(report, requestedOutput, outputRoot, policy, approvals);
     const consent = createInterface({ input: process.stdin, output: process.stdout });
@@ -637,7 +739,7 @@ async function runPdfReportCommand(commandArgs: readonly string[]): Promise<void
     const written = await writeApprovedPdfArtifact(pending, approval, outputRoot, policy, approvals);
     process.stdout.write(`PDF artifact created: ${written.byteCount} bytes; SHA-256 ${written.sha256}.\n`);
   } catch (error: unknown) {
-    const message = error instanceof PdfArtifactError ? error.message : "PDF artifact creation failed safely.";
+    const message = error instanceof PdfArtifactError || error instanceof PersistentFolderApprovalError ? error.message : "PDF artifact creation failed safely.";
     process.stderr.write(`PDF report failed: ${message}\n`);
     process.exitCode = 3;
   }
@@ -684,6 +786,8 @@ async function runFilePatchCommand(commandArgs: readonly string[]): Promise<void
   try {
     const policy = new WorkspacePathPolicy();
     const approvedRoot = await policy.approveRoot(rootPath);
+    await requirePersistentFolderApproval(approvedRoot.path, "read");
+    await requirePersistentFolderApproval(approvedRoot.path, "write");
     const approvals = new ActionApprovalRegistry(policy);
     const prepared = await prepareFilePatch(approvedRoot, policy, approvals, targetRelativePath, contentRelativePath);
     const currentFiles = await reviewSourceFiles(approvedRoot, policy, [targetRelativePath]);
@@ -709,7 +813,7 @@ async function runFilePatchCommand(commandArgs: readonly string[]): Promise<void
     await applyPreparedFilePatch(prepared, approval, approvals);
     process.stdout.write(`Replacement applied to ${prepared.preview.targetPath}. Run a reviewed check to verify it.\n`);
   } catch (error: unknown) {
-    const message = error instanceof PatchApplicationError ? error.message : "File patch failed safely.";
+    const message = error instanceof PatchApplicationError || error instanceof PersistentFolderApprovalError ? error.message : "File patch failed safely.";
     process.stderr.write(`File patch failed: ${message}\n`);
     process.exitCode = 3;
   }
@@ -748,6 +852,7 @@ async function runGitDiffCommand(commandArgs: readonly string[]): Promise<void> 
   try {
     const policy = new WorkspacePathPolicy();
     const root = await policy.approveRoot(rootPath);
+    await requirePersistentFolderApproval(root.path, "read");
     const files = await listGitDiffFiles(root, policy);
     if (files.length === 0) {
       process.stdout.write("No tracked changes are available for review. Unstaged and untracked files are not included.\n");
@@ -768,7 +873,7 @@ async function runGitDiffCommand(commandArgs: readonly string[]): Promise<void> 
     const review = await readGitDiff(root, policy, files);
     process.stdout.write(review.diff.length === 0 ? "The approved diff is empty.\n" : `${review.diff}\n`);
   } catch (error: unknown) {
-    const message = error instanceof GitDiffReviewError ? error.message : "Git diff review failed safely.";
+    const message = error instanceof GitDiffReviewError || error instanceof PersistentFolderApprovalError ? error.message : "Git diff review failed safely.";
     process.stderr.write(`Git diff review failed: ${message}\n`);
     process.exitCode = 3;
   }
@@ -836,6 +941,7 @@ async function runModelInvestigationCommand(commandArgs: readonly string[]): Pro
   try {
     const policy = new WorkspacePathPolicy();
     const root = await policy.approveRoot(rootPath);
+    await requirePersistentFolderApproval(root.path, "read");
     const files = await reviewSourceFiles(root, policy, paths);
     const sourceBytes = files.reduce((total, file) => total + Buffer.byteLength(file.content, "utf8") + Buffer.byteLength(file.path, "utf8") + 64, 0);
     if (files.length === 0 || files.length > 5 || sourceBytes > 24 * 1024) {
@@ -861,7 +967,7 @@ async function runModelInvestigationCommand(commandArgs: readonly string[]): Pro
     const findings = await investigateSource(selected.provider, selected.model, files, controller.signal);
     process.stdout.write(`\nModel investigation result (unverified; no tests were run):\n${findings}\n`);
   } catch (error: unknown) {
-    const message = error instanceof ConfigurationError || error instanceof ModelInvestigationError || error instanceof ModelProviderError
+    const message = error instanceof ConfigurationError || error instanceof ModelInvestigationError || error instanceof ModelProviderError || error instanceof PersistentFolderApprovalError
       ? error.message
       : "Model investigation failed safely.";
     process.stderr.write(`Model investigation failed: ${message}\n`);
@@ -933,6 +1039,7 @@ async function runSpecialistReviewCommand(commandArgs: readonly string[]): Promi
   try {
     const policy = new WorkspacePathPolicy();
     const root = await policy.approveRoot(rootPath);
+    await requirePersistentFolderApproval(root.path, "read");
     const files = await reviewSourceFiles(root, policy, paths);
     const sourceBytes = files.reduce((total, file) => total + Buffer.byteLength(file.content, "utf8") + Buffer.byteLength(file.path, "utf8") + 64, 0);
     if (files.length === 0 || files.length > 5 || sourceBytes > 24 * 1024) {
@@ -976,7 +1083,7 @@ async function runSpecialistReviewCommand(commandArgs: readonly string[]): Promi
     process.stdout.write(`Budget used: ${result.budget.modelRequests} model requests, ${result.budget.toolActions} tool actions. No code changes or tests were performed by TaskForge.\n`);
     if (result.parentReviewStatus !== "complete" || result.workers.some((worker) => worker.status !== "complete")) process.exitCode = 3;
   } catch (error: unknown) {
-    const message = error instanceof ConfigurationError || error instanceof SpecialistReviewError || error instanceof ModelProviderError
+    const message = error instanceof ConfigurationError || error instanceof SpecialistReviewError || error instanceof ModelProviderError || error instanceof PersistentFolderApprovalError
       ? error.message
       : "Specialist review failed safely.";
     process.stderr.write(`Specialist review failed: ${message}\n`);
@@ -1156,6 +1263,7 @@ async function runDraftCommand(commandArgs: readonly string[]): Promise<void> {
   try {
     const policy = new WorkspacePathPolicy();
     const outputRoot = await policy.approveRoot(dirname(requestedOutput));
+    await requirePersistentFolderApproval(outputRoot.path, "write");
     const approvals = new ActionApprovalRegistry(policy);
     const pending = await previewTextArtifact(draft, requestedOutput, outputRoot, policy, approvals);
     process.stdout.write(`\n--- LOCAL DRAFT PREVIEW (heuristic redaction) ---\n${escapeTerminalControls(redactSourceForDisplay(pending.content))}\n`);
@@ -1175,7 +1283,7 @@ async function runDraftCommand(commandArgs: readonly string[]): Promise<void> {
     const written = await writeApprovedTextArtifact(pending, approval, outputRoot, policy, approvals);
     process.stdout.write(`Local draft created: ${written.byteCount} bytes; SHA-256 ${written.sha256}.\n`);
   } catch (error: unknown) {
-    process.stderr.write(`Draft creation failed: ${error instanceof DraftArtifactError ? error.message : "the artifact could not be created safely"}\n`);
+    process.stderr.write(`Draft creation failed: ${error instanceof DraftArtifactError || error instanceof PersistentFolderApprovalError ? error.message : "the artifact could not be created safely"}\n`);
     process.exitCode = 3;
   }
 }
@@ -1394,6 +1502,8 @@ if (args.length === 0 || (args.length === 1 && (args[0] === "--help" || args[0] 
   await runModelCheck();
 } else if (args.length === 1 && args[0] === "chat") {
   await runChat();
+} else if (args.length >= 1 && args[0] === "permissions") {
+  await runPermissionsCommand(args.slice(1));
 } else if (args.length >= 2 && args[0] === "run" && args[1] === "csv-analyze") {
   await runCsvWorkflowCommand(args.slice(2));
 } else if (args.length >= 2 && args[0] === "run" && args[1] === "repo-inspect") {
