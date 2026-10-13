@@ -7,6 +7,8 @@ Implemented CLI commands include `taskforge run csv-analyze --input <path>`, `ta
 
 ## Input/tool contract
 
+CSV analysis accepts repeatable `--numeric-column <header>` selections to calculate exact decimal totals. Selected header names and totals are included in structured exports; source row values remain excluded. Selected names are hashed into the checkpoint state, and `resume` requires the same selections. Runs without selected columns retain the original state hash and can resume with the existing `--input` form.
+
 `taskforge run document-convert --input <path> --output <new.txt>` extracts bounded plain text from an explicitly approved TXT, Markdown, text PDF, DOCX, or XLSX input. It shows the extracted text, requires persistent write approval for the output folder and exact path/content-hash confirmation, creates only a new file, and stores a metadata-only artifact reference linked to the document-analysis run. Conversion output is limited to 64 KiB; spreadsheet cells are rendered as escaped tab-separated rows. No source or converted text is stored in MongoDB.
 
 `taskforge run research --query <question>` requires an interactive confirmation before sending that exact bounded query to Groq browser search. It supports only Groq's currently documented GPT OSS browser-search models, has no additional API key, validates bounded HTTPS source metadata from the executed browser-search response, terminal-escapes all returned text, and does not persist. Noninteractive runs stop before provider access. Search is optional and subject to the configured Groq account's service limits and pricing.

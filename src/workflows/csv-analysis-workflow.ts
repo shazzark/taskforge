@@ -4,8 +4,13 @@ import { analyzeCsv, CsvAnalysisError, type CsvAnalysisResult } from "../data/cs
 import { MongoStore, type RunSummary } from "../mongo-store.js";
 
 const WORKFLOW_ID = "csv-analyze";
-const WORKFLOW_STATE_HASH = createHash("sha256").update("taskforge:csv-analyze:v1").digest("hex");
 const ANALYSIS_STEP_ID = "analyze";
+
+function workflowStateHash(numericColumns: readonly string[]): string {
+  return createHash("sha256").update(numericColumns.length === 0
+    ? "taskforge:csv-analyze:v1"
+    : `taskforge:csv-analyze:v2:${JSON.stringify(numericColumns)}`).digest("hex");
+}
 
 export class CsvWorkflowError extends Error {
   constructor(message: string) {
@@ -25,7 +30,7 @@ function summarize(analysis: CsvAnalysisResult): string {
   return `CSV analysis complete: ${analysis.rowCount} rows; ${analysis.duplicateRowCount} duplicate rows; ${missingCellCount} missing cells.`;
 }
 
-function analyzeBytes(input: Uint8Array): CsvAnalysisResult {
+function analyzeBytes(input: Uint8Array, numericColumns: readonly string[]): CsvAnalysisResult {
   if (!(input instanceof Uint8Array) || input.byteLength > 8 * 1024 * 1024) {
     throw new CsvWorkflowError("CSV input is invalid or exceeds the 8 MiB workflow limit.");
   }
@@ -35,7 +40,7 @@ function analyzeBytes(input: Uint8Array): CsvAnalysisResult {
   } catch {
     throw new CsvWorkflowError("CSV input must use valid UTF-8 encoding.");
   }
-  return analyzeCsv(text, { numericColumns: [] });
+  return analyzeCsv(text, { numericColumns });
 }
 
 async function executeAnalysis(
@@ -43,6 +48,7 @@ async function executeAnalysis(
   run: RunSummary,
   inputHash: string,
   input: Uint8Array,
+  numericColumns: readonly string[],
   resumed: boolean,
 ): Promise<CsvWorkflowResult> {
   try {
@@ -50,7 +56,7 @@ async function executeAnalysis(
       runId: run.runId,
       version: 1,
       inputHash,
-      stateHash: WORKFLOW_STATE_HASH,
+      stateHash: workflowStateHash(numericColumns),
       completedStepIds: [],
       pendingStepId: ANALYSIS_STEP_ID,
     });
@@ -60,12 +66,12 @@ async function executeAnalysis(
       type: "step_started",
       stepId: ANALYSIS_STEP_ID,
     });
-    const analysis = analyzeBytes(input);
+    const analysis = analyzeBytes(input, numericColumns);
     await store.saveRunCheckpoint({
       runId: run.runId,
       version: 1,
       inputHash,
-      stateHash: WORKFLOW_STATE_HASH,
+      stateHash: workflowStateHash(numericColumns),
       completedStepIds: [ANALYSIS_STEP_ID],
     });
     await store.appendRunEvent({
@@ -103,6 +109,7 @@ export async function runCsvAnalysisWorkflow(
   store: MongoStore,
   input: Uint8Array,
   scheduledRunId?: string,
+  numericColumns: readonly string[] = [],
 ): Promise<CsvWorkflowResult> {
   const inputHash = createHash("sha256").update(input).digest("hex");
   const runId = scheduledRunId ?? randomUUID();
@@ -115,13 +122,14 @@ export async function runCsvAnalysisWorkflow(
   }
   await store.updateRunState(runId, "running");
   await store.appendRunEvent({ runId, eventId: randomUUID(), type: "run_started" });
-  return executeAnalysis(store, run, inputHash, input, false);
+  return executeAnalysis(store, run, inputHash, input, numericColumns, false);
 }
 
 export async function resumeCsvAnalysisWorkflow(
   store: MongoStore,
   runId: unknown,
   input: Uint8Array,
+  numericColumns: readonly string[] = [],
 ): Promise<CsvWorkflowResult> {
   if (typeof runId !== "string") {
     throw new CsvWorkflowError("A run id is required to resume CSV analysis.");
@@ -141,7 +149,7 @@ export async function resumeCsvAnalysisWorkflow(
     throw new CsvWorkflowError("Only an uncertain csv-analyze run can be resumed.");
   }
   const inputHash = createHash("sha256").update(input).digest("hex");
-  const checkpoint = await store.loadRunCheckpoint(runId, inputHash, WORKFLOW_STATE_HASH);
+  const checkpoint = await store.loadRunCheckpoint(runId, inputHash, workflowStateHash(numericColumns));
   if (
     checkpoint === null ||
     (checkpoint.pendingStepId !== ANALYSIS_STEP_ID && !checkpoint.completedStepIds.includes(ANALYSIS_STEP_ID))
@@ -150,5 +158,5 @@ export async function resumeCsvAnalysisWorkflow(
   }
   const resumed = await store.updateRunState(runId, "running");
   await store.appendRunEvent({ runId, eventId: randomUUID(), type: "run_resumed" });
-  return executeAnalysis(store, resumed, inputHash, input, true);
+  return executeAnalysis(store, resumed, inputHash, input, numericColumns, true);
 }

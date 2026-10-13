@@ -256,10 +256,7 @@ export function analyzeCsv(input: unknown, options: CsvAnalysisOptions): CsvAnal
     }
   }
 
-  const numericTotals: Record<string, string> = {};
-  for (const [column, total] of totals) {
-    numericTotals[column] = formatDecimal(total);
-  }
+  const numericTotals = Object.fromEntries([...totals].map(([column, total]) => [column, formatDecimal(total)] as const));
   return {
     headers,
     rowCount: dataRows.length,

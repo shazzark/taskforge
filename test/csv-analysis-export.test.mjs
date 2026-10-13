@@ -25,3 +25,21 @@ test("CSV aggregate export accepts only supported suffixes and valid metrics", (
   const analysis = analyzeCsv("name\nvalue\n", { numericColumns: [] });
   assert.throws(() => renderCsvAnalysisExport({ ...analysis, rowCount: -1 }, "json"), CsvAnalysisExportError);
 });
+
+test("selected exact numeric totals are included only when requested and CSV labels are formula guarded", () => {
+  const analysis = analyzeCsv("=SUM(A1:A2),amount\nignored,2\nignored,3\n", { numericColumns: ["amount"] });
+  assert.equal(analysis.numericTotals["amount"], "5");
+  assert.match(renderCsvAnalysisExport(analysis, "json"), /"amount": "5"/u);
+  assert.match(renderCsvAnalysisExport(analysis, "csv"), /"numeric_total:amount",5/u);
+  assert.match(renderCsvAnalysisExport(analysis, "markdown"), /Numeric total: amount \| 5/u);
+  for (const format of ["json", "csv", "markdown"]) assert.doesNotMatch(renderCsvAnalysisExport(analysis, format), /ignored/u);
+});
+
+test("selected Markdown labels cannot create links, images, or raw HTML", () => {
+  const header = "![image](https://example.test/pixel) <img src=x onerror=alert(1)>";
+  const analysis = analyzeCsv(`${header}\n1\n`, { numericColumns: [header] });
+  const markdown = renderCsvAnalysisExport(analysis, "markdown");
+  assert.doesNotMatch(markdown, /!\[image\]|<img/u);
+  assert.match(markdown, /&lt;img/u);
+  assert.match(markdown, /Numeric total:/u);
+});

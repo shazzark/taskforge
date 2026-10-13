@@ -42,13 +42,13 @@ import type { ScheduleRecord, ScheduleWorkflowId } from "./mongo-store.js";
 
 const helpText = `TaskForge ${packageJson.version} (early development)
 
-Usage: taskforge [--help | --version | config | doctor | model-check | chat | permissions approve/list/revoke | run csv-analyze --input <path> [--output <new.json|csv|md>] | run document-convert --input <path> --output <new.txt> | run ... | resume <run-id> --input <path> | history list | schedule ...]
+Usage: taskforge [--help | --version | config | doctor | model-check | chat | permissions approve/list/revoke | run csv-analyze --input <path> [--numeric-column <header>]... [--output <new.json|csv|md>] | run document-convert --input <path> --output <new.txt> | run ... | resume <run-id> --input <path> [--numeric-column <header>]... | history list | schedule ...]
 
 The config command validates local settings and prints a redacted summary.
 The doctor command checks configured MongoDB connectivity and reports available setup areas.
 The model-check command makes a synthetic read-only tool call through the selected model provider.
 The chat command opens a bounded interactive conversation with the selected provider.
-The csv-analyze workflow reads one explicitly approved CSV file and stores redacted run metadata.
+The csv-analyze workflow reads one explicitly approved CSV file, stores redacted run metadata, and can calculate exact selected-column decimal totals with --numeric-column.
 The repo-inspect workflow inventories one explicitly approved repository root without reading file contents or running commands.
 The source-review workflow reads only explicitly selected source files and displays bounded, locally redacted content; it does not send or persist source.
 The file-patch workflow shows redacted current and replacement text, then applies one content-bound replacement only after exact approval.
@@ -77,6 +77,29 @@ function inputPathArgument(commandArgs: readonly string[]): string | undefined {
   }
   const value = commandArgs[1];
   return value === undefined || value.trim().length === 0 ? undefined : value;
+}
+
+interface ParsedCsvCommandArguments {
+  readonly inputPath: string;
+  readonly outputPath?: string;
+  readonly numericColumns: readonly string[];
+}
+
+function parseCsvCommandArguments(commandArgs: readonly string[]): ParsedCsvCommandArguments | undefined {
+  let inputPath: string | undefined;
+  let outputPath: string | undefined;
+  const numericColumns: string[] = [];
+  for (let index = 0; index < commandArgs.length; index += 2) {
+    const option = commandArgs[index];
+    const value = commandArgs[index + 1];
+    if (value === undefined || value.trim().length === 0) return undefined;
+    if (option === "--input" && inputPath === undefined) inputPath = value;
+    else if (option === "--output" && outputPath === undefined) outputPath = value;
+    else if (option === "--numeric-column" && value.length <= 256) numericColumns.push(value);
+    else return undefined;
+  }
+  if (inputPath === undefined || new Set(numericColumns).size !== numericColumns.length) return undefined;
+  return { inputPath, ...(outputPath === undefined ? {} : { outputPath }), numericColumns };
 }
 
 async function readApprovedInputFile(pathValue: string): Promise<Uint8Array | undefined> {
@@ -238,13 +261,13 @@ async function runPermissionsCommand(commandArgs: readonly string[]): Promise<vo
 }
 
 async function runCsvWorkflowCommand(commandArgs: readonly string[]): Promise<void> {
-  const inputPath = commandArgs.length >= 2 && commandArgs[0] === "--input" ? commandArgs[1] : undefined;
-  const outputPath = commandArgs.length === 4 && commandArgs[2] === "--output" ? commandArgs[3] : undefined;
-  if (inputPath === undefined || (commandArgs.length !== 2 && (commandArgs.length !== 4 || outputPath === undefined))) {
-    process.stderr.write("Expected --input <path> [--output <new.json|new.csv|new.md>].\n");
+  const parsed = parseCsvCommandArguments(commandArgs);
+  if (parsed === undefined) {
+    process.stderr.write("Expected --input <path> [--numeric-column <header>]... [--output <new.json|new.csv|new.md>].\n");
     process.exitCode = 1;
     return;
   }
+  const { inputPath, outputPath, numericColumns } = parsed;
   let exportFormat: CsvAnalysisExportFormat | undefined;
   if (outputPath !== undefined) {
     try {
@@ -261,14 +284,14 @@ async function runCsvWorkflowCommand(commandArgs: readonly string[]): Promise<vo
   }
   let result: CsvWorkflowResult | undefined;
   try {
-    result = await withMongoStore((store) => runCsvAnalysisWorkflow(store, input));
+    result = await withMongoStore((store) => runCsvAnalysisWorkflow(store, input, undefined, numericColumns));
   } catch (error: unknown) {
     process.stderr.write(error instanceof CsvWorkflowError ? `CSV workflow failed: ${error.message}\n` : "CSV workflow failed; run state was preserved where possible.\n");
     process.exitCode = 3;
     return;
   }
   if (result === undefined) return;
-  const totals = Object.entries(result.analysis.numericTotals).map(([column, total]) => `${column}=${total}`);
+  const totals = Object.entries(result.analysis.numericTotals).map(([column, total]) => `${escapeTerminalControls(column)}=${total}`);
   process.stdout.write(`Run ${result.run.runId} ${result.resumed ? "resumed" : "completed"}: ${result.analysis.rowCount} rows, ${result.analysis.duplicateRowCount} duplicate rows.\n`);
   if (totals.length > 0) process.stdout.write(`Numeric totals: ${totals.join(", ")}\n`);
   if (outputPath === undefined || exportFormat === undefined) return;
@@ -285,7 +308,7 @@ async function runCsvWorkflowCommand(commandArgs: readonly string[]): Promise<vo
     const consent = createInterface({ input: process.stdin, output: process.stdout });
     let answer: string;
     try {
-      answer = await consent.question(`Create this new ${exportFormat} aggregate report?\nPath: ${escapeTerminalControls(pending.preview.targetPath)}\nBytes: ${Buffer.byteLength(pending.content, "utf8")}\nSHA-256: ${pending.digest}\nSource headers and cell values are excluded. [y/N] `);
+      answer = await consent.question(`Create this new ${exportFormat} aggregate report?\nPath: ${escapeTerminalControls(pending.preview.targetPath)}\nBytes: ${Buffer.byteLength(pending.content, "utf8")}\nSHA-256: ${pending.digest}\nUnselected headers and source cell values are excluded; selected column labels and totals are included. [y/N] `);
     } finally {
       consent.close();
     }
@@ -326,9 +349,18 @@ async function runCsvWorkflowCommand(commandArgs: readonly string[]): Promise<vo
 }
 
 async function resumeWorkflowCommand(runId: string, commandArgs: readonly string[]): Promise<void> {
-  const inputPath = inputPathArgument(commandArgs);
-  if (inputPath === undefined) {
-    process.stderr.write("Expected --input followed by the original input file path.\n");
+  const inputPath = commandArgs.length >= 2 && commandArgs[0] === "--input" ? commandArgs[1] : undefined;
+  const numericColumns: string[] = [];
+  for (let index = 2; index < commandArgs.length; index += 2) {
+    if (commandArgs[index] !== "--numeric-column" || commandArgs[index + 1] === undefined || commandArgs[index + 1]?.trim().length === 0 || (commandArgs[index + 1]?.length ?? 257) > 256) {
+      process.stderr.write("Expected --input <path> [--numeric-column <header>]...\n");
+      process.exitCode = 1;
+      return;
+    }
+    numericColumns.push(commandArgs[index + 1] ?? "");
+  }
+  if (inputPath === undefined || inputPath.trim().length === 0 || new Set(numericColumns).size !== numericColumns.length) {
+    process.stderr.write("Expected --input <path> [--numeric-column <header>]...\n");
     process.exitCode = 1;
     return;
   }
@@ -338,9 +370,10 @@ async function resumeWorkflowCommand(runId: string, commandArgs: readonly string
     const result = await withMongoStore(async (store) => {
       const existing = await store.getRunSummary(runId);
       if (existing?.workflowId === "csv-analyze") {
-        return { kind: "csv" as const, value: await resumeCsvAnalysisWorkflow(store, runId, input) };
+        return { kind: "csv" as const, value: await resumeCsvAnalysisWorkflow(store, runId, input, numericColumns) };
       }
       if (existing?.workflowId === "document-analyze") {
+        if (numericColumns.length > 0) throw new Error("Numeric column options apply only to CSV runs.");
         return {
           kind: "document" as const,
           value: await resumeDocumentAnalysisWorkflow(store, runId, extname(inputPath).toLowerCase(), input),

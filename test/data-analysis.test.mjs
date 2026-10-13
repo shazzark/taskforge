@@ -21,6 +21,12 @@ test("uses exact decimal accumulation and reports missing cells", () => {
   assert.equal(result.duplicateRowCount, 0);
 });
 
+test("numeric totals safely preserve prototype-named headers", () => {
+  const result = analyzeCsv("__proto__\n1\n2\n", { numericColumns: ["__proto__"] });
+  assert.equal(Object.hasOwn(result.numericTotals, "__proto__"), true);
+  assert.equal(result.numericTotals["__proto__"], "3");
+});
+
 test("supports exponent notation and rejects selected non-numeric values", () => {
   const valid = analyzeCsv("value\n1e2\n-0.25\n", { numericColumns: ["value"] });
   assert.equal(valid.numericTotals.value, "99.75");

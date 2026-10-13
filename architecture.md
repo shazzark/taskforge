@@ -22,6 +22,8 @@ Phase 4.11 stores a metadata-only reference for a created CSV aggregate report i
 
 Phase 4.12 adds bounded plain-text conversion for TXT, Markdown, text PDF, DOCX, and XLSX. XLSX rows are rendered as escaped tab-separated lines; converted outputs are capped at 64 KiB. The command uses fresh input/output approval and links the created text artifact to the completed document-analysis run; it stores no source or converted text in MongoDB.
 
+CSV workflows may explicitly select numeric headers for exact decimal totals. The selected header names and totals are included in reports, while source cell values remain excluded. The selected headers are included in the workflow state hash, so resume must repeat the same options and cannot silently change calculation scope.
+
 ## Commands and browser risks
 A shell process can bypass a simple file-reader restriction. Initial command tooling therefore uses reviewed executable/argument combinations, working directories, environment filtering and explicit approvals. This is not an OS sandbox. General unrestricted shell mode cannot claim secret-file protection; keep it out until isolation and disclosure are implemented. Browser profiles must not inherit all personal sessions. Use explicit contexts/accounts, prevent credentials entering logs, and gate form submissions. Untrusted webpages, files and tool outputs are data, never authority to change permissions.
 

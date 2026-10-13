@@ -291,10 +291,11 @@ test(
       assert.equal(await store.getRunSummary(randomUUID()), null);
 
       const csvBytes = Buffer.from("name,count\nalpha,2\nbeta,3\nalpha,2\n", "utf8");
-      const csvRun = await runCsvAnalysisWorkflow(store, csvBytes);
+      const csvRun = await runCsvAnalysisWorkflow(store, csvBytes, undefined, ["count"]);
       assert.equal(csvRun.run.state, "completed");
       assert.equal(csvRun.analysis.rowCount, 3);
       assert.equal(csvRun.analysis.duplicateRowCount, 1);
+      assert.equal(csvRun.analysis.numericTotals["count"], "7");
       const artifactInput = {
         artifactId: randomUUID(),
         runId: csvRun.run.runId,
@@ -323,7 +324,7 @@ test(
 
       const pendingRunId = randomUUID();
       const pendingInputHash = createHash("sha256").update(csvBytes).digest("hex");
-      const workflowStateHash = createHash("sha256").update("taskforge:csv-analyze:v1").digest("hex");
+      const workflowStateHash = createHash("sha256").update('taskforge:csv-analyze:v2:["count"]').digest("hex");
       await store.saveRunSummary({ runId: pendingRunId, workflowId: "csv-analyze", summary: "Interrupted fixture run." });
       await store.updateRunState(pendingRunId, "running");
       await rawClient.db().collection("runs").updateOne(
@@ -339,10 +340,12 @@ test(
         pendingStepId: "analyze",
       });
       await assert.rejects(resumeCsvAnalysisWorkflow(store, pendingRunId, Buffer.from("changed")), StaleCheckpointError);
-      const resumedCsvRun = await resumeCsvAnalysisWorkflow(store, pendingRunId, csvBytes);
+      await assert.rejects(resumeCsvAnalysisWorkflow(store, pendingRunId, csvBytes, ["other"]), StaleCheckpointError);
+      const resumedCsvRun = await resumeCsvAnalysisWorkflow(store, pendingRunId, csvBytes, ["count"]);
       assert.equal(resumedCsvRun.resumed, true);
       assert.equal(resumedCsvRun.run.state, "completed");
       assert.equal(resumedCsvRun.analysis.rowCount, 3);
+      assert.equal(resumedCsvRun.analysis.numericTotals["count"], "7");
 
       const history = await store.listRunSummaries();
       assert.equal(history.some((item) => item.runId === csvRun.run.runId), true);

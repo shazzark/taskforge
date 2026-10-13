@@ -15,6 +15,31 @@ function missingCellCount(analysis: CsvAnalysisResult): number {
   return counts.reduce((total, count) => total + count, 0);
 }
 
+function numericTotals(analysis: CsvAnalysisResult): readonly (readonly [string, string])[] {
+  const entries = Object.entries(analysis.numericTotals);
+  if (entries.some(([column, total]) => !analysis.headers.includes(column) || column.length === 0 || column.length > 256 ||
+      typeof total !== "string" || total.length > 256 || !/^-?\d+(?:\.\d+)?$/u.test(total))) {
+    throw new CsvAnalysisExportError();
+  }
+  return entries;
+}
+
+function csvCell(value: string, label: boolean): string {
+  const protectedValue = label && /^[=+@-]/u.test(value) ? `'${value}` : value;
+  return `"${protectedValue.replaceAll('"', '""')}"`;
+}
+
+function markdownCell(value: string): string {
+  return value
+    .replaceAll("\\", "\\\\")
+    .replaceAll("|", "\\|")
+    .replace(/[\r\n\u0000-\u001f\u007f]/gu, " ")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replace(/([`*_{}\[\]()#+.!-])/gu, "\\$1");
+}
+
 export function csvAnalysisExportFormat(pathValue: unknown): CsvAnalysisExportFormat {
   if (typeof pathValue !== "string") throw new CsvAnalysisExportError();
   const extension = pathValue.slice(pathValue.lastIndexOf(".")).toLowerCase();
@@ -35,8 +60,16 @@ export function renderCsvAnalysisExport(analysis: CsvAnalysisResult, format: Csv
     duplicateRows: analysis.duplicateRowCount,
     missingCells: missingCellCount(analysis),
   };
-  if (format === "json") return `${JSON.stringify({ workflow: "csv-analyze", schemaVersion: 1, ...metrics }, null, 2)}\n`;
-  if (format === "csv") return `metric,value\nrows,${metrics.rows}\nduplicate_rows,${metrics.duplicateRows}\nmissing_cells,${metrics.missingCells}\n`;
+  const totals = numericTotals(analysis);
+  if (format === "json") return `${JSON.stringify({ workflow: "csv-analyze", schemaVersion: 1, ...metrics, ...(totals.length === 0 ? {} : { numericTotals: Object.fromEntries(totals) }) }, null, 2)}\n`;
+  if (format === "csv") return [
+    "metric,value",
+    `rows,${metrics.rows}`,
+    `duplicate_rows,${metrics.duplicateRows}`,
+    `missing_cells,${metrics.missingCells}`,
+    ...totals.map(([column, total]) => `${csvCell(`numeric_total:${column}`, true)},${total}`),
+    "",
+  ].join("\n");
   if (format === "markdown") {
     return [
       "# CSV Analysis Summary",
@@ -46,8 +79,9 @@ export function renderCsvAnalysisExport(analysis: CsvAnalysisResult, format: Csv
       `| Rows | ${metrics.rows} |`,
       `| Duplicate rows | ${metrics.duplicateRows} |`,
       `| Missing cells | ${metrics.missingCells} |`,
+      ...totals.map(([column, total]) => `| Numeric total: ${markdownCell(column)} | ${total} |`),
       "",
-      "This report contains aggregate counts only; source headers and cell values are excluded.",
+      "This report contains aggregate counts and only explicitly selected column labels and totals; source cell values are excluded.",
       "",
     ].join("\n");
   }
