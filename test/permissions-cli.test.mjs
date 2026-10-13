@@ -18,6 +18,17 @@ test("persistent folder permission changes require an interactive confirmation",
   assert.doesNotMatch(result.stdout + result.stderr, /TASKFORGE_MONGODB_URI=.*\S/u);
 });
 
+test("file move refuses noninteractive execution before path access", () => {
+  const result = spawnSync(process.execPath, [cliPath, "run", "file-move", "--source", "missing.txt", "--target", "moved.txt"], {
+    encoding: "utf8",
+    timeout: 5_000,
+    windowsHide: true,
+  });
+
+  assert.equal(result.status, 2);
+  assert.match(result.stderr, /interactive terminal/u);
+});
+
 test("permission list reports database unavailability without exposing a stack trace", () => {
   const result = spawnSync(process.execPath, [cliPath, "permissions", "list"], {
     encoding: "utf8",

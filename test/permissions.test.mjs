@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -96,6 +96,42 @@ test("approval preview detects source changes and rejects missing approval", asy
     const approval = registry.approve(preview.previewId);
     await writeFile(sourcePath, "changed content");
     await assert.rejects(registry.revalidate(approval), (error) => error instanceof ApprovalError && error.kind === "stale_preview");
+  });
+});
+
+test("approved file move creates a verified destination and removes the source", async () => {
+  await withTemporaryFolders(async ({ approved }) => {
+    const sourcePath = join(approved, "source.txt");
+    const targetPath = join(approved, "moved.txt");
+    await writeFile(sourcePath, "move fixture");
+    const policy = new WorkspacePathPolicy();
+    await policy.approveRoot(approved);
+    const registry = new ActionApprovalRegistry(policy);
+    const preview = await registry.preview({ kind: "move", sourcePath, targetPath });
+    assert.equal(preview.sourceBytes, 12);
+    assert.match(preview.sourceSha256, /^[a-f0-9]{64}$/u);
+    await registry.applyApprovedMove(registry.approve(preview.previewId));
+    await assert.rejects(readFile(sourcePath), (error) => error.code === "ENOENT");
+    assert.equal((await readFile(targetPath, "utf8")), "move fixture");
+  });
+});
+
+test("move preview refuses an existing destination and changed source", async () => {
+  await withTemporaryFolders(async ({ approved }) => {
+    const sourcePath = join(approved, "source.txt");
+    const targetPath = join(approved, "target.txt");
+    await writeFile(sourcePath, "original");
+    await writeFile(targetPath, "keep");
+    const policy = new WorkspacePathPolicy();
+    await policy.approveRoot(approved);
+    const registry = new ActionApprovalRegistry(policy);
+    await assert.rejects(registry.preview({ kind: "move", sourcePath, targetPath }), (error) => error instanceof ApprovalError);
+    await rm(targetPath);
+    const preview = await registry.preview({ kind: "move", sourcePath, targetPath });
+    await writeFile(sourcePath, "changed");
+    await assert.rejects(registry.applyApprovedMove(registry.approve(preview.previewId)), (error) => error instanceof ApprovalError);
+    assert.equal((await readFile(sourcePath, "utf8")), "changed");
+    await assert.rejects(readFile(targetPath), (error) => error.code === "ENOENT");
   });
 });
 

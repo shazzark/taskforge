@@ -43,3 +43,6 @@ Before 25 October is ambitious for the whole scope. If any required workflow is 
 
 ## Agent use
 Implementation may delegate independent adapter/tool work after shared contracts are stable. Give each worker owned files, goal, constraints and checks; primary integrates and verifies. Reviewer checks permissions and claims. TaskForge's runtime specialist agents are separate from Codex subagents used to build it.
+
+
+Phase 4.14 adds a persistent-scope-gated exact-file move for supported document/data suffixes. It refuses existing destinations and uses a verified same-volume hard link before unlinking the source. Acceptance includes source digest/path revalidation, collision/change tests, interactive CLI gating, and independent review; the full isolated MongoDB suite is required before completion.

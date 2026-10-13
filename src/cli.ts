@@ -25,7 +25,7 @@ import { inspectRepository, RepositoryInspectionError } from "./workflows/reposi
 import { analyzeDocument, DocumentWorkflowError, resumeDocumentAnalysisWorkflow } from "./workflows/document-analysis-workflow.js";
 import { runReviewedCommand, type ReviewedCommandId, ReviewedCommandError } from "./software/reviewed-command.js";
 import { redactSourceForDisplay, reviewSourceFiles, SourceReviewError } from "./workflows/source-review-workflow.js";
-import { ActionApprovalRegistry } from "./security/approval-preview.js";
+import { ActionApprovalRegistry, ApprovalError } from "./security/approval-preview.js";
 import { previewPdfArtifact, PdfArtifactError, writeApprovedPdfArtifact } from "./artifacts/approved-pdf-output.js";
 import { prepareFilePatch, applyPreparedFilePatch, PatchApplicationError } from "./software/patch-application.js";
 import { GitDiffReviewError, listGitDiffFiles, readGitDiff } from "./software/git-diff-review.js";
@@ -42,7 +42,7 @@ import type { ScheduleRecord, ScheduleWorkflowId } from "./mongo-store.js";
 
 const helpText = `TaskForge ${packageJson.version} (early development)
 
-Usage: taskforge [--help | --version | config | doctor | model-check | chat | permissions approve/list/revoke | run csv-analyze --input <path> [--numeric-column <header>]... [--output <new.json|csv|md>] | run document-convert --input <path> --output <new.txt> | run ... | resume <run-id> --input <path> [--numeric-column <header>]... | history list | schedule ...]
+Usage: taskforge [--help | --version | config | doctor | model-check | chat | permissions approve/list/revoke | run csv-analyze --input <path> [--numeric-column <header>]... [--output <new.json|csv|md>] | run document-convert --input <path> --output <new.txt> | run file-move --source <file> --target <new-file> | run ... | resume <run-id> --input <path> [--numeric-column <header>]... | history list | schedule ...]
 
 The config command validates local settings and prints a redacted summary.
 The doctor command checks configured MongoDB connectivity and reports available setup areas.
@@ -52,6 +52,7 @@ The csv-analyze workflow reads one explicitly approved CSV file, stores redacted
 The repo-inspect workflow inventories one explicitly approved repository root without reading file contents or running commands.
 The source-review workflow reads only explicitly selected source files and displays bounded, locally redacted content; it does not send or persist source.
 The file-patch workflow shows redacted current and replacement text, then applies one content-bound replacement only after exact approval.
+The file-move workflow moves one supported document or data file after exact approval; source read/write and destination write folder grants are required, and the destination must be on the same filesystem volume.
 The git-diff workflow displays a bounded, locally redacted staged diff after exact root and file approval; it does not call a model or persist source.
 The model-investigate workflow sends selected, heuristically redacted source to the configured model only after an additional explicit transfer confirmation; it runs no tools and persists no source or findings.
 The github-issues workflow reads at most 20 open issue titles from one public repository without a token; it excludes pull requests and writes nothing.
@@ -998,6 +999,61 @@ async function runFilePatchCommand(commandArgs: readonly string[]): Promise<void
   }
 }
 
+async function runFileMoveCommand(commandArgs: readonly string[]): Promise<void> {
+  if (commandArgs.length !== 4 || commandArgs[0] !== "--source" || commandArgs[1] === undefined ||
+      commandArgs[2] !== "--target" || commandArgs[3] === undefined) {
+    process.stderr.write("Expected --source <file> --target <new-file>.\n");
+    process.exitCode = 1;
+    return;
+  }
+  if (!process.stdin.isTTY || !process.stdout.isTTY) {
+    process.stderr.write("File moves require an interactive terminal for exact operation approval.\n");
+    process.exitCode = 2;
+    return;
+  }
+  try {
+    const sourcePath = resolve(commandArgs[1]);
+    const targetPath = resolve(commandArgs[3]);
+    const extension = extname(sourcePath).toLowerCase();
+    const supported = new Set([".txt", ".md", ".markdown", ".csv", ".pdf", ".docx", ".xlsx"]);
+    if (!supported.has(extension) || extname(targetPath).toLowerCase() !== extension) {
+      process.stderr.write("File move supports matching TXT, Markdown, CSV, PDF, DOCX, or XLSX extensions.\n");
+      process.exitCode = 2;
+      return;
+    }
+    const policy = new WorkspacePathPolicy();
+    const sourceRoot = await policy.approveRoot(dirname(sourcePath));
+    const targetRoot = await policy.approveRoot(dirname(targetPath));
+    await requirePersistentFolderApproval(sourceRoot.path, "read");
+    await requirePersistentFolderApproval(sourceRoot.path, "write");
+    await requirePersistentFolderApproval(targetRoot.path, "write");
+    const registry = new ActionApprovalRegistry(policy);
+    const preview = await registry.preview({ kind: "move", sourcePath, targetPath });
+    const consent = createInterface({ input: process.stdin, output: process.stdout });
+    let answer: string;
+    try {
+      answer = await consent.question(
+        `Move this exact file?\nSource: ${escapeTerminalControls(preview.sourcePath ?? "")}\nDestination (must not exist): ${escapeTerminalControls(preview.targetPath)}\nSize: ${preview.sourceBytes ?? 0} bytes\nSHA-256: ${preview.sourceSha256 ?? "unavailable"}\nThe source is removed after a verified same-volume hard link is created. [y/N] `,
+      );
+    } finally {
+      consent.close();
+    }
+    if (answer.trim().toLowerCase() !== "y") {
+      registry.discard(preview.previewId);
+      process.stdout.write("File move cancelled before mutation.\n");
+      return;
+    }
+    await registry.applyApprovedMove(registry.approve(preview.previewId));
+    process.stdout.write(`Moved file to ${escapeTerminalControls(preview.targetPath)}.\n`);
+  } catch (error: unknown) {
+    const detail = error instanceof PersistentFolderApprovalError ? error.message
+      : error instanceof ApprovalError ? error.message
+        : error instanceof PathPolicyError ? error.message : "the move could not be completed safely";
+    process.stderr.write(`File move failed: ${detail}. The source may remain if the destination could not be verified.\n`);
+    process.exitCode = 3;
+  }
+}
+
 async function runGitDiffCommand(commandArgs: readonly string[]): Promise<void> {
   if (commandArgs.length !== 2 || commandArgs[0] !== "--root" || commandArgs[1] === undefined) {
     process.stderr.write("Expected --root <directory>.\n");
@@ -1699,6 +1755,8 @@ if (args.length === 0 || (args.length === 1 && (args[0] === "--help" || args[0] 
   await runPdfReportCommand(args.slice(2));
 } else if (args.length >= 2 && args[0] === "run" && args[1] === "file-patch") {
   await runFilePatchCommand(args.slice(2));
+} else if (args.length >= 2 && args[0] === "run" && args[1] === "file-move") {
+  await runFileMoveCommand(args.slice(2));
 } else if (args.length >= 2 && args[0] === "run" && args[1] === "git-diff") {
   await runGitDiffCommand(args.slice(2));
 } else if (args.length >= 2 && args[0] === "run" && args[1] === "model-investigate") {

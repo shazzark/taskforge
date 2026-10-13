@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { constants } from "node:fs";
-import { lstat, open, readFile, realpath, stat } from "node:fs/promises";
+import { link, lstat, open, readFile, realpath, stat, unlink } from "node:fs/promises";
 import { PathPolicyError, WorkspacePathPolicy } from "./path-policy.js";
 
 const MAX_PREVIEW_CONTENT_BYTES = 8 * 1024 * 1024;
@@ -16,6 +16,8 @@ export interface ActionPreview {
   readonly sourcePath?: string;
   readonly targetPath: string;
   readonly targetExists: boolean;
+  readonly sourceBytes?: number;
+  readonly sourceSha256?: string;
 }
 
 export interface ApprovedAction {
@@ -126,6 +128,7 @@ export class ActionApprovalRegistry {
         }
         sourcePath = source.path;
         sourceSnapshot = await snapshot(source.path);
+        if (!sourceSnapshot.exists || targetSnapshot.exists) throw new ApprovalError("invalid_action");
       }
       const contentHash = action.kind === "write" ? hash(action.content) : undefined;
       const digest = hash(JSON.stringify({
@@ -141,6 +144,7 @@ export class ActionApprovalRegistry {
         previewId,
         kind: action.kind,
         ...(sourcePath === undefined ? {} : { sourcePath }),
+        ...(sourceSnapshot?.exists === true ? { sourceBytes: sourceSnapshot.size, sourceSha256: sourceSnapshot.sha256 } : {}),
         targetPath: target.path,
         targetExists: targetSnapshot.exists,
       });
@@ -243,6 +247,71 @@ export class ActionApprovalRegistry {
     } catch (error: unknown) {
       if (error instanceof ApprovalError) throw error;
       throw new ApprovalError("unsupported_target");
+    }
+  }
+
+  async applyApprovedMove(approval: ApprovedAction): Promise<ActionPreview> {
+    const preview = this.previews.get(approval.previewId);
+    if (preview === undefined || preview.action.kind !== "move") throw new ApprovalError("invalid_action");
+    await this.revalidate(approval);
+    const { sourcePath, targetPath } = preview.action;
+    const source = await this.pathPolicy.authorizePath(sourcePath, "read");
+    const target = await this.pathPolicy.authorizePath(targetPath, "write");
+    const sourceBefore = await lstat(source.path);
+    if (!sourceBefore.isFile() || sourceBefore.isSymbolicLink() || await realpath(source.path) !== source.path) {
+      throw new ApprovalError("stale_preview");
+    }
+    const noFollow = process.platform === "win32" ? 0 : constants.O_NOFOLLOW;
+    let createdTarget = false;
+    let sourceHandle: Awaited<ReturnType<typeof open>> | undefined;
+    let sourceIdentity: { readonly ino: number; readonly dev: number } | undefined;
+    try {
+      sourceHandle = await open(source.path, constants.O_RDONLY | noFollow);
+      const opened = await sourceHandle.stat();
+      sourceIdentity = { ino: opened.ino, dev: opened.dev };
+      if (opened.ino === 0 || opened.ino !== sourceBefore.ino ||
+          (process.platform !== "win32" && opened.dev !== sourceBefore.dev)) throw new ApprovalError("stale_preview");
+      const contents = await sourceHandle.readFile();
+      if (contents.byteLength !== preview.publicPreview.sourceBytes || hash(contents) !== preview.publicPreview.sourceSha256) {
+        throw new ApprovalError("stale_preview");
+      }
+      await this.revalidate(approval);
+      await link(source.path, target.path);
+      createdTarget = true;
+      const destination = await lstat(target.path);
+      if (!destination.isFile() || destination.isSymbolicLink() || destination.ino !== opened.ino ||
+          (process.platform !== "win32" && destination.dev !== opened.dev) || await realpath(target.path) !== target.path) {
+        throw new ApprovalError("stale_preview");
+      }
+      const copied = await readFile(target.path);
+      if (copied.byteLength !== contents.byteLength || hash(copied) !== hash(contents)) throw new ApprovalError("stale_preview");
+      const destinationAtDelete = await lstat(target.path);
+      if (!destinationAtDelete.isFile() || destinationAtDelete.isSymbolicLink() || destinationAtDelete.ino !== opened.ino ||
+          (process.platform !== "win32" && destinationAtDelete.dev !== opened.dev) || await realpath(target.path) !== target.path) {
+        throw new ApprovalError("stale_preview");
+      }
+      const sourceAtDelete = await lstat(source.path);
+      if (!sourceAtDelete.isFile() || sourceAtDelete.isSymbolicLink() || sourceAtDelete.ino !== opened.ino ||
+          (process.platform !== "win32" && sourceAtDelete.dev !== opened.dev) || await realpath(source.path) !== source.path) {
+        throw new ApprovalError("stale_preview");
+      }
+      await sourceHandle.close();
+      sourceHandle = undefined;
+      await unlink(source.path);
+      this.previews.delete(approval.previewId);
+      return preview.publicPreview;
+    } catch (error: unknown) {
+      if (createdTarget && sourceIdentity !== undefined) {
+        try {
+          const targetNow = await lstat(target.path);
+          if (targetNow.isFile() && !targetNow.isSymbolicLink() && targetNow.ino === sourceIdentity.ino &&
+              (process.platform === "win32" || targetNow.dev === sourceIdentity.dev)) await unlink(target.path);
+        } catch { /* Preserve any target that cannot be verified as ours. */ }
+      }
+      if (error instanceof ApprovalError || error instanceof PathPolicyError) throw error;
+      throw new ApprovalError("unsupported_target");
+    } finally {
+      await sourceHandle?.close();
     }
   }
 
