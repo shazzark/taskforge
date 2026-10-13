@@ -36,7 +36,7 @@ import { csvAnalysisExportFormat, CsvAnalysisExportError, renderCsvAnalysisExpor
 import { convertDocumentToPlainText, DocumentConversionError } from "./documents/plain-text-conversion.js";
 import { escapeTerminalControls } from "./security/terminal-text.js";
 import { BrowserSearchError, GroqBrowserResearch } from "./integrations/groq-browser-search.js";
-import { BrowserAuditError, runBrowserAudit, validateLoopbackBrowserTarget } from "./workflows/browser-audit-workflow.js";
+import { BrowserAuditError, browserAuditExitCode, runBrowserAudit, validateLoopbackBrowserTarget } from "./workflows/browser-audit-workflow.js";
 import { runSchedulerTick, runScheduler } from "./scheduling/scheduler.js";
 import type { ScheduleRecord, ScheduleWorkflowId } from "./mongo-store.js";
 
@@ -59,7 +59,7 @@ The github-issues workflow reads at most 20 open issue titles from one public re
 The draft workflow creates a new local Markdown GitHub issue or email draft from an explicitly approved JSON input; it never contacts GitHub or an email service.
 The specialist-review workflow sends approved, heuristically redacted source excerpts to up to two read-only specialist prompts and asks the same configured model to review their findings; workers have no tools, cannot spawn workers, share one run-wide request/action budget, and do not persist source or findings.
 The research workflow sends only the exact approved query to Groq browser search, then displays bounded source metadata and answer; it makes no project-file access or persistence and requires a supported Groq model.
-The browser-audit workflow visits one explicitly approved loopback HTTP URL in an isolated Chromium context, blocks cross-origin requests and non-GET/HEAD methods, checks bounded same-origin links, and stores aggregate counts only.
+The browser-audit workflow visits one explicitly approved loopback HTTP URL in isolated Chromium, blocks cross-origin and non-GET/HEAD requests, checks same-origin links, HTTP/network/console/page errors, basic image/control accessibility, mobile/desktop overflow, and selected passive response headers. It reports aggregate findings only; mixed-content checks are explicitly skipped for HTTP-only fixtures.
 The document-analyze workflow parses one approved TXT, Markdown, text PDF, DOCX, or XLSX file and stores counts only.
 The document-convert workflow extracts one approved document to a new bounded plain-text artifact after preview and hash confirmation.
 The schedule command stores one-time or recurring CSV/document workflows; execution occurs only while its foreground scheduler is running and every occurrence requires fresh interactive approval.
@@ -1459,11 +1459,15 @@ async function runBrowserAuditCommand(commandArgs: readonly string[]): Promise<v
     if (result !== undefined) {
       const metrics = result.metrics;
       process.stdout.write(
-        `Run ${result.run.runId} completed: ${metrics.httpErrorCount} HTTP errors, ${metrics.brokenLinkCount}/${metrics.linksChecked} broken local links, ` +
-        `${metrics.consoleErrorCount} console errors, ${metrics.pageErrorCount} page errors, ` +
+        `Run ${result.run.runId} ${metrics.navigationFailed || metrics.pageInspectionFailed ? "incomplete" : "completed"}: navigation failed=${metrics.navigationFailed}, page inspection failed=${metrics.pageInspectionFailed}, ` +
+        `${metrics.httpErrorCount} HTTP errors, ${metrics.networkFailureCount} failed same-origin requests excluding policy blocks, ${metrics.brokenLinkCount}/${metrics.linksChecked} broken local links, ` +
+        `${metrics.consoleErrorCount} console errors, ${metrics.pageErrorCount} page errors, ${metrics.missingAltCount} images without alt text, ` +
+        `${metrics.unnamedControlCount} unnamed controls, mobile overflow=${metrics.mobileHorizontalOverflow}, desktop overflow=${metrics.desktopHorizontalOverflow}, ` +
+        `${metrics.missingSecurityHeaderCount}/${metrics.securityHeadersChecked} passive headers missing, mixed-content=${metrics.mixedContentCheck}, ` +
         `${metrics.blockedExternalRequestCount} external requests blocked, ${metrics.blockedUnsafeMethodCount} unsafe methods blocked, ` +
         `${metrics.blockedRequestLimitCount} requests blocked at the limit.\n`,
       );
+      process.exitCode = browserAuditExitCode(result.run.state);
     }
   } catch (error: unknown) {
     process.stderr.write(`${error instanceof BrowserAuditError ? error.message : "Browser audit failed safely; no page content was persisted."}\n`);

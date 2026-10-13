@@ -3,7 +3,7 @@ import { spawnSync } from "node:child_process";
 import { createServer } from "node:http";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
-import { runBrowserAudit, BrowserAuditError } from "../dist/workflows/browser-audit-workflow.js";
+import { runBrowserAudit, BrowserAuditError, browserAuditExitCode } from "../dist/workflows/browser-audit-workflow.js";
 
 const cliPath = fileURLToPath(new URL("../dist/cli.js", import.meta.url));
 
@@ -33,19 +33,24 @@ async function startFixture() {
   const requests = [];
   const server = createServer((request, response) => {
     requests.push({ method: request.method, url: request.url });
+    if (request.url === "/network-failure") {
+      request.socket.destroy();
+      return;
+    }
     if (request.url === "/") {
       response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
-      response.end(`<!doctype html><html><head><title>Private fixture title</title></head><body>
-        <p>Private page text must not be persisted.</p><a href="/missing">Missing local page</a>
+      response.end(`<!doctype html><html><head><title>Private fixture title</title><meta name="viewport" content="width=device-width, initial-scale=1"></head><body>
+        <p>Private page text must not be persisted.</p><a href="/missing">Missing local page</a><img src="/image.png"><img alt="Not found" src="/status-error"><button></button><button aria-labelledby="accessible-name"></button><span id="accessible-name">Accessible name</span><button aria-hidden="true"></button><button hidden></button><button style="display:none"></button><button style="visibility:hidden"></button><div style="width:1600px">wide fixture</div>
         <script>
           console.error("fixture console problem");
           fetch("https://example.invalid/telemetry").catch(() => {});
+          fetch("/network-failure").catch(() => {});
           fetch("/mutate", { method: "POST" }).catch(() => {});
         </script>
       </body></html>`);
       return;
     }
-    response.writeHead(request.url === "/missing" ? 404 : 200, { "content-type": "text/plain" });
+    response.writeHead(request.url === "/missing" || request.url === "/status-error" ? 404 : 200, { "content-type": "text/plain" });
     response.end("fixture response");
   });
   await new Promise((resolve, reject) => {
@@ -64,10 +69,18 @@ test("browser fixture audit blocks external/unsafe requests and persists aggrega
     const result = await runBrowserAudit(persistence, fixture.url);
     assert.equal(result.metrics.brokenLinkCount, 1, JSON.stringify(result.metrics));
     assert.equal(result.metrics.linksChecked, 1);
+    assert.equal(result.metrics.httpErrorCount, 1);
+    assert.ok(result.metrics.networkFailureCount >= 1);
     assert.ok(result.metrics.consoleErrorCount >= 1);
     assert.equal(result.metrics.blockedExternalRequestCount, 1);
     assert.equal(result.metrics.blockedUnsafeMethodCount, 1);
     assert.equal(result.metrics.navigationFailed, false);
+    assert.equal(result.metrics.missingAltCount, 1);
+    assert.equal(result.metrics.unnamedControlCount, 1);
+    assert.equal(result.metrics.mobileHorizontalOverflow, true);
+    assert.equal(result.metrics.securityHeadersChecked, 3);
+    assert.equal(result.metrics.missingSecurityHeaderCount, 3);
+    assert.equal(result.metrics.mixedContentCheck, "skipped_http_target");
     assert.equal(fixture.requests.some((request) => request.url === "/mutate"), false);
     assert.equal(fixture.requests.some((request) => request.url === "/missing"), true);
     assert.equal(persistence.state.status, "completed");
@@ -95,6 +108,32 @@ test("browser audit rejects external targets, userinfo, query and fragment befor
   }
   assert.equal(persistence.state.summary, undefined);
   assert.equal(persistence.state.events.length, 0);
+});
+
+test("browser audit marks navigation failure as failed and persists the coverage status", async () => {
+  const server = createServer((request) => request.socket.destroy());
+  await new Promise((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", resolve);
+  });
+  const address = server.address();
+  if (address === null || typeof address === "string") throw new Error("Failure fixture did not bind to a TCP port.");
+  const fixture = createPersistenceRecorder();
+  try {
+    const result = await runBrowserAudit(fixture, `http://127.0.0.1:${address.port}/`);
+    assert.equal(result.metrics.navigationFailed, true);
+    assert.equal(result.run.state, "failed");
+    assert.match(result.run.summary, /incomplete/u);
+    assert.equal(fixture.state.events.at(-1)?.type, "run_failed");
+    assert.equal(browserAuditExitCode(result.run.state), 3);
+  } finally {
+    await new Promise((resolve, reject) => server.close((error) => error === undefined ? resolve() : reject(error)));
+  }
+});
+
+test("browser audit CLI exit mapping preserves verified success and surfaces failed observations", () => {
+  assert.equal(browserAuditExitCode("completed"), 0);
+  assert.equal(browserAuditExitCode("failed"), 3);
 });
 
 test("browser-audit CLI requires an interactive confirmation before local navigation", () => {

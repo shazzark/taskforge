@@ -9,6 +9,8 @@ Phase 4.12 implements plain-text conversion for bounded TXT, Markdown, text PDF,
 
 Phase 4.13 wires explicitly selected numeric CSV columns into the persisted workflow and all structured report formats. Selection names affect the checkpoint hash; strict typecheck and the full isolated MongoDB suite passed (105 tests, zero skipped), and independent review found no remaining issues after prototype-key and Markdown-label fixes.
 
+Phase 6.3 extends the loopback browser fixture command with aggregate HTTP/request failures, console/page errors, bounded link checks, basic accessibility heuristics, mobile/desktop overflow, and selected passive response-header checks. Mixed-content coverage is marked skipped for HTTP fixtures. Strict typecheck, all 110 isolated MongoDB tests, fixture checks, and independent review passed. Real-site scope remains owner-provided and pending.
+
 ## Phase 0 - Baseline and Windows setup (8-9 October)
 Goal: reviewed documents, public repository, local folder and skills/tool inventory. Scope: README, MIT, Node ignore rules, root planning Markdown files and phase tracker. Repository: https://github.com/shazzark/taskforge (origin URL verified). Acceptance: requirements and unresolved proposals visible; local Git baseline is recorded. Checks: planning baseline commit `45c949e` exists; Node/npm/Git and Codex versions, skills and current AGENTS instructions inspected; no secrets printed. No runtime implementation.
 

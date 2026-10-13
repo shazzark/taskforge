@@ -16,10 +16,19 @@ export interface BrowserAuditResult {
     readonly linksChecked: number;
     readonly consoleErrorCount: number;
     readonly pageErrorCount: number;
+    readonly networkFailureCount: number;
+    readonly missingAltCount: number;
+    readonly unnamedControlCount: number;
+    readonly mobileHorizontalOverflow: boolean;
+    readonly desktopHorizontalOverflow: boolean;
+    readonly missingSecurityHeaderCount: number;
+    readonly securityHeadersChecked: number;
+    readonly mixedContentCheck: "skipped_http_target";
     readonly blockedExternalRequestCount: number;
     readonly blockedUnsafeMethodCount: number;
     readonly blockedRequestLimitCount: number;
     readonly navigationFailed: boolean;
+    readonly pageInspectionFailed: boolean;
     readonly durationMs: number;
   };
 }
@@ -31,6 +40,10 @@ export class BrowserAuditError extends Error {
     super(message);
     this.name = "BrowserAuditError";
   }
+}
+
+export function browserAuditExitCode(state: RunSummary["state"]): 0 | 3 {
+  return state === "failed" ? 3 : 0;
 }
 
 export function validateLoopbackBrowserTarget(value: unknown): URL {
@@ -72,10 +85,19 @@ export async function auditLoopbackPage(
     linksChecked: 0,
     consoleErrorCount: 0,
     pageErrorCount: 0,
+    networkFailureCount: 0,
+    missingAltCount: 0,
+    unnamedControlCount: 0,
+    mobileHorizontalOverflow: false,
+    desktopHorizontalOverflow: false,
+    missingSecurityHeaderCount: 0,
+    securityHeadersChecked: 0,
+    mixedContentCheck: "skipped_http_target" as const,
     blockedExternalRequestCount: 0,
     blockedUnsafeMethodCount: 0,
     blockedRequestLimitCount: 0,
     navigationFailed: false,
+    pageInspectionFailed: false,
     durationMs: 0,
   };
   if (isAborted(signal)) throw new BrowserAuditError("Browser audit was cancelled.");
@@ -87,10 +109,18 @@ export async function auditLoopbackPage(
     const context = await browser.newContext({ serviceWorkers: "block" });
     try {
       const page = await context.newPage();
+      await page.setViewportSize({ width: 1280, height: 800 });
       page.setDefaultTimeout(MAX_PAGE_TIMEOUT_MS);
       page.setDefaultNavigationTimeout(MAX_PAGE_TIMEOUT_MS);
       let pageRequestCount = 0;
+      const policyAbortedRequests = new WeakSet<import("playwright").Request>();
       page.on("response", (response) => incrementOnHttpError(response.status(), metrics));
+      page.on("requestfailed", (request) => {
+        if (policyAbortedRequests.has(request)) return;
+        try {
+          if (new URL(request.url()).origin === target.origin) metrics.networkFailureCount += 1;
+        } catch { /* Ignore malformed request URLs; they are outside counted coverage. */ }
+      });
       page.on("console", (message) => {
         if (message.type() === "error") metrics.consoleErrorCount += 1;
       });
@@ -100,6 +130,7 @@ export async function auditLoopbackPage(
         pageRequestCount += 1;
         if (pageRequestCount > MAX_PAGE_REQUESTS) {
           metrics.blockedRequestLimitCount += 1;
+          policyAbortedRequests.add(request);
           await route.abort();
           return;
         }
@@ -111,22 +142,58 @@ export async function auditLoopbackPage(
         }
         if (requestUrl?.origin !== target.origin || requestUrl.username.length > 0 || requestUrl.password.length > 0) {
           metrics.blockedExternalRequestCount += 1;
+          policyAbortedRequests.add(request);
           await route.abort();
           return;
         }
         if (request.method() !== "GET" && request.method() !== "HEAD") {
           metrics.blockedUnsafeMethodCount += 1;
+          policyAbortedRequests.add(request);
           await route.abort();
           return;
         }
         await route.continue();
       });
       try {
-        await page.goto(target.toString(), { waitUntil: "domcontentloaded", timeout: MAX_PAGE_TIMEOUT_MS });
+        const navigation = await page.goto(target.toString(), { waitUntil: "domcontentloaded", timeout: MAX_PAGE_TIMEOUT_MS });
+        if (navigation !== null) {
+          const headers = await navigation.allHeaders();
+          for (const name of ["content-security-policy", "x-content-type-options", "referrer-policy"]) {
+            metrics.securityHeadersChecked += 1;
+            if (headers[name] === undefined) metrics.missingSecurityHeaderCount += 1;
+          }
+        }
       } catch {
         metrics.navigationFailed = true;
       }
       if (isAborted(signal)) throw new BrowserAuditError("Browser audit was cancelled.");
+
+      try {
+        const desktop = await page.evaluate(() => ({
+          width: document.documentElement.scrollWidth,
+          viewport: window.innerWidth,
+          missingAlt: document.querySelectorAll("img:not([alt])").length,
+          unnamedControls: [...document.querySelectorAll("button, a[href], input:not([type=hidden]), select, textarea, [role=button]")]
+            .filter((element) => {
+              if (element.closest("[aria-hidden='true'], [hidden]")) return false;
+              const style = window.getComputedStyle(element);
+              if (style.display === "none" || style.visibility === "hidden" || element.getClientRects().length === 0) return false;
+              const labelledBy = element.getAttribute("aria-labelledby")?.split(/\s+/u)
+                .map((id) => document.getElementById(id)?.textContent?.trim() ?? "").join("").trim();
+              const named = element.getAttribute("aria-label")?.trim() || element.getAttribute("title")?.trim() ||
+                labelledBy || element.textContent?.trim() || (element instanceof HTMLInputElement ? element.labels?.item(0)?.textContent?.trim() : "");
+              return !named;
+            }).length,
+        }));
+        metrics.desktopHorizontalOverflow = desktop.width > desktop.viewport;
+        metrics.missingAltCount = desktop.missingAlt;
+        metrics.unnamedControlCount = desktop.unnamedControls;
+        await page.setViewportSize({ width: 360, height: 800 });
+        metrics.mobileHorizontalOverflow = await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth);
+        await page.setViewportSize({ width: 1280, height: 800 });
+      } catch {
+        metrics.pageInspectionFailed = true;
+      }
 
       let hrefValues: unknown;
       try {
@@ -175,7 +242,7 @@ export async function auditLoopbackPage(
 }
 
 function summarize(metrics: BrowserAuditResult["metrics"]): string {
-  return `Local browser audit complete: ${metrics.httpErrorCount} HTTP errors, ${metrics.brokenLinkCount}/${metrics.linksChecked} broken local links, ${metrics.consoleErrorCount} console errors, ${metrics.pageErrorCount} page errors, ${metrics.blockedExternalRequestCount} external requests blocked, ${metrics.blockedUnsafeMethodCount} unsafe methods blocked, ${metrics.blockedRequestLimitCount} requests blocked at the limit.`;
+  return `Local browser audit ${metrics.navigationFailed || metrics.pageInspectionFailed ? "incomplete" : "complete"}: navigation failed=${metrics.navigationFailed}, page inspection failed=${metrics.pageInspectionFailed}, ${metrics.httpErrorCount} HTTP errors, ${metrics.networkFailureCount} failed same-origin requests excluding policy blocks, ${metrics.brokenLinkCount}/${metrics.linksChecked} broken local links, ${metrics.consoleErrorCount} console errors, ${metrics.pageErrorCount} page errors, ${metrics.missingAltCount} images missing alt text, ${metrics.unnamedControlCount} unnamed visible controls (heuristic), mobile overflow=${metrics.mobileHorizontalOverflow}, desktop overflow=${metrics.desktopHorizontalOverflow}, ${metrics.missingSecurityHeaderCount}/${metrics.securityHeadersChecked} checked passive security headers missing, mixed-content check=${metrics.mixedContentCheck}, ${metrics.blockedExternalRequestCount} external requests blocked, ${metrics.blockedUnsafeMethodCount} unsafe methods blocked, ${metrics.blockedRequestLimitCount} requests blocked at the limit.`;
 }
 
 export async function runBrowserAudit(
@@ -195,8 +262,9 @@ export async function runBrowserAudit(
   await store.appendRunEvent({ runId, eventId: randomUUID(), type: "run_started" });
   await store.appendRunEvent({ runId, eventId: randomUUID(), type: "step_started", stepId: STEP_ID });
   await store.updateRunSummary(runId, summarize(metrics));
-  const completed = await store.updateRunState(runId, "completed");
   await store.appendRunEvent({ runId, eventId: randomUUID(), type: "step_finished", stepId: STEP_ID });
-  await store.appendRunEvent({ runId, eventId: randomUUID(), type: "run_finished" });
-  return { run: completed, metrics };
+  const inspectionFailed = metrics.navigationFailed || metrics.pageInspectionFailed;
+  const finished = await store.updateRunState(runId, inspectionFailed ? "failed" : "completed");
+  await store.appendRunEvent({ runId, eventId: randomUUID(), type: inspectionFailed ? "run_failed" : "run_finished" });
+  return { run: finished, metrics };
 }

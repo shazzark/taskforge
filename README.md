@@ -12,7 +12,7 @@ Repository: https://github.com/shazzark/taskforge
 
 Contributor setup and review expectations are in [CONTRIBUTING.md](CONTRIBUTING.md).
 
-The `run browser-audit --url <loopback-url>` slice is available for explicitly approved local HTTP fixtures. It uses isolated Chromium, blocks cross-origin and unsafe-method requests, and stores aggregate counts only; real-site journeys remain pending owner-supplied scope. `run research --query <question>` uses Groq browser search after interactive consent and persists nothing.
+The `run browser-audit --url <loopback-url>` slice is available for explicitly approved local HTTP fixtures. It uses isolated Chromium, blocks cross-origin and unsafe-method requests, and reports HTTP/request/link errors, console/page errors, basic accessibility heuristics, mobile/desktop overflow and selected passive response headers as aggregate findings. Mixed-content checks are skipped for HTTP fixtures, and real-site journeys remain pending owner-supplied scope. `run research --query <question>` uses Groq browser search after interactive consent and persists nothing.
 
 `resume <run-id> --input <path>` supports uncertain CSV and document analysis runs. It asks for approval to read the exact file again and resumes only when its bytes and workflow version match the persisted checkpoint.
 
