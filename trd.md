@@ -42,3 +42,8 @@ Document tested Node version, MongoDB installation/connection, local model and b
 
 ## Local scheduling
 `taskforge schedule add --workflow <csv-analyze|document-analyze> --input <path> (--once <future-UTC-ISO>|--every-minutes <1..10080>)` stores a schedule in MongoDB. The foreground `schedule run` process is the only executor; no OS scheduler integration is installed. The process claims due records atomically, records and skips elapsed intervals outside a 30-second grace period, and marks approval-required occurrences pending when no user is present. Every run requires new interactive approval and exact-file read consent, rechecking the path before reading. `schedule list`, `pause <id>`, `resume <id>`, and confirmed soft-delete `delete <id>` are supported. `schedule run --once` performs one scheduler tick for verification/operations.
+
+
+## Approved file move
+
+taskforge run file-move --source <file> --target <new-file> requires persistent read and write grants for the source folder, a persistent write grant for the destination folder, and interactive confirmation of both canonical paths and source SHA-256. It supports matching TXT, Markdown, CSV, PDF, DOCX, or XLSX suffixes. Destinations must not exist. The implementation creates and verifies a same-volume hard link before deleting the source; cross-volume moves are unsupported. A failed operation attempts to remove only a destination whose file identity matches the opened source.

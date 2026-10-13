@@ -88,7 +88,7 @@ Implemented explicit realpath-resolved root approval, read/write path checks, se
 
 **Checks:** `npm run typecheck` passed; `npm test` passed (28 passed, 1 skipped: the dedicated MongoDB integration lacked its test URI). Approved-root traversal, secret denial, junction escape, content-change invalidation, junction replacement invalidation and preview limits passed.
 
-**Pending:** This general root/preview foundation remains in-memory. `file-patch`, `pdf-report`, and local `draft` each enforce their own approved, content-bound operation path; durable scoped folder approvals are implemented in Phase 3.4. This preview layer still does not authorize mutations.
+**Pending:** This general root/preview foundation remains in-memory. `file-patch`, `pdf-report`, and local `draft` each enforce their own approved, content-bound operation path; durable scoped folder approvals are implemented in Phase 3.4. Higher-level file patch and file move workflows integrate approved mutations with persistent folder grants and operation consent.
 
 #### Phase 3.2 — MongoDB run state, events and checkpoints — COMPLETE (persistence foundation)
 
@@ -122,7 +122,7 @@ Added a bounded CSV parser and analyzer for caller-supplied text: BOM/CRLF, esca
 
 **Checks:** `npm run typecheck` passed; `npm test` passed (33 passed, 1 skipped dedicated MongoDB integration). Fixtures cover known exact totals, missing values, duplicate rows, malformed quoting/width, invalid numeric values, and size/record/column/precision limits.
 
-**Integrated:** File access is wired through explicit approval and Phase 3 metadata persistence in the CSV analysis/resume and document-analysis workflows. Create-only validated PDF output is in Phase 4.8. **Remaining:** requested structured export formats and additional file workflow families.
+**Integrated:** File access is wired through explicit approval and Phase 3 metadata persistence in the CSV analysis/resume and document-analysis workflows. Create-only validated PDF output is in Phase 4.8. **Remaining:** further agreed file workflow families and release acceptance.
 
 #### Phase 4.2 — PDF report rendering core — COMPLETE (in-memory output)
 
@@ -130,7 +130,7 @@ Added a PDFKit renderer for validated title/section text that returns PDF bytes 
 
 **Checks:** `npm run typecheck` passed; `npm test` passed (36 passed, 1 skipped dedicated MongoDB integration). Generated output had a valid PDF header/EOF and expected metadata; malformed, unsupported-character, oversized and excessive-section cases failed closed.
 
-**Integrated:** Phase 4.8 writes a new PDF only after path/content approval and verifies the resulting hash. **Remaining:** persisted artifact references and other requested output formats.
+**Integrated:** Phase 4.8 writes a new PDF only after path/content approval and verifies the resulting hash. **Integrated:** CSV/document artifact references and JSON/CSV/Markdown aggregate exports are now implemented. **Remaining:** other agreed output formats/workflows.
 
 #### Phase 4.3 — Bounded TXT and Markdown parsing — COMPLETE (pure input module)
 
@@ -178,7 +178,7 @@ Added `run pdf-report --input <report.json> --output <new.pdf>`. The JSON input 
 
 **Checks:** `npm run typecheck` passed; `npm test` passed against the isolated local MongoDB database (57 passed, 0 skipped, 0 failed). PDF fixtures verified valid markers, create-only output, post-write byte/hash integrity, refusal to replace an existing file, stale-target invalidation, and rejection outside the approved root. The complete database workflow suite passed with isolation/cleanup. `git diff --check` passed.
 
-**Pending:** Rich workflow artifact references and document conversion remain future subphases.
+**Integrated:** CSV artifact references, bounded document conversion, and document artifact references are verified in Phases 4.11–4.12.
 
 #### Phase 4.9 — Document workflow checkpoints and resume — COMPLETE
 
@@ -331,7 +331,7 @@ Added the MIT license and verified GitHub repository URL to package metadata and
 
 Added `CONTRIBUTING.md` with Windows/Node setup, isolated test database instructions, quality gates, strict TypeScript requirements, consent boundaries and local-only checkpoint rules. `npm pack --dry-run --json` completed after the sandbox denied its npm cache write; the escalated read-only retry listed 33 package files including the new research adapter in `dist`, with no `.env`, tests or tracker files. `npm ls --omit=dev --all` exited 0; npm reported unmet optional platform/provider packages that are intentionally optional. `git diff --check` passed.
 
-**Pending at this checkpoint:** Resolve deprecated transitive packages; obtain another developer's documented workflow trial. Phase 8 remains incomplete.
+**Pending at this checkpoint:** Dependency remediation is complete in Phase 8.4; obtain another developer's documented workflow trial. Phase 8 remains incomplete.
 
 **Dependency review follow-up at this checkpoint:** `npm ls --omit=dev --all` exited 0. `buffers@0.1.1` was reached through ExcelJS to unzipper to binary and lacked license metadata or a package license file. `png-js@2.0.0` has no SPDX field but its installed upstream license text states MIT. `glob@7.2.3` and `inflight@1.0.6` were deprecated transitive packages in the ExcelJS archive path. `jszip@3.10.2` explicitly allows an MIT or GPL-3.0-or-later choice; TaskForge selects MIT and records that in `THIRD_PARTY_NOTICES.md`. Phase 8.4 remediates the ExcelJS chain. These are inventory notes, not a legal determination.
 
@@ -353,9 +353,9 @@ Added ExcelJS-scoped overrides to `archiver@7.0.1` and `unzipper@0.12.5`, plus a
 
 ## Recovery
 
-- **Latest checkpoint:** Phase 4.10 aggregate CSV exports are committed as `570e0c0`; Phase 4.11 artifact references as `ccc4fcc`; Phase 4.12 document conversion as `20dd290`; Phase 4.13 selected numeric totals as `df9eb18`. Phase 4.14 exact-file move verification passed and is ready for its local checkpoint commit. Phase 4 remains IN PROGRESS because other file workflow families remain. Resume with `git status --short` and `git log -1 --oneline`; commit 4.14 before continuing. The independent developer trial remains pending until another developer performs it.
+- **Latest checkpoint:** Phase 4.10 aggregate CSV exports are committed as `570e0c0`; Phase 4.11 artifact references as `ccc4fcc`; Phase 4.12 document conversion as `20dd290`; Phase 4.13 selected numeric totals as `df9eb18`. Phase 4.14 exact-file move verification is committed as `f10d59e`. Phase 4 remains IN PROGRESS because other file workflow families remain. Resume with `git status --short` and `git log -1 --oneline`; continue with the next unfinished acceptance area. The independent developer trial remains pending until another developer performs it.
 - **Phase 4.10 evidence:** `npm run typecheck` passed; the loopback isolated MongoDB test suite passed (98 passed, 0 failed, 0 skipped); independent review reported no findings; CLI tests verify invalid formats and interactive approval gates. Changed files: `src/cli.ts`, `src/artifacts/drafts.ts`, `src/artifacts/csv-analysis-export.ts`, `test/csv-analysis-export.test.mjs`, `test/csv-analysis-cli.test.mjs`, README, architecture, implementation plan, and this tracker. `git diff --check` passed.
-- **Current phase/subphase:** Phase 2.1 and live Phase 2.2 are COMPLETE for their stated slices; Phase 2 is COMPLETE. Phases 3.1–3.4 and 4.1–4.9 have verified bounded foundations; richer artifact references/report workflows remain. Phase 5.1–5.6 foundations are COMPLETE. Phase 6.1 local loopback foundation and 6.2 query-only Groq research are COMPLETE for their bounded slices; broader browser/design workflows and owner-approved target acceptance remain. Phase 7.1–7.4 are COMPLETE for their stated slices; tool-bearing/browser/data specialist integrations remain, so Phase 7 remains IN PROGRESS. Phase 8.1–8.2 and 8.4 dependency remediation are verified; Phase 8.3's prepared independent developer trial remains pending, so Phase 8 is IN PROGRESS.
+- **Current phase/subphase:** Phase 2.1 and live Phase 2.2 are COMPLETE for their stated slices; Phase 2 is COMPLETE. Phases 3.1–3.4 and 4.1–4.14 have verified bounded foundations; additional Phase 4 file workflow families remain. Phase 5.1–5.6 foundations are COMPLETE. Phase 6.1 local loopback foundation and 6.2 query-only Groq research are COMPLETE for their bounded slices; broader browser/design workflows and owner-approved target acceptance remain. Phase 7.1–7.4 are COMPLETE for their stated slices; tool-bearing/browser/data specialist integrations remain, so Phase 7 remains IN PROGRESS. Phase 8.1–8.2 and 8.4 dependency remediation are verified; Phase 8.3's prepared independent developer trial remains pending, so Phase 8 is IN PROGRESS.
 - **Last completed work:** Phase 8.1 offline cached Windows consumer and dependency-tree verification; Phase 8.2 contributor guidance/package-content audit; Phase 6.2 consented live-verified Groq browser research (`af724b7`); Phase 7.3 bounded read-only specialist review (`d1c0a01`).
 - **Checks performed:** Phase 1.1: `npm ci`; typecheck/build; built CLI help/version; package version parity; invalid-argument error and no argument echo; packed Windows consumer and `taskforge.cmd`; review; `git diff --check`. Phase 1.2: `npm ci`; typecheck; tests (8 passed); missing/malformed config exit behavior and redaction; review; diff check. Phase 1.3: `npm ci`; typecheck/build; 10 tests passed against isolated disposable MongoDB; persistence and unavailable-server paths; review; diff check. Phase 1.4: clean `npm ci`; typecheck/build; Windows help/version/config/doctor smoke checks; all 12 tests passed with no skips against isolated disposable MongoDB; doctor success plus missing/unavailable failure paths and redaction; review; `git diff --check`. Registered MongoDB service remains stopped and untouched; no existing connection value was read or reused.
 - **Verified commands/results:** `npm run typecheck` passed; `npm test` passed (21 passed, 1 skipped dedicated MongoDB integration; test command builds). `node dist/cli.js model-check` passed against Groq (1 read-only synthetic tool action, 2 model requests). Safe `mongosh` ping returned `1`; application URI validation failed without revealing the connection string. `git diff --check` must pass before checkpointing.
@@ -382,4 +382,4 @@ Added ExcelJS-scoped overrides to `archiver@7.0.1` and `unzipper@0.12.5`, plus a
 
 Added `run file-move --source <file> --target <new-file>` for matching TXT, Markdown, CSV, PDF, DOCX, and XLSX suffixes. Requires durable read and write scopes for the source folder, durable write scope for the destination folder, and interactive confirmation of exact canonical paths, byte count, and source SHA-256. It refuses existing targets and uses create-only same-volume hard-link creation, verifies destination identity and content, rechecks source identity, then removes the source. Cross-volume moves are unsupported; a failed operation retains the source whenever possible and only cleans a destination whose identity matches the opened source.
 
-**Checks so far:** `npm run typecheck`, `npm run build`, focused permission/CLI tests (12/12), and full isolated MongoDB suite (108 passed, 0 failed, 0 skipped) passed. Independent review found and cleared destination revalidation and post-mutation close-reporting issues. The full suite needs a final rerun after those fixes; then run `git diff --check` and commit this checkpoint. Phase remains IN PROGRESS until that rerun is complete.
+**Checks:** `npm run typecheck` and `npm run build` passed; focused permission/CLI tests passed (12/12); full isolated MongoDB suite passed after review fixes (108 passed, 0 failed, 0 skipped); `git diff --check` passed. Independent review found and cleared destination revalidation and post-mutation close-reporting issues. Commit: `f10d59e`.
