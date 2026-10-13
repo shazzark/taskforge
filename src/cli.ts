@@ -1361,11 +1361,49 @@ async function runSpecialistReviewCommand(commandArgs: readonly string[]): Promi
       { role: "reviewer", goal: "Independently challenge the first specialist's likely assumptions and check relevant boundaries." },
     ];
     const provider = createModelProvider(providerConfiguration);
+    const approvedSourceText = files.map((file) => `${file.path}\n${file.content}`).join("\n\n");
+    const sourceLookup: import("./agent/tool-loop.js").AgentTool = {
+      definition: {
+        name: "search_approved_source",
+        description: "Search the already approved, heuristically redacted source excerpts for literal text and return a few matching lines. This tool cannot access other files.",
+        parameters: {
+          type: "object",
+          properties: { query: { type: "string", minLength: 1, maxLength: 200 } },
+          required: ["query"],
+          additionalProperties: false,
+        },
+      },
+      validateArguments(value: unknown): unknown {
+        if (typeof value !== "object" || value === null || Array.isArray(value) || Object.keys(value).length !== 1 ||
+            !("query" in value) || typeof value.query !== "string" || value.query.trim().length === 0 || value.query.length > 200) {
+          throw new SpecialistReviewError("The source search query must be 1–200 characters.");
+        }
+        return { query: value.query };
+      },
+      async execute(value: unknown): Promise<string> {
+        if (typeof value !== "object" || value === null || Array.isArray(value) || !("query" in value) || typeof value.query !== "string") {
+          throw new SpecialistReviewError();
+        }
+        const needle = value.query.toLocaleLowerCase("en-US");
+        const matches: string[] = [];
+        for (const file of files) {
+          const lines = file.content.split(/\r?\n/u);
+          for (let index = 0; index < lines.length && matches.length < 20; index += 1) {
+            const line = lines[index];
+            if (line !== undefined && line.toLocaleLowerCase("en-US").includes(needle)) {
+              matches.push(`${file.path}:${index + 1}: ${line.slice(0, 500)}`);
+            }
+          }
+          if (matches.length >= 20) break;
+        }
+        return matches.length === 0 ? "No matching lines in the approved excerpts." : matches.join("\n").slice(0, 8_000);
+      },
+    };
     const transferConsent = createInterface({ input: process.stdin, output: process.stdout });
     let transferAnswer: string;
     try {
       transferAnswer = await transferConsent.question(
-        `Send these exact redacted excerpts and goal to ${providerConfiguration.kind} (${provider.model}) for up to two read-only specialists and one parent review? This command has a fresh run budget of 40 model requests and 30 tool actions (no tool actions are exposed here). No network integrations, persistence, or file writes are available. Redaction may miss secrets. [y/N] `,
+        `Send these exact redacted excerpts and goal to ${providerConfiguration.kind} (${provider.model}) for up to two specialists and one parent review? Workers can use only a literal search tool over these excerpts (40 model requests, 30 search actions maximum); no other file, network, persistence, or write tools are available. Redaction may miss secrets. [y/N] `,
       );
     } finally {
       transferConsent.close();
@@ -1375,9 +1413,9 @@ async function runSpecialistReviewCommand(commandArgs: readonly string[]): Promi
       return;
     }
     const ledger = new AgentBudgetLedger(40, 30);
-    const result = await runSpecialistReview(provider.provider, provider.model, goal, files.map((file) => `${file.path}\n${file.content}`).join("\n\n"), roles, ledger, controller.signal);
+    const result = await runSpecialistReview(provider.provider, provider.model, goal, approvedSourceText, roles, ledger, controller.signal, [sourceLookup]);
     for (const worker of result.workers) {
-      process.stdout.write(`\nSpecialist ${worker.role}: ${worker.status}${worker.failureKind === undefined ? "" : ` (${worker.failureKind})`}\n${worker.findings ?? "No finding available."}\n`);
+      process.stdout.write(`\nSpecialist ${worker.role}: ${worker.status}${worker.failureKind === undefined ? "" : ` (${worker.failureKind})`}${worker.toolNames === undefined ? "" : `; tools=${worker.toolNames.join(",")}`}\n${worker.findings ?? "No finding available."}\n`);
     }
     process.stdout.write(`\nParent review (${result.parentReviewStatus}${result.parentFailureKind === undefined ? "" : `, ${result.parentFailureKind}`}; unverified):\n${result.parentReview ?? "Not completed; inspect the specialist reports manually."}\n`);
     process.stdout.write(`Budget used: ${result.budget.modelRequests} model requests, ${result.budget.toolActions} tool actions. No code changes or tests were performed by TaskForge.\n`);

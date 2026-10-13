@@ -71,6 +71,24 @@ test("worker tool calls are denied and do not execute; excess delegation is reje
   await assert.rejects(runSpecialistReview(maliciousProvider, "fixture", "Review", "source", [{ role: "reviewer", goal: "nested", spawn: true }], new AgentBudgetLedger()), SpecialistReviewError);
 });
 
+test("tool-action budget exhaustion is reported as budget-exhausted", async () => {
+  const provider = {
+    async complete() {
+      return { content: null, toolCalls: [{ id: "1", name: "search", arguments: {} }], finishReason: "tool_calls" };
+    },
+  };
+  const tool = {
+    definition: { name: "search", description: "search", parameters: { type: "object", properties: {}, required: [], additionalProperties: false } },
+    validateArguments(value) { return value; },
+    async execute() { return "never reached"; },
+  };
+  const result = await runSpecialistReview(provider, "fixture", "Review", "source", [tasks[0]], new AgentBudgetLedger(3, 0), undefined, [tool]);
+  assert.equal(result.workers[0].status, "budget-exhausted");
+  assert.equal(result.workers[0].failureKind, "quota");
+  assert.equal(result.budget.modelRequests, 1);
+  assert.equal(result.budget.toolActions, 0);
+});
+
 test("specialists cannot exceed remaining shared request budget", async () => {
   const ledger = new AgentBudgetLedger(1, 0);
   const provider = { complete: async () => ({ content: "finding", toolCalls: [], finishReason: "stop" }) };
@@ -80,6 +98,37 @@ test("specialists cannot exceed remaining shared request budget", async () => {
   assert.equal(results.parentReview, null);
   assert.equal(results.parentReviewStatus, "budget-exhausted");
   assert.equal(results.budget.modelRequests, 1);
+});
+
+test("specialists can use only explicitly supplied read tools and charge the shared ledger", async () => {
+  const ledger = new AgentBudgetLedger(4, 1);
+  let executions = 0;
+  let requests = 0;
+  const searchTool = {
+    definition: { name: "search_approved_source", description: "Search approved excerpts", parameters: { type: "object", properties: { query: { type: "string" } }, required: ["query"], additionalProperties: false } },
+    validateArguments(value) { assert.equal(value.query, "needle"); return value; },
+    async execute() { executions += 1; return "file.ts:4: needle"; },
+  };
+  const provider = {
+    async complete(request) {
+      requests += 1;
+      if (request.messages[0].content.includes("parent reviewer")) {
+        assert.deepEqual(request.tools, []);
+        return { content: "Parent review", toolCalls: [], finishReason: "stop" };
+      }
+      assert.deepEqual(request.tools.map((tool) => tool.name), ["search_approved_source"]);
+      if (request.messages.some((message) => message.role === "tool")) {
+        return { content: "The approved excerpt supports the finding.", toolCalls: [], finishReason: "stop" };
+      }
+      return { content: null, toolCalls: [{ id: "search-1", name: "search_approved_source", arguments: { query: "needle" } }], finishReason: "tool_calls" };
+    },
+  };
+  const result = await runSpecialistReview(provider, "fixture", "Review", "approved excerpt", [tasks[0]], ledger, undefined, [searchTool]);
+  assert.equal(executions, 1);
+  assert.equal(requests, 3);
+  assert.deepEqual(result.workers[0].toolNames, ["search_approved_source"]);
+  assert.equal(result.parentReviewStatus, "complete");
+  assert.deepEqual(result.budget, { modelRequests: 3, toolActions: 1, modelRequestsRemaining: 1, toolActionsRemaining: 0 });
 });
 
 test("provider failures are preserved as sanitized status and parent-review failure is visible", async () => {
