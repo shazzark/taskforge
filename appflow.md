@@ -44,7 +44,7 @@ Load versioned declarative definitions from the trusted local registry -> valida
 
 ### Storage selection
 
-New setup defaults to local storage. A user who elects to keep/use MongoDB explicitly selects its adapter and configures it. The selected adapter is shown in diagnostics. Failure stops the task; there is no silent storage fallback. Existing MongoDB data is preserved and neither migrated nor deleted automatically.
+New setup defaults to local storage when no legacy Mongo URI is configured. A legacy configuration containing `TASKFORGE_MONGODB_URI` without an explicit backend choice must stop and ask the owner to select local or MongoDB; it must never silently abandon the existing database. A user who elects to keep/use MongoDB explicitly selects its adapter and configures it. The selected adapter is shown in diagnostics. Failure stops the task; there is no silent storage fallback. Existing MongoDB data is preserved and neither migrated nor deleted automatically.
 
 ### Research and connected read-only reports
 

@@ -1,4 +1,5 @@
-import type { MongoStore, ScheduleOccurrence, ScheduleRecord } from "../mongo-store.js";
+import type { ScheduleOccurrence, ScheduleRecord } from "../mongo-store.js";
+import type { TaskForgeStore } from "../persistence/store.js";
 import { setTimeout as delay } from "node:timers/promises";
 
 const SCHEDULER_GRACE_MS = 30_000;
@@ -6,7 +7,7 @@ const DEFAULT_POLL_INTERVAL_MS = 10_000;
 const STALE_RUN_AGE_MS = 2 * 60_000;
 
 type SchedulerPersistence = Pick<
-  MongoStore,
+  TaskForgeStore,
   "claimDueSchedules" | "claimPendingScheduleOccurrences" | "releaseScheduleOccurrenceClaim" | "listPendingScheduleOccurrences" | "finishScheduleOccurrence" | "getRunSummary" | "recoverStaleRun"
 >;
 

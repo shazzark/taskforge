@@ -18,6 +18,7 @@ import {
   type ArtifactType,
   type FolderApproval,
 } from "./mongo-store.js";
+import type { TaskForgeStore } from "./persistence/store.js";
 import { createModelProvider } from "./providers/create-provider.js";
 import { ModelProviderError } from "./providers/types.js";
 import { PathPolicyError, WorkspacePathPolicy } from "./security/path-policy.js";
@@ -160,7 +161,7 @@ async function readApprovedInputFile(pathValue: string): Promise<Uint8Array | un
   }
 }
 
-async function withMongoStore<T>(action: (store: MongoStore) => Promise<T>): Promise<T | undefined> {
+async function withMongoStore<T>(action: (store: TaskForgeStore) => Promise<T>): Promise<T | undefined> {
   let store: MongoStore;
   try {
     store = await MongoStore.connect(loadConfiguration());
@@ -602,7 +603,7 @@ async function askScheduleQuestion(question: string): Promise<boolean> {
   }
 }
 
-async function executeScheduledWorkflow(store: MongoStore, schedule: ScheduleRecord, occurrence: { readonly runId: string }): Promise<boolean> {
+async function executeScheduledWorkflow(store: TaskForgeStore, schedule: ScheduleRecord, occurrence: { readonly runId: string }): Promise<boolean> {
   const input = await readApprovedInputFile(schedule.inputPath);
   if (input === undefined) return false;
   if (schedule.workflowId === "csv-analyze") {
@@ -736,11 +737,11 @@ async function runScheduleCommand(commandArgs: readonly string[]): Promise<void>
 }
 
 async function listRunHistory(): Promise<void> {
-  let history: { readonly runs: Awaited<ReturnType<MongoStore["listRunSummaries"]>>; readonly artifacts: ReadonlyMap<string, Awaited<ReturnType<MongoStore["listArtifactReferences"]>>> } | undefined;
+  let history: { readonly runs: Awaited<ReturnType<TaskForgeStore["listRunSummaries"]>>; readonly artifacts: ReadonlyMap<string, Awaited<ReturnType<TaskForgeStore["listArtifactReferences"]>>> } | undefined;
   try {
     history = await withMongoStore(async (store) => {
       const runs = await store.listRunSummaries();
-      const artifacts = new Map<string, Awaited<ReturnType<MongoStore["listArtifactReferences"]>>>();
+      const artifacts = new Map<string, Awaited<ReturnType<TaskForgeStore["listArtifactReferences"]>>>();
       for (const run of runs) artifacts.set(run.runId, await store.listArtifactReferences(run.runId));
       return { runs, artifacts };
     });

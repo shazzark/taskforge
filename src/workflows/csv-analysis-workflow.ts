@@ -1,7 +1,8 @@
 import { createHash, randomUUID } from "node:crypto";
 import { TextDecoder } from "node:util";
 import { analyzeCsv, CsvAnalysisError, type CsvAnalysisResult } from "../data/csv-analysis.js";
-import { MongoStore, type RunSummary } from "../mongo-store.js";
+import type { RunSummary } from "../mongo-store.js";
+import type { TaskForgeStore } from "../persistence/store.js";
 
 const WORKFLOW_ID = "csv-analyze";
 const ANALYSIS_STEP_ID = "analyze";
@@ -44,7 +45,7 @@ function analyzeBytes(input: Uint8Array, numericColumns: readonly string[]): Csv
 }
 
 async function executeAnalysis(
-  store: MongoStore,
+  store: TaskForgeStore,
   run: RunSummary,
   inputHash: string,
   input: Uint8Array,
@@ -106,7 +107,7 @@ async function executeAnalysis(
 }
 
 export async function runCsvAnalysisWorkflow(
-  store: MongoStore,
+  store: TaskForgeStore,
   input: Uint8Array,
   scheduledRunId?: string,
   numericColumns: readonly string[] = [],
@@ -126,7 +127,7 @@ export async function runCsvAnalysisWorkflow(
 }
 
 export async function resumeCsvAnalysisWorkflow(
-  store: MongoStore,
+  store: TaskForgeStore,
   runId: unknown,
   input: Uint8Array,
   numericColumns: readonly string[] = [],

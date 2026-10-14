@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { isIP } from "node:net";
-import type { MongoStore, RunSummary } from "../mongo-store.js";
+import type { RunSummary } from "../mongo-store.js";
+import type { TaskForgeStore } from "../persistence/store.js";
 import { createBrowserEgressProxy, isGlobalUnicastAddress, type BrowserEgressProxyOptions } from "../security/browser-egress-proxy.js";
 import { isRecord } from "../providers/types.js";
 import { escapeTerminalControls } from "../security/terminal-text.js";
@@ -133,7 +134,7 @@ export interface BrowserPageDiagnostics {
   readonly screenshotLimitReached: boolean;
 }
 
-type Persistence = Pick<MongoStore, "saveRunSummary" | "updateRunState" | "appendRunEvent" | "updateRunSummary">;
+type Persistence = Pick<TaskForgeStore, "saveRunSummary" | "updateRunState" | "appendRunEvent" | "updateRunSummary">;
 
 export class BrowserAuditError extends Error {
   constructor(message: string) {

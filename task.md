@@ -560,11 +560,17 @@ Owner approved the 11 work areas and the development target Sunday 18 October 20
 
 **Acceptance:** Documents agree on scope, dependency order, permissions/data/provider constraints and status vocabulary; current capabilities remain accurate; each future phase has concrete verification criteria and external human gates are not fabricated.
 
-### Phase 10 — Local-default persistence with optional MongoDB — NOT STARTED
+### Phase 10 — Local-default persistence with optional MongoDB — IN PROGRESS
 
-Depends on Phase 9. Choose a Windows-compatible local backend only after evaluating crash consistency, locking, backup/restore, schema upgrades, runtime/package fit and data privacy. No existing MongoDB data is migrated, deleted, overwritten or silently abandoned. Backend choice is explicit; errors fail closed; no fallback.
+Depends on Phase 9. Initial backend decision: use Node's built-in `node:sqlite` behind an adapter boundary, avoiding another native npm dependency. Node 24.15 promotes the API to release-candidate status; Node 22.13 in this workspace also exposes it, confirmed with an in-memory strict table. The API maturity and exact bundled runtime remain explicit verification risks. Existing MongoDB data is not migrated, deleted, overwritten or silently abandoned. Backend choice must become explicit; errors fail closed; no fallback. This decision does not imply local persistence is available yet.
 
 **Acceptance:** Adapter contract passes against isolated temporary local and disposable Mongo stores, including durability, malformed/versioned records, locking/concurrency, interrupted writes, outages and redaction. New-install local default and explicit Mongo use are proven. Data path, ACL/privacy, backup, restore, retention and recovery are documented.
+
+#### Phase 10.1 — Backend-neutral store port — COMPLETE
+
+Added `src/persistence/store.ts` as a public-operation persistence port and moved workflow, software-check, scheduler and CLI callback type boundaries to that port. `MongoStore` remains the sole runtime factory and all existing data and selection behavior are unchanged. Updated the pinned Node type definitions to 24.19.2 so the upcoming built-in SQLite adapter can use its maintained strict types. Official Node documentation records `node:sqlite` as release candidate from Node 24.15; native package install risks were reviewed, so no runtime package/dependency was added.
+
+**Verification:** `npm run typecheck` passed after the port and type-definition update; `git diff --check` passed. This is a type-boundary-only subphase; no runtime store behavior changed, so the latest full-suite evidence remains Phase 8.8 (152/152 with dedicated Mongo test DB). The local adapter, backend selector, parity suite, packaged Node 24 runtime, and all Phase 10 acceptance criteria remain IN PROGRESS.
 
 ### Phase 11 — Validated declarative task registry — NOT STARTED
 

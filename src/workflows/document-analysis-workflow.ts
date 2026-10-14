@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { TextDecoder } from "node:util";
-import type { MongoStore, RunSummary } from "../mongo-store.js";
+import type { RunSummary } from "../mongo-store.js";
+import type { TaskForgeStore } from "../persistence/store.js";
 import { parseDocxText } from "../documents/docx-parser.js";
 import { parsePdfText } from "../documents/pdf-text-parser.js";
 import { parseTextDocument } from "../documents/text-parser.js";
@@ -33,7 +34,7 @@ export interface DocumentAnalysisResult {
   readonly resumed: boolean;
 }
 
-type Persistence = Pick<MongoStore,
+type Persistence = Pick<TaskForgeStore,
   "saveRunSummary" | "updateRunState" | "appendRunEvent" | "updateRunSummary" |
   "saveRunCheckpoint" | "loadRunCheckpoint" | "getRunSummary" | "recoverStaleRun">;
 

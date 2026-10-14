@@ -2,7 +2,8 @@ import { spawn, spawnSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { lstat, mkdir, mkdtemp, readFile, realpath, rm, stat, readdir, writeFile } from "node:fs/promises";
 import { basename, extname, isAbsolute, join, relative, resolve } from "node:path";
-import type { MongoStore, RunSummary } from "../mongo-store.js";
+import type { RunSummary } from "../mongo-store.js";
+import type { TaskForgeStore } from "../persistence/store.js";
 import type { ApprovedRoot, WorkspacePathPolicy } from "../security/path-policy.js";
 
 const MAX_RUNTIME_MS = 120_000;
@@ -33,7 +34,7 @@ export class ReviewedCommandError extends Error {
   }
 }
 
-type Persistence = Pick<MongoStore, "saveRunSummary" | "updateRunState" | "appendRunEvent" | "updateRunSummary">;
+type Persistence = Pick<TaskForgeStore, "saveRunSummary" | "updateRunState" | "appendRunEvent" | "updateRunSummary">;
 
 interface ProcessResult {
   readonly exitCode: number | null;
