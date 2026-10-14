@@ -58,6 +58,10 @@ Phase 4.14 adds an exact-file move operation for TXT, Markdown, CSV, PDF, DOCX, 
 
 At the time of this recovery note MongoDB was the only persistence implementation. The owner has since approved local persistence as the new-install default, the existing MongoDB adapter as an explicit option, guided Windows setup/distribution, evidence-based architecture analysis, and read-only GitHub/Vercel deployment tracing. They remain planned until implemented and verified. Deployment actions remain deferred. The independent developer trial remains pending.
 
+## Current implementation update - 14 October 2026
+
+Local SQLite is now the new-install default behind the shared `TaskForgeStore`; configured or explicit MongoDB selection remains supported without automatic migration, deletion, or fallback. Natural-language `do`/`chat` currently expose only fixed CSV and document analysis tools. Phase 13.1 adds `run agent-fix`, which sends one user-approved, redacted source file to the selected provider and accepts one full-file replacement candidate, with hash-bound preview, separate write approval, and separately approved fixed Node test. This is not the approved target resolver/orchestrator, a multi-file diff workflow, or general architecture analysis. Read-only GitHub/Vercel deployment tracing remains approved future work. See `CAPABILITY_AUDIT.md` and `task.md` for verification and acceptance status.
+
 ## Approved target architecture - 14 October 2026
 
 This target does not describe the current implementation; see `CAPABILITY_AUDIT.md` for current facts. The current CLI dispatch and explicit built-in workflow code remain the compatibility baseline.

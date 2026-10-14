@@ -309,7 +309,7 @@ function summary(command: ReviewedCommandId, status: ReviewedCommandStatus, exit
   return `Reviewed ${command} check ${status.replaceAll("_", " ")}; exit code ${exitCode === null ? "unavailable" : exitCode}. Output and repository paths were not persisted.`;
 }
 
-async function selectedNodeTestPath(root: ApprovedRoot, policy: WorkspacePathPolicy, value: unknown): Promise<SelectedTestIdentity> {
+export async function validateSelectedNodeTestPath(root: ApprovedRoot, policy: WorkspacePathPolicy, value: unknown): Promise<SelectedTestIdentity> {
   if (typeof value !== "string" || value.trim().length === 0 || value.length > 1_024 || value.includes("\u0000") || isAbsolute(value)) {
     throw new ReviewedCommandError("Selected tests require one in-root relative JavaScript test file.");
   }
@@ -367,7 +367,7 @@ export async function runReviewedCommand(
   let arguments_: readonly string[] = command === "node-test" ? ["--test"] : [];
   if (selectedTestPath !== undefined) {
     if (command !== "node-test") throw new ReviewedCommandError("Selected test files are supported only with node-test.");
-    selectedTest = await selectedNodeTestPath(root, policy, selectedTestPath);
+    selectedTest = await validateSelectedNodeTestPath(root, policy, selectedTestPath);
     arguments_ = ["--test", selectedTest.canonicalPath];
     effectiveCommand = "node-test-selected";
   }
@@ -396,7 +396,7 @@ export async function runReviewedCommand(
   let processResult: ProcessResult;
   try {
     if (selectedTest !== undefined) {
-      const current = await selectedNodeTestPath(root, policy, selectedTest.relativePath);
+      const current = await validateSelectedNodeTestPath(root, policy, selectedTest.relativePath);
       if (current.canonicalPath !== selectedTest.canonicalPath || current.size !== selectedTest.size ||
           current.modifiedAt !== selectedTest.modifiedAt || current.ino !== selectedTest.ino ||
           (process.platform !== "win32" && current.dev !== selectedTest.dev) || current.sha256 !== selectedTest.sha256) {

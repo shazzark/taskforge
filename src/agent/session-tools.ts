@@ -22,6 +22,8 @@ export type DocumentAnalysisToolExecutor = (
   signal?: AbortSignal,
 ) => Promise<string>;
 
+export type PatchProposalCapture = (replacement: string) => void;
+
 function parseCsvToolArguments(value: unknown): CsvAnalysisToolArguments {
   if (!isRecord(value)) throw new AgentToolError();
   const input = value["input"];
@@ -94,6 +96,37 @@ export function createDocumentAnalysisTool(execute: DocumentAnalysisToolExecutor
     },
     validateArguments: parseDocumentToolArguments,
     execute: async (argumentsValue, signal) => execute(parseDocumentToolArguments(argumentsValue), signal),
+  };
+}
+
+export function createPatchProposalTool(capture: PatchProposalCapture): AgentTool {
+  return {
+    definition: {
+      name: "propose_replacement",
+      description: "Return the complete replacement text for the one source file selected by the user. This only creates a preview; the host will request separate approval before applying it.",
+      parameters: {
+        type: "object",
+        properties: {
+          replacement: { type: "string", description: "Complete replacement contents for the selected file, not a diff." },
+        },
+        required: ["replacement"],
+        additionalProperties: false,
+      },
+    },
+    validateArguments(value: unknown): { readonly replacement: string } {
+      if (!isRecord(value) || Object.keys(value).some((key) => key !== "replacement")) throw new AgentToolError();
+      const replacement = value["replacement"];
+      if (typeof replacement !== "string" || replacement.trim().length === 0 ||
+          Buffer.byteLength(replacement, "utf8") > 128 * 1024 || replacement.includes("\u0000")) {
+        throw new AgentToolError();
+      }
+      return { replacement };
+    },
+    execute: async (argumentsValue) => {
+      if (!isRecord(argumentsValue) || typeof argumentsValue["replacement"] !== "string") throw new AgentToolError();
+      capture(argumentsValue["replacement"]);
+      return "Replacement captured as a preview candidate. The host has not applied it; wait for its human approval result.";
+    },
   };
 }
 

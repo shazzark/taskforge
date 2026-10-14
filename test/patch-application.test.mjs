@@ -5,7 +5,7 @@ import { join } from "node:path";
 import test from "node:test";
 import { ActionApprovalRegistry, ApprovalError } from "../dist/security/approval-preview.js";
 import { WorkspacePathPolicy } from "../dist/security/path-policy.js";
-import { applyPreparedFilePatch, PatchApplicationError, prepareFilePatch } from "../dist/software/patch-application.js";
+import { applyPreparedFilePatch, PatchApplicationError, prepareFilePatch, prepareGeneratedFilePatch } from "../dist/software/patch-application.js";
 import { runReviewedCommand } from "../dist/software/reviewed-command.js";
 
 function createPersistenceRecorder() {
@@ -70,6 +70,50 @@ test("file patch refuses changed targets, mismatched approval content and paths 
   } finally {
     await rm(rootPath, { recursive: true, force: true });
     await rm(outsidePath, { recursive: true, force: true });
+  }
+});
+
+test("generated patch candidates stay unapplied on decline and apply only against the reviewed snapshot", async () => {
+  const rootPath = await mkdtemp(join(tmpdir(), "taskforge-patch-generated-"));
+  try {
+    const original = "export const value = 1;\n";
+    const replacement = "export const value = 2;\n";
+    await writeFile(join(rootPath, "target.ts"), original, "utf8");
+    const policy = new WorkspacePathPolicy();
+    const root = await policy.approveRoot(rootPath);
+    const approvals = new ActionApprovalRegistry(policy);
+    const declined = await prepareGeneratedFilePatch(root, policy, approvals, "target.ts", replacement);
+    approvals.discard(declined.preview.previewId);
+    assert.equal(await readFile(join(rootPath, "target.ts"), "utf8"), original);
+
+    const stale = await prepareGeneratedFilePatch(root, policy, approvals, "target.ts", replacement);
+    const approval = approvals.approve(stale.preview.previewId);
+    await writeFile(join(rootPath, "target.ts"), "export const ownerValue = 3;\n", "utf8");
+    await assert.rejects(applyPreparedFilePatch(stale, approval, approvals), PatchApplicationError);
+    assert.equal(await readFile(join(rootPath, "target.ts"), "utf8"), "export const ownerValue = 3;\n");
+
+    const accepted = await prepareGeneratedFilePatch(root, policy, approvals, "target.ts", replacement);
+    const acceptedApproval = approvals.approve(accepted.preview.previewId);
+    await applyPreparedFilePatch(accepted, acceptedApproval, approvals);
+    assert.equal(await readFile(join(rootPath, "target.ts"), "utf8"), replacement);
+  } finally {
+    await rm(rootPath, { recursive: true, force: true });
+  }
+});
+
+test("generated patch candidates reject unapproved, oversized and binary targets", async () => {
+  const rootPath = await mkdtemp(join(tmpdir(), "taskforge-patch-generated-invalid-"));
+  try {
+    await writeFile(join(rootPath, "target.ts"), "export const value = 1;\n", "utf8");
+    const policy = new WorkspacePathPolicy();
+    const root = await policy.approveRoot(rootPath);
+    const approvals = new ActionApprovalRegistry(policy);
+    await assert.rejects(prepareGeneratedFilePatch(root, policy, approvals, "../outside.ts", "replacement"), PatchApplicationError);
+    await assert.rejects(prepareGeneratedFilePatch(root, policy, approvals, "target.ts", "x".repeat(128 * 1024 + 1)), PatchApplicationError);
+    await assert.rejects(prepareGeneratedFilePatch(root, policy, approvals, "target.ts", "\u0000"), PatchApplicationError);
+    await assert.rejects(prepareGeneratedFilePatch(root, policy, approvals, "missing.ts", "replacement"), PatchApplicationError);
+  } finally {
+    await rm(rootPath, { recursive: true, force: true });
   }
 });
 

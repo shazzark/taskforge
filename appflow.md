@@ -26,7 +26,7 @@ Add definition with schema, tools, examples and tests -> validate locally -> ope
 
 ## Current behavior boundary - 14 October 2026
 
-The flows above describe the intended product behavior, not the current CLI. Today commands use fixed dispatch; `chat` is bounded model-only text with no tools or transcript persistence. There is no natural-language workflow resolver or task registry. Current capabilities and exact commands are recorded in `CAPABILITY_AUDIT.md`. Do not use these target-flow descriptions as evidence that an area is implemented.
+The flows above describe target behavior, not the current CLI. Today commands use fixed named dispatch. `do` and `chat` expose only approved CSV/document analysis. `run agent-fix` can transfer one consented redacted source file to the selected provider, accept a single full-file replacement candidate, preview/hash it, and apply after exact approval; a separate selected Node test approval follows. It does not resolve general workflows or make multi-file diffs. The registry validates built-in declarative definitions but does not execute them. Current capability evidence and limitations are in `CAPABILITY_AUDIT.md` and `task.md`.
 
 ## Approved target flows and required gates
 

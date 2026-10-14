@@ -8,7 +8,7 @@ import { tmpdir } from "node:os";
 import { createInterface } from "node:readline/promises";
 import { ConfigurationError, formatStoreConfigurationSummary, loadProviderConfiguration, loadStoreConfiguration } from "./config.js";
 import { AgentBudgetLedger, AgentToolError, runToolLoop } from "./agent/tool-loop.js";
-import { createCsvAnalysisTool, createDocumentAnalysisTool, TASKFORGE_AGENT_SYSTEM_MESSAGE } from "./agent/session-tools.js";
+import { createCsvAnalysisTool, createDocumentAnalysisTool, createPatchProposalTool, TASKFORGE_AGENT_SYSTEM_MESSAGE } from "./agent/session-tools.js";
 import { BUILT_IN_TASKS, getBuiltInTask, TaskRegistryError, validateTaskInputs } from "./agent/task-registry.js";
 import { runSpecialistReview, type SpecialistTask, SpecialistReviewError } from "./agent/specialist-review.js";
 import {
@@ -26,11 +26,11 @@ import { PathPolicyError, WorkspacePathPolicy } from "./security/path-policy.js"
 import { CsvWorkflowError, resumeCsvAnalysisWorkflow, runCsvAnalysisWorkflow, type CsvWorkflowResult } from "./workflows/csv-analysis-workflow.js";
 import { inspectRepository, RepositoryInspectionError } from "./workflows/repository-inspection-workflow.js";
 import { analyzeDocument, DocumentWorkflowError, resumeDocumentAnalysisWorkflow } from "./workflows/document-analysis-workflow.js";
-import { runReviewedCommand, type ReviewedCommandId, ReviewedCommandError } from "./software/reviewed-command.js";
+import { runReviewedCommand, validateSelectedNodeTestPath, type ReviewedCommandId, ReviewedCommandError } from "./software/reviewed-command.js";
 import { redactSourceForDisplay, reviewSourceFiles, SourceReviewError } from "./workflows/source-review-workflow.js";
 import { ActionApprovalRegistry, ApprovalError } from "./security/approval-preview.js";
 import { previewPdfArtifact, PdfArtifactError, writeApprovedPdfArtifact } from "./artifacts/approved-pdf-output.js";
-import { prepareFilePatch, applyPreparedFilePatch, PatchApplicationError } from "./software/patch-application.js";
+import { prepareFilePatch, prepareGeneratedFilePatch, applyPreparedFilePatch, PatchApplicationError } from "./software/patch-application.js";
 import { GitDiffReviewError, listGitDiffFiles, readGitDiff } from "./software/git-diff-review.js";
 import { investigateSource, ModelInvestigationError } from "./software/model-investigation.js";
 import { GitHubReadError, readPublicIssues } from "./integrations/github-public-issues.js";
@@ -51,7 +51,7 @@ import type { ScheduleRecord, ScheduleWorkflowId } from "./mongo-store.js";
 
 const helpText = `TaskForge ${packageJson.version} (early development)
 
-Usage: taskforge [--help | --version | config | doctor | model-check | do <instruction> | chat | tasks list | tasks inspect <task-id> | tasks validate <task-id> --inputs-json <object> | permissions approve/list/revoke | run csv-analyze --input <path> [--numeric-column <header>]... [--output <new.json|csv|md>] | run document-analyze --input <path> [--output <new.json|csv|md>] | run data-specialist --input <path> --goal <question> | run browser-audit --url <url> [--journey <json-array>] [--origin <https-origin>]... [--specialist] | run document-convert --input <path> --output <new.txt> | run file-move --source <file> --target <new-file> | run ... | resume <run-id> --input <path> [--numeric-column <header>]... | history list | schedule ...]
+Usage: taskforge [--help | --version | config | doctor | model-check | do <instruction> | chat | tasks list | tasks inspect <task-id> | tasks validate <task-id> --inputs-json <object> | permissions approve/list/revoke | run csv-analyze --input <path> [--numeric-column <header>]... [--output <new.json|csv|md>] | run document-analyze --input <path> [--output <new.json|csv|md>] | run agent-fix --root <directory> --target <relative-source> --goal <instruction> --test <relative-test.mjs> | run data-specialist --input <path> --goal <question> | run browser-audit --url <url> [--journey <json-array>] [--origin <https-origin>]... [--specialist] | run document-convert --input <path> --output <new.txt> | run file-move --source <file> --target <new-file> | run ... | resume <run-id> --input <path> [--numeric-column <header>]... | history list | schedule ...]
 
 The config command validates local settings and prints a redacted summary.
 The doctor command checks the selected local SQLite or MongoDB storage and reports available setup areas.
@@ -63,6 +63,7 @@ The csv-analyze workflow reads one explicitly approved CSV file, stores redacted
 The repo-inspect workflow inventories one explicitly approved repository root without reading file contents or running commands.
 The source-review workflow reads only explicitly selected source files and displays bounded, locally redacted content; it does not send or persist source.
 The file-patch workflow shows redacted current and replacement text, then applies one content-bound replacement only after exact approval.
+The agent-fix workflow sends one explicitly approved, heuristically redacted source file and goal to the selected model, previews a full-file candidate, applies it only after a separate exact approval, then asks permission to run one selected Node test. It cannot read other files or create commits.
 The file-move workflow moves one supported document or data file after exact approval; source read/write and destination write folder grants are required, and the destination must be on the same filesystem volume.
 The git-diff workflow displays a bounded, locally redacted staged diff after exact root and file approval; it does not call a model or persist source.
 The model-investigate workflow sends selected, heuristically redacted source to the configured model only after an additional explicit transfer confirmation; it runs no tools and persists no source or findings.
@@ -1125,6 +1126,149 @@ async function runFilePatchCommand(commandArgs: readonly string[]): Promise<void
     const message = error instanceof PatchApplicationError || error instanceof PersistentFolderApprovalError ? error.message : "File patch failed safely.";
     process.stderr.write(`File patch failed: ${message}\n`);
     process.exitCode = 3;
+  }
+}
+
+async function runAgentFixCommand(commandArgs: readonly string[]): Promise<void> {
+  const values = new Map<string, string>();
+  for (let index = 0; index < commandArgs.length;) {
+    const key = commandArgs[index];
+    const value = commandArgs[index + 1];
+    if ((key !== "--root" && key !== "--target" && key !== "--goal" && key !== "--test") ||
+        value === undefined || values.has(key)) {
+      process.stderr.write("Expected --root <directory> --target <relative-source-file> --goal <instruction> --test <relative-test-file>.\n");
+      process.exitCode = 1;
+      return;
+    }
+    values.set(key, value);
+    index += 2;
+  }
+  const rootValue = values.get("--root");
+  const target = values.get("--target");
+  const goal = values.get("--goal");
+  const testFile = values.get("--test");
+  if (values.size !== 4 || rootValue === undefined || target === undefined || goal === undefined || testFile === undefined ||
+      goal.trim().length === 0 || Buffer.byteLength(goal, "utf8") > 2_000) {
+    process.stderr.write("Provide a root, one relative source target, a goal up to 2,000 bytes, and one relative Node test file.\n");
+    process.exitCode = 1;
+    return;
+  }
+  if (!process.stdin.isTTY || !process.stdout.isTTY) {
+    process.stderr.write("Agent fixes require an interactive terminal for source transfer, patch, and check approval.\n");
+    process.exitCode = 2;
+    return;
+  }
+
+  let rootPath: string;
+  let providerConfiguration;
+  try {
+    rootPath = await realpath(resolve(rootValue));
+    providerConfiguration = loadProviderConfiguration();
+  } catch (error: unknown) {
+    process.stderr.write(error instanceof ConfigurationError ? `Agent fix setup error: ${error.message}\n` : "The approved repository root could not be resolved.\n");
+    process.exitCode = 2;
+    return;
+  }
+  const consent = createInterface({ input: process.stdin, output: process.stdout });
+  let answer: string;
+  try {
+    answer = await consent.question(`Read this exact target and check path in the approved root?\nRoot: ${escapeTerminalControls(rootPath)}\nTarget: ${escapeTerminalControls(target)}\nGoal: ${escapeTerminalControls(goal)}\nVerification test: ${escapeTerminalControls(testFile)}\nOnly a locally heuristically redacted target excerpt may be sent to the selected provider. [y/N] `);
+  } finally {
+    consent.close();
+  }
+  if (answer.trim().toLowerCase() !== "y") {
+    process.stdout.write("Agent fix cancelled before repository access.\n");
+    return;
+  }
+
+  const controller = new AbortController();
+  const handleInterrupt = (): void => controller.abort();
+  process.once("SIGINT", handleInterrupt);
+  try {
+    const policy = new WorkspacePathPolicy();
+    const root = await policy.approveRoot(rootPath);
+    await requirePersistentFolderApproval(root.path, "read");
+    await requirePersistentFolderApproval(root.path, "write");
+    const selectedTest = await validateSelectedNodeTestPath(root, policy, testFile);
+    const targetPath = resolve(root.path, target);
+    const targetIsTest = process.platform === "win32"
+      ? targetPath.toLowerCase() === selectedTest.canonicalPath.toLowerCase()
+      : targetPath === selectedTest.canonicalPath;
+    if (targetIsTest) throw new ReviewedCommandError("The patch target and verification test must be different files.");
+    const files = await reviewSourceFiles(root, policy, [target]);
+    const file = files[0];
+    if (file === undefined || file.content.includes("[REDACTED:")) {
+      throw new SourceReviewError("The selected source contains redacted credential-like text; full-file generated replacement is refused to avoid copying or deleting hidden material.");
+    }
+    const transferText = `${file.path}\n${file.content}\n\nGoal: ${goal}`;
+    if (Buffer.byteLength(transferText, "utf8") > 24 * 1024) throw new SourceReviewError("The target and goal exceed the 24 KiB model-input limit.");
+    process.stdout.write(`\n--- REDACTED SOURCE ${file.path} (${file.byteCount} bytes, ${file.lineCount} lines) ---\n${escapeTerminalControls(file.content)}\n`);
+    const provider = createModelProvider(providerConfiguration);
+    const transferConsent = createInterface({ input: process.stdin, output: process.stdout });
+    let transferAnswer: string;
+    try {
+      transferAnswer = await transferConsent.question(`Send this exact redacted source and goal to ${providerConfiguration.kind} (${provider.model}) to generate a full-file replacement? Redaction can miss secrets. The model has only a replacement-proposal tool; it cannot read files, run commands, or write. [y/N] `);
+    } finally {
+      transferConsent.close();
+    }
+    if (transferAnswer.trim().toLowerCase() !== "y") {
+      process.stdout.write("Agent fix cancelled before provider transfer.\n");
+      return;
+    }
+
+    let replacement: string | undefined;
+    const result = await runToolLoop(
+      provider.provider,
+      provider.model,
+      [
+        { role: "system", content: "You are TaskForge's code change proposer. You may only call propose_replacement with a complete replacement for the single supplied source file. Do not claim changes were applied or tests run. If the request is unclear, explain the ambiguity without calling the tool. Preserve unrelated behavior and avoid adding dependencies or permission expansion." },
+        { role: "user", content: `Target: ${file.path}\nGoal: ${goal}\nCurrent redacted source:\n${file.content}` },
+      ],
+      [createPatchProposalTool((value) => { replacement = value; })],
+      { maxModelRequests: 8, maxToolActions: 1, signal: controller.signal },
+    );
+    if (replacement === undefined) {
+      if (result.content.length > 0) process.stdout.write(`TaskForge> ${escapeTerminalControls(result.content)}\n`);
+      process.stdout.write("No replacement preview was generated; the target was not changed.\n");
+      return;
+    }
+    if (redactSourceForDisplay(replacement) !== replacement) {
+      throw new PatchApplicationError("The generated replacement contains credential-like text that would be hidden in the review; candidate refused.");
+    }
+    const approvals = new ActionApprovalRegistry(policy);
+    const prepared = await prepareGeneratedFilePatch(root, policy, approvals, target, replacement);
+    const current = await reviewSourceFiles(root, policy, [target]);
+    const currentFile = current[0];
+    if (currentFile === undefined || currentFile.content.includes("[REDACTED:")) {
+      approvals.discard(prepared.preview.previewId);
+      throw new SourceReviewError("The target changed or contains credential-like text; generated preview discarded.");
+    }
+    process.stdout.write(`\n--- CURRENT ${escapeTerminalControls(currentFile.path)} (SHA-256 of replacement ${prepared.sha256}) ---\n${escapeTerminalControls(currentFile.content)}\n`);
+    process.stdout.write(`\n--- GENERATED REPLACEMENT (SHA-256 ${prepared.sha256}) ---\n${escapeTerminalControls(redactSourceForDisplay(prepared.content))}\n`);
+    const patchConsent = createInterface({ input: process.stdin, output: process.stdout });
+    let patchAnswer: string;
+    try {
+      patchAnswer = await patchConsent.question(`Apply this exact generated replacement to ${prepared.preview.targetPath}? The current target snapshot is bound to this preview and revalidated before writing. [y/N] `);
+    } finally {
+      patchConsent.close();
+    }
+    if (patchAnswer.trim().toLowerCase() !== "y") {
+      approvals.discard(prepared.preview.previewId);
+      process.stdout.write("Generated patch declined; target unchanged.\n");
+      return;
+    }
+    const approval = approvals.approve(prepared.preview.previewId);
+    await applyPreparedFilePatch(prepared, approval, approvals);
+    process.stdout.write(`Generated replacement applied to ${prepared.preview.targetPath}. Now approve the relevant fixed Node test.\n`);
+    await runSoftwareCheckCommand(["--root", root.path, "--check", "node-test", "--test", testFile]);
+  } catch (error: unknown) {
+    const message = error instanceof PatchApplicationError || error instanceof SourceReviewError || error instanceof PersistentFolderApprovalError
+      ? error.message
+      : error instanceof ModelProviderError ? error.message : "Agent fix failed safely; inspect the target before retrying.";
+    process.stderr.write(`Agent fix failed: ${message}\n`);
+    process.exitCode = controller.signal.aborted || (error instanceof ModelProviderError && error.kind === "cancelled") ? 130 : 3;
+  } finally {
+    process.off("SIGINT", handleInterrupt);
   }
 }
 
@@ -2421,6 +2565,8 @@ if (args.length === 0 || (args.length === 1 && (args[0] === "--help" || args[0] 
   await runPdfReportCommand(args.slice(2));
 } else if (args.length >= 2 && args[0] === "run" && args[1] === "file-patch") {
   await runFilePatchCommand(args.slice(2));
+} else if (args.length >= 2 && args[0] === "run" && args[1] === "agent-fix") {
+  await runAgentFixCommand(args.slice(2));
 } else if (args.length >= 2 && args[0] === "run" && args[1] === "file-move") {
   await runFileMoveCommand(args.slice(2));
 } else if (args.length >= 2 && args[0] === "run" && args[1] === "git-diff") {

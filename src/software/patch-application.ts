@@ -93,6 +93,45 @@ export async function prepareFilePatch(
   }
 }
 
+export async function prepareGeneratedFilePatch(
+  root: ApprovedRoot,
+  policy: WorkspacePathPolicy,
+  approvals: ActionApprovalRegistry,
+  targetValue: unknown,
+  contentValue: unknown,
+): Promise<PreparedFilePatch> {
+  if (typeof targetValue !== "string" || targetValue.trim().length === 0 || isAbsolute(targetValue) ||
+      typeof contentValue !== "string" || Buffer.byteLength(contentValue, "utf8") > MAX_PATCH_BYTES || contentValue.includes("\u0000")) {
+    throw new PatchApplicationError("Generated replacement must be bounded UTF-8 text for one explicit relative target.");
+  }
+  const rootPath = resolve(root.path);
+  if (!policy.listApprovedRoots().some((entry) => resolve(entry.path) === rootPath)) throw new PatchApplicationError("Repository root approval is required.");
+  const targetPath = resolve(rootPath, targetValue);
+  if (!isInside(rootPath, targetPath) || !SOURCE_EXTENSIONS.has(extname(targetPath).toLowerCase())) {
+    throw new PatchApplicationError("Generated patch target must be a supported source file inside the approved root.");
+  }
+  try {
+    const authorized = await policy.authorizePath(targetPath, "read");
+    const targetStats = await lstat(targetPath);
+    const targetPathMatches = process.platform === "win32"
+      ? authorized.path.toLowerCase() === targetPath.toLowerCase()
+      : authorized.path === targetPath;
+    if (!targetPathMatches || targetStats.isSymbolicLink() || !targetStats.isFile() || targetStats.size > MAX_PATCH_BYTES) {
+      throw new PatchApplicationError("Generated patch target must be a regular source file no larger than 128 KiB; links are not supported.");
+    }
+    const preview = await approvals.preview({ kind: "write", targetPath, content: contentValue });
+    if (!preview.targetExists) {
+      approvals.discard(preview.previewId);
+      throw new PatchApplicationError("A generated patch must replace an existing file.");
+    }
+    const sha256 = createHash("sha256").update(contentValue, "utf8").digest("hex");
+    return { preview, content: contentValue, sha256 };
+  } catch (error: unknown) {
+    if (error instanceof PatchApplicationError) throw error;
+    throw new PatchApplicationError();
+  }
+}
+
 export async function applyPreparedFilePatch(
   prepared: PreparedFilePatch,
   approval: ApprovedAction,

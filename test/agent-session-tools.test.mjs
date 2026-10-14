@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { AgentBudgetLedger, AgentToolError, runToolLoop } from "../dist/agent/tool-loop.js";
-import { createCsvAnalysisTool, createDocumentAnalysisTool, TASKFORGE_AGENT_SYSTEM_MESSAGE } from "../dist/agent/session-tools.js";
+import { createCsvAnalysisTool, createDocumentAnalysisTool, createPatchProposalTool, TASKFORGE_AGENT_SYSTEM_MESSAGE } from "../dist/agent/session-tools.js";
 
 test("CSV agent tool has a fixed schema and rejects malformed or extra arguments", () => {
   const tool = createCsvAnalysisTool(async () => "not reached");
@@ -93,4 +93,19 @@ test("document agent tool accepts one exact path and returns only the host analy
   assert.equal(result.toolActions, 1);
   assert.equal(executed, 1);
   assert.equal(requests, 2);
+});
+
+test("patch proposal tool captures a bounded candidate without approving or applying it", async () => {
+  let candidate;
+  const tool = createPatchProposalTool((replacement) => { candidate = replacement; });
+  assert.equal(tool.definition.name, "propose_replacement");
+  assert.equal(tool.definition.parameters.additionalProperties, false);
+  const args = { replacement: "export const value = 2;\n" };
+  assert.deepEqual(tool.validateArguments(args), args);
+  assert.throws(() => tool.validateArguments({ ...args, permissions: ["write"] }), AgentToolError);
+  assert.throws(() => tool.validateArguments({ replacement: "\u0000" }), AgentToolError);
+  assert.throws(() => tool.validateArguments({ replacement: "x".repeat(128 * 1024 + 1) }), AgentToolError);
+  const result = await tool.execute(args);
+  assert.match(result, /not applied/u);
+  assert.equal(candidate, args.replacement);
 });
