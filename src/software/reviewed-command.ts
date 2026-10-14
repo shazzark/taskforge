@@ -1,7 +1,7 @@
 import { spawn, spawnSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { lstat, mkdir, mkdtemp, readFile, realpath, stat } from "node:fs/promises";
-import { extname, isAbsolute, join, resolve } from "node:path";
+import { lstat, mkdir, mkdtemp, readFile, realpath, rm, stat, readdir, writeFile } from "node:fs/promises";
+import { basename, extname, isAbsolute, join, relative, resolve } from "node:path";
 import type { MongoStore, RunSummary } from "../mongo-store.js";
 import type { ApprovedRoot, WorkspacePathPolicy } from "../security/path-policy.js";
 
@@ -9,9 +9,12 @@ const MAX_RUNTIME_MS = 120_000;
 const MAX_CAPTURED_OUTPUT_BYTES = 64 * 1024;
 const MAX_SELECTED_TEST_BYTES = 2 * 1024 * 1024;
 const WORKFLOW_ID = "software-check";
+const BUILD_PREFIX = ".taskforge-build-";
+const BUILD_OWNER_FILE = ".taskforge-owner.json";
+const STALE_BUILD_AGE_MS = 24 * 60 * 60 * 1_000;
 
 export type ReviewedCommandId = "node-test" | "node-test-selected" | "typescript-check" | "typescript-build";
-export type ReviewedCommandStatus = "passed" | "failed" | "timed_out" | "could_not_start";
+export type ReviewedCommandStatus = "passed" | "failed" | "timed_out" | "cancelled" | "could_not_start";
 
 export interface ReviewedCommandResult {
   readonly run: RunSummary;
@@ -71,8 +74,79 @@ async function approvedTscPath(root: ApprovedRoot, policy: WorkspacePathPolicy):
   }
 }
 
-async function buildArguments(root: ApprovedRoot, policy: WorkspacePathPolicy): Promise<readonly string[]> {
+interface BuildPreparation {
+  readonly arguments: readonly string[];
+  readonly outputDirectory: string;
+  readonly ownerToken: string;
+}
+
+async function removeOwnedBuildDirectory(directory: string, ownerToken: string): Promise<void> {
+  try {
+    const stats = await lstat(directory);
+    if (!stats.isDirectory() || stats.isSymbolicLink()) return;
+    const ownerPath = join(directory, BUILD_OWNER_FILE);
+    const ownerStats = await lstat(ownerPath);
+    if (!ownerStats.isFile() || ownerStats.isSymbolicLink()) return;
+    const owner: unknown = JSON.parse(await readFile(ownerPath, "utf8"));
+    if (typeof owner !== "object" || owner === null || !("pid" in owner) || owner.pid !== process.pid ||
+        !("directoryId" in owner) || owner.directoryId !== ownerToken || basename(directory).slice(BUILD_PREFIX.length) !== ownerToken ||
+        !(await containsOnlyBuildOutputs(directory, ownerPath))) return;
+    await rm(directory, { recursive: true, force: false });
+  } catch {
+    // Preserve any artifact whose ownership or contents cannot be verified.
+  }
+}
+
+async function reapStaleBuildDirectories(rootPath: string): Promise<void> {
+  let entries: string[];
+  try { entries = await readdir(rootPath); } catch { return; }
+  for (const entry of entries) {
+    if (!entry.startsWith(BUILD_PREFIX)) continue;
+    const directory = join(rootPath, entry);
+    try {
+      const directoryStats = await lstat(directory);
+      if (!directoryStats.isDirectory() || directoryStats.isSymbolicLink() || Date.now() - directoryStats.mtimeMs < STALE_BUILD_AGE_MS) continue;
+      const ownerPath = join(directory, BUILD_OWNER_FILE);
+      const ownerStats = await lstat(ownerPath);
+      if (!ownerStats.isFile() || ownerStats.isSymbolicLink()) continue;
+      const owner: unknown = JSON.parse(await readFile(ownerPath, "utf8"));
+      const directoryId = entry.slice(BUILD_PREFIX.length);
+      if (typeof owner !== "object" || owner === null || !("pid" in owner) || typeof owner.pid !== "number" ||
+          !Number.isSafeInteger(owner.pid) || owner.pid < 1 || !("directoryId" in owner) ||
+          owner.directoryId !== directoryId || !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}-[A-Za-z0-9]{6}$/iu.test(directoryId)) continue;
+      try { process.kill(owner.pid, 0); }
+      catch (error: unknown) {
+        if (typeof error === "object" && error !== null && "code" in error && error.code === "ESRCH") {
+          if (await containsOnlyBuildOutputs(directory, ownerPath)) await rm(directory, { recursive: true, force: false });
+        }
+      }
+    } catch {
+      // Unknown or changing artifacts are retained for safety.
+    }
+  }
+}
+
+async function containsOnlyBuildOutputs(directory: string, ownerPath: string): Promise<boolean> {
+  const pending = [directory];
+  while (pending.length > 0) {
+    const current = pending.pop();
+    if (current === undefined) continue;
+    for (const entry of await readdir(current, { withFileTypes: true })) {
+      const path = join(current, entry.name);
+      if (path === ownerPath) continue;
+      if (entry.isSymbolicLink()) return false;
+      if (entry.isDirectory()) pending.push(path);
+      else if (!entry.isFile() || !/\.(?:[cm]?js|jsx|map|d\.ts|tsbuildinfo)$/iu.test(entry.name)) return false;
+      if (relative(directory, path).startsWith("..")) return false;
+    }
+  }
+  return true;
+}
+
+async function buildArguments(root: ApprovedRoot, policy: WorkspacePathPolicy): Promise<BuildPreparation> {
   const rootPath = resolve(root.path);
+  let outputDirectoryForCleanup: string | undefined;
+  let ownerTokenForCleanup: string | undefined;
   try {
     const compilerPath = await approvedTscPath(root, policy);
     const configResult = spawnSync(process.execPath, [compilerPath, "--showConfig"], {
@@ -96,7 +170,12 @@ async function buildArguments(root: ApprovedRoot, policy: WorkspacePathPolicy): 
       throw new ReviewedCommandError("TypeScript trace and CPU profile output options are not supported by the approved build.");
     }
 
-    const outputDirectory = await mkdtemp(join(rootPath, ".taskforge-build-"));
+    await reapStaleBuildDirectories(rootPath);
+    const outputDirectory = await mkdtemp(join(rootPath, `${BUILD_PREFIX}${randomUUID()}-`));
+    outputDirectoryForCleanup = outputDirectory;
+    const runToken = basename(outputDirectory).slice(BUILD_PREFIX.length);
+    ownerTokenForCleanup = runToken;
+    await writeFile(join(outputDirectory, BUILD_OWNER_FILE), JSON.stringify({ pid: process.pid, directoryId: runToken }), { flag: "wx" });
     if ((await realpath(outputDirectory)) !== outputDirectory) throw new ReviewedCommandError("The build output directory must remain under the approved root.");
     const declarationDirectory = join(outputDirectory, "types");
     const arguments_: string[] = [
@@ -111,15 +190,19 @@ async function buildArguments(root: ApprovedRoot, policy: WorkspacePathPolicy): 
     if (("incremental" in options && options.incremental === true) || ("composite" in options && options.composite === true)) {
       arguments_.push("--tsBuildInfoFile", join(outputDirectory, "taskforge.tsbuildinfo"));
     }
-    return arguments_;
+    return { arguments: arguments_, outputDirectory, ownerToken: runToken };
   } catch (error: unknown) {
+    if (outputDirectoryForCleanup !== undefined && ownerTokenForCleanup !== undefined) {
+      await removeOwnedBuildDirectory(outputDirectoryForCleanup, ownerTokenForCleanup);
+    }
     if (error instanceof ReviewedCommandError) throw error;
     throw new ReviewedCommandError("TypeScript build configuration or output path could not be validated.");
   }
 }
 
-function runChildProcess(executable: string, arguments_: readonly string[], cwd: string): Promise<ProcessResult> {
+function runChildProcess(executable: string, arguments_: readonly string[], cwd: string, signal?: AbortSignal): Promise<ProcessResult> {
   const startedAt = Date.now();
+  if (signal?.aborted === true) return Promise.resolve({ exitCode: null, status: "cancelled", durationMs: 0, outputTruncated: false, observedOutputBytes: 0 });
   let outputBytes = 0;
   let outputTruncated = false;
   return new Promise((resolveResult) => {
@@ -152,16 +235,24 @@ function runChildProcess(executable: string, arguments_: readonly string[], cwd:
     child.stderr?.on("data", countOutput);
     let finished = false;
     let timedOut = false;
+    let cancelled = false;
     const finish = (result: ProcessResult): void => {
       if (finished) return;
       finished = true;
       clearTimeout(timeout);
+      signal?.removeEventListener("abort", onAbort);
       resolveResult(result);
     };
+    const onAbort = (): void => {
+      cancelled = true;
+      terminateProcessTree(child);
+    };
+    signal?.addEventListener("abort", onAbort, { once: true });
     const timeout = setTimeout(() => {
       timedOut = true;
       terminateProcessTree(child);
     }, MAX_RUNTIME_MS);
+    if (signal?.aborted === true) onAbort();
     child.once("error", () => {
       finish({
         exitCode: null,
@@ -174,7 +265,7 @@ function runChildProcess(executable: string, arguments_: readonly string[], cwd:
     child.once("close", (code) => {
       finish({
         exitCode: timedOut ? null : code,
-        status: timedOut ? "timed_out" : "completed",
+        status: cancelled ? "cancelled" : timedOut ? "timed_out" : "completed",
         durationMs: Date.now() - startedAt,
         outputTruncated,
         observedOutputBytes: Math.min(outputBytes, MAX_CAPTURED_OUTPUT_BYTES),
@@ -198,6 +289,7 @@ function terminateProcessTree(child: ReturnType<typeof spawn>): void {
       env: safeEnvironment(), shell: false, windowsHide: true, stdio: "ignore",
     });
     taskkill.once("error", () => child.kill());
+    child.kill();
     return;
   }
   try {
@@ -256,6 +348,7 @@ export async function runReviewedCommand(
   policy: WorkspacePathPolicy,
   command: unknown,
   selectedTestPath?: unknown,
+  signal?: AbortSignal,
 ): Promise<ReviewedCommandResult> {
   if (command !== "node-test" && command !== "typescript-check" && command !== "typescript-build") {
     throw new ReviewedCommandError("Allowed checks are node-test, typescript-check, and typescript-build.");
@@ -267,6 +360,8 @@ export async function runReviewedCommand(
 
   let executable = process.execPath;
   let effectiveCommand: ReviewedCommandId = command;
+  let buildOutputDirectory: string | undefined;
+  let buildOwnerToken: string | undefined;
   let selectedTest: SelectedTestIdentity | undefined;
   let arguments_: readonly string[] = command === "node-test" ? ["--test"] : [];
   if (selectedTestPath !== undefined) {
@@ -277,11 +372,16 @@ export async function runReviewedCommand(
   }
   if (command === "typescript-check" || command === "typescript-build") {
     executable = process.execPath;
-    arguments_ = command === "typescript-check"
-      ? [await approvedTscPath(root, policy), "--noEmit"]
-      : await buildArguments(root, policy);
+    if (command === "typescript-check") arguments_ = [await approvedTscPath(root, policy), "--noEmit"];
+    else {
+      const build = await buildArguments(root, policy);
+      arguments_ = build.arguments;
+      buildOutputDirectory = build.outputDirectory;
+      buildOwnerToken = build.ownerToken;
+    }
   }
 
+  try {
   const runId = randomUUID();
   await store.saveRunSummary({
     runId,
@@ -302,7 +402,7 @@ export async function runReviewedCommand(
         throw new ReviewedCommandError("Selected test changed after approval; approve a fresh test snapshot.");
       }
     }
-    processResult = await runChildProcess(executable, arguments_, approvedRoot);
+    processResult = await runChildProcess(executable, arguments_, approvedRoot, signal);
   } catch (error: unknown) {
     if (!(error instanceof ReviewedCommandError)) throw error;
     processResult = {
@@ -341,4 +441,9 @@ export async function runReviewedCommand(
     outputTruncated: processResult.outputTruncated,
     observedOutputBytes: processResult.observedOutputBytes,
   };
+  } finally {
+    if (buildOutputDirectory !== undefined && buildOwnerToken !== undefined) {
+      await removeOwnedBuildDirectory(buildOutputDirectory, buildOwnerToken);
+    }
+  }
 }

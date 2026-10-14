@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, readFile, readdir, rename, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, readdir, rename, rm, symlink, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import test from "node:test";
@@ -88,27 +88,57 @@ test("approved TypeScript build invokes only the local compiler and records buil
     await mkdir(join(rootPath, "src"));
     const compilerPath = join(rootPath, "node_modules", "typescript", "bin", "tsc");
     await mkdir(join(rootPath, "node_modules", "typescript", "bin"), { recursive: true });
-    await writeFile(compilerPath, "import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';\nif (process.argv.includes('--showConfig')) { console.log(JSON.stringify({ compilerOptions: JSON.parse(readFileSync('tsconfig.json', 'utf8')).compilerOptions })); } else { const output = process.argv[process.argv.indexOf('--outDir') + 1]; mkdirSync(output, { recursive: true }); writeFileSync(`${output}/build-marker.txt`, 'built'); }\n", "utf8");
+    await writeFile(compilerPath, "import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';\nif (process.argv.includes('--showConfig')) { console.log(JSON.stringify({ compilerOptions: JSON.parse(readFileSync('tsconfig.json', 'utf8')).compilerOptions })); } else { const config = JSON.parse(readFileSync('tsconfig.json', 'utf8')); if (config.failBuild) process.exit(9); if (config.delayBuild) setTimeout(() => {}, 30000); const output = process.argv[process.argv.indexOf('--outDir') + 1]; mkdirSync(output, { recursive: true }); writeFileSync(`${output}/build-marker.js`, 'built'); }\n", "utf8");
     await writeFile(join(rootPath, "src", "index.ts"), "export const marker = true;\n", "utf8");
     const escapingOutput = join(rootPath, "..", "outside-build-output");
     await writeFile(join(rootPath, "tsconfig.json"), JSON.stringify({ compilerOptions: { outDir: escapingOutput, declarationDir: escapingOutput, tsBuildInfoFile: join(escapingOutput, "build.tsbuildinfo") }, include: ["src/**/*.ts"] }));
     const policy = new WorkspacePathPolicy();
     const root = await policy.approveRoot(rootPath);
     const persistence = createPersistenceRecorder();
+    const fixtureBuildId = "123e4567-e89b-42d3-a456-426614174000";
+    const stalePath = join(rootPath, `.taskforge-build-${fixtureBuildId}-stale1`);
+    const activePath = join(rootPath, `.taskforge-build-${fixtureBuildId}-active1`);
+    const mixedPath = join(rootPath, `.taskforge-build-${fixtureBuildId}-mixed1`);
+    for (const [path, pid] of [[stalePath, 2147483647], [activePath, process.pid]]) {
+      await mkdir(path);
+      await writeFile(join(path, ".taskforge-owner.json"), JSON.stringify({ pid, directoryId: basename(path).slice(".taskforge-build-".length) }));
+      await writeFile(join(path, "artifact.js"), "compiled");
+      await utimes(path, new Date(Date.now() - 26 * 60 * 60 * 1_000), new Date(Date.now() - 26 * 60 * 60 * 1_000));
+    }
+    await mkdir(mixedPath);
+    await writeFile(join(mixedPath, ".taskforge-owner.json"), JSON.stringify({ pid: 2147483647, directoryId: basename(mixedPath).slice(".taskforge-build-".length) }));
+    await writeFile(join(mixedPath, "report.json"), JSON.stringify({ preserve: "user report" }));
+    await utimes(mixedPath, new Date(Date.now() - 26 * 60 * 60 * 1_000), new Date(Date.now() - 26 * 60 * 60 * 1_000));
     const result = await runReviewedCommand(persistence, root, policy, "typescript-build");
     assert.equal(result.command, "typescript-build");
     assert.equal(result.status, "passed");
     assert.equal(result.exitCode, 0);
     assert.equal(result.run.state, "completed");
     const outputDirectories = (await readdir(rootPath)).filter((entry) => entry.startsWith(".taskforge-build-"));
-    assert.equal(outputDirectories.length, 1);
-    assert.equal((await readFile(join(rootPath, outputDirectories[0], "build-marker.txt"), "utf8")), "built");
+    assert.deepEqual(outputDirectories.sort(), [basename(activePath), basename(mixedPath)].sort());
+    assert.equal((await readFile(join(activePath, "artifact.js"), "utf8")), "compiled");
+    assert.deepEqual(JSON.parse(await readFile(join(mixedPath, "report.json"), "utf8")), { preserve: "user report" });
     assert.equal(JSON.stringify([...persistence.state.runs.values()]).includes("build-marker"), false);
     await writeFile(outsideBundle, "// outside target\n", "utf8");
     await writeFile(join(rootPath, "tsconfig.json"), JSON.stringify({ compilerOptions: { outFile: outsideBundle }, include: ["src/**/*.ts"] }));
     await assert.rejects(runReviewedCommand(persistence, root, policy, "typescript-build"), /does not support configured outFile/u);
     await writeFile(join(rootPath, "tsconfig.json"), JSON.stringify({ compilerOptions: { generateTrace: join(rootPath, "..", "outside-trace") }, include: ["src/**/*.ts"] }));
     await assert.rejects(runReviewedCommand(persistence, root, policy, "typescript-build"), /trace and CPU profile output/u);
+    await writeFile(join(rootPath, "tsconfig.json"), JSON.stringify({ compilerOptions: {}, failBuild: true, include: ["src/**/*.ts"] }));
+    const failedBuild = await runReviewedCommand(persistence, root, policy, "typescript-build");
+    assert.equal(failedBuild.status, "failed");
+    assert.deepEqual((await readdir(rootPath)).filter((entry) => entry.startsWith(".taskforge-build-")).sort(), [basename(activePath), basename(mixedPath)].sort());
+
+    await assert.rejects(runReviewedCommand({ ...persistence, async saveRunSummary() { throw new Error("simulated persistence interruption"); } }, root, policy, "typescript-build"), /simulated persistence interruption/u);
+    assert.deepEqual((await readdir(rootPath)).filter((entry) => entry.startsWith(".taskforge-build-")).sort(), [basename(activePath), basename(mixedPath)].sort());
+
+    await writeFile(join(rootPath, "tsconfig.json"), JSON.stringify({ compilerOptions: {}, delayBuild: true, include: ["src/**/*.ts"] }));
+    const cancellation = new AbortController();
+    const pendingBuild = runReviewedCommand(persistence, root, policy, "typescript-build", undefined, cancellation.signal);
+    setTimeout(() => cancellation.abort(), 500);
+    const cancelledBuild = await pendingBuild;
+    assert.equal(cancelledBuild.status, "cancelled");
+    assert.deepEqual((await readdir(rootPath)).filter((entry) => entry.startsWith(".taskforge-build-")).sort(), [basename(activePath), basename(mixedPath)].sort());
   } finally {
     await rm(outsideBundle, { force: true });
     await rm(rootPath, { recursive: true, force: true });

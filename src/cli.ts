@@ -854,7 +854,7 @@ async function runSoftwareCheckCommand(commandArgs: readonly string[]): Promise<
       ? selectedTestFile === undefined
         ? "node --test (runs the repository test code)"
         : `node --test for ${escapeTerminalControls(selectedTestFile)} (runs that repository test file)`
-      : command === "typescript-check" ? "local TypeScript compiler --noEmit" : "local TypeScript compiler build (outputs go to a new .taskforge-build-* folder under the approved root; configured outFile is rejected)";
+      : command === "typescript-check" ? "local TypeScript compiler --noEmit" : "local TypeScript compiler build (temporary output is removed after the check; configured outFile is rejected)";
     const commandConsent = createInterface({ input: process.stdin, output: process.stdout });
     let commandAnswer: string;
     try {
@@ -867,7 +867,15 @@ async function runSoftwareCheckCommand(commandArgs: readonly string[]): Promise<
       return;
     }
 
-    const result = await withMongoStore((store) => runReviewedCommand(store, approvedRoot, policy, command, selectedTestFile));
+    const controller = new AbortController();
+    const handleInterrupt = (): void => controller.abort();
+    process.once("SIGINT", handleInterrupt);
+    let result: Awaited<ReturnType<typeof runReviewedCommand>> | undefined;
+    try {
+      result = await withMongoStore((store) => runReviewedCommand(store, approvedRoot, policy, command, selectedTestFile, controller.signal));
+    } finally {
+      process.removeListener("SIGINT", handleInterrupt);
+    }
     if (result !== undefined) {
       process.stdout.write(
         `Run ${result.run.runId} ${result.status}: ${result.command}; ` +
@@ -875,7 +883,8 @@ async function runSoftwareCheckCommand(commandArgs: readonly string[]): Promise<
         `duration=${result.durationMs}ms; observed output bytes=${result.observedOutputBytes}` +
         `${result.outputTruncated ? " (capture limit reached)" : ""}. Output was not displayed or persisted.\n`,
       );
-      if (result.status !== "passed") process.exitCode = 3;
+      if (result.status === "cancelled") process.exitCode = 130;
+      else if (result.status !== "passed") process.exitCode = 3;
     }
   } catch (error: unknown) {
     const message = error instanceof ReviewedCommandError || error instanceof PersistentFolderApprovalError ? error.message : "Software check failed safely.";
