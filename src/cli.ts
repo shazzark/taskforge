@@ -8,6 +8,7 @@ import { tmpdir } from "node:os";
 import { createInterface } from "node:readline/promises";
 import { ConfigurationError, formatStoreConfigurationSummary, loadProviderConfiguration, loadStoreConfiguration } from "./config.js";
 import { AgentBudgetLedger, AgentToolError, runToolLoop } from "./agent/tool-loop.js";
+import { createCsvAnalysisTool, TASKFORGE_AGENT_SYSTEM_MESSAGE } from "./agent/session-tools.js";
 import { BUILT_IN_TASKS, getBuiltInTask, TaskRegistryError, validateTaskInputs } from "./agent/task-registry.js";
 import { runSpecialistReview, type SpecialistTask, SpecialistReviewError } from "./agent/specialist-review.js";
 import {
@@ -20,7 +21,7 @@ import {
 import type { TaskForgeStore } from "./persistence/store.js";
 import { connectTaskForgeStore } from "./persistence/store-factory.js";
 import { createModelProvider } from "./providers/create-provider.js";
-import { ModelProviderError } from "./providers/types.js";
+import { ModelProviderError, type ProviderMessage } from "./providers/types.js";
 import { PathPolicyError, WorkspacePathPolicy } from "./security/path-policy.js";
 import { CsvWorkflowError, resumeCsvAnalysisWorkflow, runCsvAnalysisWorkflow, type CsvWorkflowResult } from "./workflows/csv-analysis-workflow.js";
 import { inspectRepository, RepositoryInspectionError } from "./workflows/repository-inspection-workflow.js";
@@ -50,12 +51,13 @@ import type { ScheduleRecord, ScheduleWorkflowId } from "./mongo-store.js";
 
 const helpText = `TaskForge ${packageJson.version} (early development)
 
-Usage: taskforge [--help | --version | config | doctor | model-check | chat | tasks list | tasks inspect <task-id> | tasks validate <task-id> --inputs-json <object> | permissions approve/list/revoke | run csv-analyze --input <path> [--numeric-column <header>]... [--output <new.json|csv|md>] | run document-analyze --input <path> [--output <new.json|csv|md>] | run data-specialist --input <path> --goal <question> | run browser-audit --url <url> [--journey <json-array>] [--origin <https-origin>]... [--specialist] | run document-convert --input <path> --output <new.txt> | run file-move --source <file> --target <new-file> | run ... | resume <run-id> --input <path> [--numeric-column <header>]... | history list | schedule ...]
+Usage: taskforge [--help | --version | config | doctor | model-check | do <instruction> | chat | tasks list | tasks inspect <task-id> | tasks validate <task-id> --inputs-json <object> | permissions approve/list/revoke | run csv-analyze --input <path> [--numeric-column <header>]... [--output <new.json|csv|md>] | run document-analyze --input <path> [--output <new.json|csv|md>] | run data-specialist --input <path> --goal <question> | run browser-audit --url <url> [--journey <json-array>] [--origin <https-origin>]... [--specialist] | run document-convert --input <path> --output <new.txt> | run file-move --source <file> --target <new-file> | run ... | resume <run-id> --input <path> [--numeric-column <header>]... | history list | schedule ...]
 
 The config command validates local settings and prints a redacted summary.
 The doctor command checks the selected local SQLite or MongoDB storage and reports available setup areas.
 The model-check command makes a synthetic read-only tool call through the selected model provider.
 The chat command opens a bounded interactive conversation with the selected provider.
+The do command sends one natural-language instruction to the selected provider. Agent-directed CSV analysis is the only currently enabled tool and still requires explicit file and stored-folder read approval.
 The tasks command lists or inspects built-in validated declarative task definitions; validate checks one definition's JSON inputs. These definitions cannot grant permissions or execute code, and tasks are not yet executable.
 The csv-analyze workflow reads one explicitly approved CSV file, stores redacted run metadata, and can calculate exact selected-column decimal totals with --numeric-column.
 The repo-inspect workflow inventories one explicitly approved repository root without reading file contents or running commands.
@@ -112,29 +114,69 @@ function parseCsvCommandArguments(commandArgs: readonly string[]): ParsedCsvComm
   return { inputPath, ...(outputPath === undefined ? {} : { outputPath }), numericColumns };
 }
 
-async function readApprovedInputFile(pathValue: string): Promise<Uint8Array | undefined> {
+type ApprovalQuestion = (prompt: string, signal?: AbortSignal) => Promise<string>;
+type InputReadFailure = "cancelled" | "denied";
+
+function isSignalAborted(signal: AbortSignal | undefined): boolean {
+  return signal?.aborted === true;
+}
+
+async function readApprovedInputFile(
+  pathValue: string,
+  askQuestion?: ApprovalQuestion,
+  signal?: AbortSignal,
+  reportFailure?: (failure: InputReadFailure) => void,
+): Promise<Uint8Array | undefined> {
   if (!process.stdin.isTTY || !process.stdout.isTTY) {
     process.stderr.write("File workflows require an interactive terminal for explicit read approval.\n");
     process.exitCode = 2;
+    reportFailure?.("denied");
     return undefined;
   }
   const absolutePath = resolve(pathValue);
-  const consent = createInterface({ input: process.stdin, output: process.stdout });
   let answer: string;
-  try {
-    answer = await consent.question(`Allow TaskForge to read this exact file? ${absolutePath} [y/N] `);
-  } finally {
-    consent.close();
+  if (askQuestion !== undefined) {
+    try {
+      answer = await askQuestion(`Allow TaskForge to read this exact file? ${absolutePath} [y/N] `, signal);
+    } catch {
+      if (isSignalAborted(signal)) {
+        reportFailure?.("cancelled");
+        return undefined;
+      }
+      process.stderr.write("File read cancelled before access.\n");
+      reportFailure?.("cancelled");
+      return undefined;
+    }
+  } else {
+    const consent = createInterface({ input: process.stdin, output: process.stdout });
+    try {
+      answer = await consent.question(`Allow TaskForge to read this exact file? ${absolutePath} [y/N] `);
+    } finally {
+      consent.close();
+    }
   }
   if (answer.trim().toLowerCase() !== "y") {
     process.stdout.write("File read cancelled before access.\n");
+    reportFailure?.("cancelled");
+    return undefined;
+  }
+  if (isSignalAborted(signal)) {
+    reportFailure?.("cancelled");
     return undefined;
   }
   try {
     const policy = new WorkspacePathPolicy();
     await requirePersistentFolderApproval(dirname(absolutePath), "read");
+    if (isSignalAborted(signal)) {
+      reportFailure?.("cancelled");
+      return undefined;
+    }
     await policy.approveRoot(dirname(absolutePath));
     const authorized = await policy.authorizePath(absolutePath, "read");
+    if (isSignalAborted(signal)) {
+      reportFailure?.("cancelled");
+      return undefined;
+    }
     const canonicalPath = await realpath(authorized.path);
     if (canonicalPath !== authorized.path) {
       throw new Error("The approved file path changed before it could be read.");
@@ -147,6 +189,10 @@ async function readApprovedInputFile(pathValue: string): Promise<Uint8Array | un
       }
       const buffer = Buffer.alloc(8 * 1024 * 1024 + 1);
       const { bytesRead } = await file.read(buffer, 0, buffer.byteLength, 0);
+      if (isSignalAborted(signal)) {
+        reportFailure?.("cancelled");
+        return undefined;
+      }
       if (bytesRead > 8 * 1024 * 1024 || (await realpath(authorized.path)) !== canonicalPath) {
         throw new Error("The approved file changed or exceeds the workflow limit.");
       }
@@ -158,6 +204,7 @@ async function readApprovedInputFile(pathValue: string): Promise<Uint8Array | un
     const message = error instanceof PathPolicyError ? error.message : "The approved file could not be read safely.";
     process.stderr.write(`File read denied: ${message}\n`);
     process.exitCode = 2;
+    reportFailure?.("denied");
     return undefined;
   }
 }
@@ -2112,6 +2159,98 @@ async function runModelCheck(): Promise<void> {
   }
 }
 
+function createCliCsvAnalysisTool(question: ApprovalQuestion) {
+  return createCsvAnalysisTool(async (argumentsValue, signal) => {
+    process.stdout.write(`Proposed action: analyze one CSV file${argumentsValue.numericColumns.length > 0 ? `; numeric columns: ${argumentsValue.numericColumns.join(", ")}` : ""}.\n`);
+    let readFailure: InputReadFailure | undefined;
+    const input = await readApprovedInputFile(argumentsValue.input, question, signal, (failure) => {
+      readFailure = failure;
+    });
+    if (input === undefined) {
+      if (readFailure === "cancelled" || signal?.aborted === true) {
+        process.stdout.write("CSV analysis cancelled before reading the file.\n");
+        return "CSV analysis was cancelled before the file was read.";
+      }
+      throw new Error("CSV file access was denied or unavailable.");
+    }
+    const result = await withStore((store) => runCsvAnalysisWorkflow(store, input, undefined, argumentsValue.numericColumns));
+    if (result === undefined) throw new Error("CSV analysis could not open configured storage.");
+    const missingCellCount = Object.values(result.analysis.missingValues).reduce((total, count) => total + count, 0);
+    const totals = Object.entries(result.analysis.numericTotals).map(([column, total]) => `${escapeTerminalControls(column)}=${total}`);
+    const summary = `CSV analysis complete: ${result.analysis.rowCount} rows; ${result.analysis.duplicateRowCount} duplicate rows; ${missingCellCount} missing cells.${totals.length === 0 ? "" : ` Numeric totals: ${totals.join(", ")}.`}`;
+    process.stdout.write(`${summary}\n`);
+    return summary;
+  });
+}
+
+async function runNaturalLanguageInstruction(instruction: string): Promise<void> {
+  if (!process.stdin.isTTY || !process.stdout.isTTY) {
+    process.stderr.write("Natural-language execution requires an interactive terminal.\n");
+    process.exitCode = 2;
+    return;
+  }
+  if (instruction.trim().length === 0 || instruction.length > 8_000) {
+    process.stderr.write("Provide one instruction up to 8,000 characters.\n");
+    process.exitCode = 2;
+    return;
+  }
+  try {
+    const providerConfiguration = loadProviderConfiguration();
+    const selected = createModelProvider(providerConfiguration);
+    if (providerConfiguration.kind === "groq") {
+      const consent = createInterface({ input: process.stdin, output: process.stdout });
+      let answer: string;
+      try {
+        answer = await consent.question("This instruction and any approved CSV aggregate summary, including selected header labels but not source rows, will be sent to the configured Groq service. Continue? [y/N] ");
+      } finally {
+        consent.close();
+      }
+      if (answer.trim().toLowerCase() !== "y") {
+        process.stdout.write("Instruction cancelled before sending a request.\n");
+        return;
+      }
+    }
+    const terminal = createInterface({ input: process.stdin, output: process.stdout });
+    const controller = new AbortController();
+    const handleInterrupt = (): void => controller.abort();
+    terminal.on("SIGINT", handleInterrupt);
+    const question: ApprovalQuestion = (prompt, signal) => signal === undefined
+      ? terminal.question(prompt)
+      : terminal.question(prompt, { signal });
+    try {
+      process.stdout.write("TaskForge is interpreting one instruction. Only approved CSV analysis is currently available as an agent action.\n");
+      const result = await runToolLoop(
+        selected.provider,
+        selected.model,
+        [
+          { role: "system", content: TASKFORGE_AGENT_SYSTEM_MESSAGE },
+          { role: "user", content: instruction },
+        ],
+        [createCliCsvAnalysisTool(question)],
+        { maxModelRequests: 8, maxToolActions: 1, signal: controller.signal },
+      );
+      if (result.content.length > 0) process.stdout.write(`TaskForge> ${result.content}\n`);
+    } catch (error: unknown) {
+      if (controller.signal.aborted || (error instanceof ModelProviderError && error.kind === "cancelled")) {
+        process.stdout.write("Instruction cancelled; no further actions will run.\n");
+        process.exitCode = 130;
+      } else if (error instanceof ModelProviderError) {
+        process.stderr.write(`Instruction failed: ${error.message}\n`);
+        process.exitCode = 3;
+      } else {
+        process.stderr.write("Instruction failed; the requested action was rejected or could not be completed.\n");
+        process.exitCode = 3;
+      }
+    } finally {
+      terminal.close();
+    }
+  } catch (error: unknown) {
+    const message = error instanceof ConfigurationError ? error.message : "Unable to start natural-language execution with the selected provider.";
+    process.stderr.write(`Instruction setup error: ${message}\n`);
+    process.exitCode = 2;
+  }
+}
+
 async function runChat(): Promise<void> {
   if (!process.stdin.isTTY || !process.stdout.isTTY) {
     process.stderr.write("Chat requires an interactive terminal.\n");
@@ -2122,7 +2261,7 @@ async function runChat(): Promise<void> {
     const providerConfiguration = loadProviderConfiguration();
     const selected = createModelProvider(providerConfiguration);
     if (providerConfiguration.kind === "groq") {
-      process.stdout.write("This session sends the text you enter to the configured Groq service. Continue? [y/N] ");
+      process.stdout.write("This session sends your messages and any approved CSV aggregate summaries, including selected header labels but not source rows, to the configured Groq service. Continue? [y/N] ");
       const consent = createInterface({ input: process.stdin, output: process.stdout });
       const answer = await consent.question("");
       consent.close();
@@ -2133,8 +2272,13 @@ async function runChat(): Promise<void> {
     }
 
     const terminal = createInterface({ input: process.stdin, output: process.stdout });
-    const messages: Array<{ readonly role: "user" | "assistant"; readonly content: string }> = [];
-    let modelRequestsUsed = 0;
+    const systemMessage: ProviderMessage = { role: "system", content: TASKFORGE_AGENT_SYSTEM_MESSAGE };
+    const messages: ProviderMessage[] = [systemMessage];
+    const sessionBudget = new AgentBudgetLedger(40, 10);
+    const question: ApprovalQuestion = (prompt, signal) => signal === undefined
+      ? terminal.question(prompt)
+      : terminal.question(prompt, { signal });
+    const tools = [createCliCsvAnalysisTool(question)];
     let activeController: AbortController | undefined;
     let stopRequested = false;
     terminal.on("SIGINT", () => {
@@ -2147,7 +2291,7 @@ async function runChat(): Promise<void> {
     });
     process.stdout.write("Chat ready. Enter /exit to finish; Ctrl+C cancels the active request.\n");
     try {
-      while (!stopRequested && modelRequestsUsed < 40) {
+      while (!stopRequested && sessionBudget.snapshot().modelRequestsRemaining > 0 && sessionBudget.snapshot().toolActionsRemaining > 0) {
         let input: string;
         try {
           input = await terminal.question("You> ");
@@ -2168,16 +2312,21 @@ async function runChat(): Promise<void> {
         const controller = new AbortController();
         activeController = controller;
         try {
+          const budget = sessionBudget.snapshot();
           const result = await runToolLoop(
             selected.provider,
             selected.model,
-            messages.slice(-40),
-            [],
-            { maxModelRequests: 40 - modelRequestsUsed, maxToolActions: 0, signal: controller.signal },
+            messages.slice(0, 1).concat(messages.slice(1).slice(-39)),
+            tools,
+            {
+              maxModelRequests: budget.modelRequestsRemaining,
+              maxToolActions: budget.toolActionsRemaining,
+              budget: sessionBudget,
+              signal: controller.signal,
+            },
           );
-          modelRequestsUsed += result.modelRequests;
           messages.push({ role: "assistant", content: result.content });
-          process.stdout.write(`TaskForge> ${result.content}\n`);
+          if (result.content.length > 0) process.stdout.write(`TaskForge> ${result.content}\n`);
         } catch (error: unknown) {
           if (error instanceof ModelProviderError) {
             process.stderr.write(`Chat request failed: ${error.message}\n`);
@@ -2191,8 +2340,9 @@ async function runChat(): Promise<void> {
           activeController = undefined;
         }
       }
-      if (modelRequestsUsed >= 40) {
-        process.stdout.write("Chat model-request budget reached. Start a new session to continue.\n");
+      const remaining = sessionBudget.snapshot();
+      if (remaining.modelRequestsRemaining === 0 || remaining.toolActionsRemaining === 0) {
+        process.stdout.write("Chat session budget reached. Start a new session to continue.\n");
       }
     } finally {
       terminal.close();
@@ -2221,6 +2371,8 @@ if (args.length === 0 || (args.length === 1 && (args[0] === "--help" || args[0] 
   await runDoctor();
 } else if (args.length === 1 && args[0] === "model-check") {
   await runModelCheck();
+} else if (args.length >= 1 && args[0] === "do") {
+  await runNaturalLanguageInstruction(args.slice(1).join(" "));
 } else if (args.length === 1 && args[0] === "chat") {
   await runChat();
 } else if (args.length >= 1 && args[0] === "tasks") {

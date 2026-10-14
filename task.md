@@ -590,11 +590,19 @@ Added three built-in data-only definitions for CSV summaries, repository invento
 
 **Verification:** `npm run typecheck`, `npm run build`, focused registry/CLI tests (6/6), and the full serial `npm test` with dedicated `TASKFORGE_TEST_MONGODB_URI=mongodb://127.0.0.1:27017/taskforge_phase11` passed. Full suite: 166 passed, 0 failed, 0 skipped, 182.9 seconds. Tests reject permission injection and unknown tools, validate declared fields, exercise the tool capability intersection and CLI output redaction. They do not execute the declarative conformance cases or any task workflow. The current registry is static: users cannot register custom definitions, and tasks cannot be executed or selected by natural-language instructions. Phase 11 remains IN PROGRESS until a local definition storage/validation flow and its filesystem/security tests are implemented; arbitrary executable extensions remain deferred.
 
-### Phase 12 — Natural-language one-shot and tool-enabled chat — NOT STARTED
+### Phase 12 — Natural-language one-shot and tool-enabled chat — IN PROGRESS
 
 Depends on Phases 10–11 plus existing approvals/budgets. Groq remains default; no silent provider change. Missing/ambiguous inputs are asked explicitly.
 
 **Acceptance:** Tests cover intent selection, plan disclosure, missing-input questions, multi-turn continuation, approved tool result use, refusal, unknown intent, malformed tool call, provider/storage failure, cancellation, history boundaries and shared worker budgets.
+
+#### Phase 12.1 — Fixed CSV agent action — IMPLEMENTED; ACCEPTANCE PENDING
+
+Added `do <instruction>` and enabled the same fixed `analyze_csv` tool in interactive chat. The provider sees a system message that limits actions to the host-supplied tool, requires clarification for missing/ambiguous details, and states model calls are not permission. CSV arguments use a closed schema with bounded paths/columns and no permission field. The host asks for exact-file consent, requires an existing persistent read-folder grant, and uses the existing bounded CSV workflow/store. Chat shares one 40-request/10-action ledger across turns, retains the system message in its bounded context, and stops when either budget is exhausted. Groq remains selected by config and keeps the existing transfer-consent prompt; Ollama is not an automatic fallback.
+
+**Verification:** `npm run typecheck`, `npm run build`, focused session/tool/CLI tests (5/5), and the final full serial `npm test` with dedicated `TASKFORGE_TEST_MONGODB_URI=mongodb://127.0.0.1:27017/taskforge_phase12_final` passed after approval-denial and cancellation handling changes. Full suite: 171 passed, 0 failed, 0 skipped, 111.6 seconds. Fixtures prove fixed tool exposure, validated arguments, tool-result reuse, unknown-tool rejection, shared budget accounting, help disclosure and noninteractive refusal before provider setup. A real TTY provider exchange, exact-file accept/decline, stored-folder grant path, cancellation during approval, and cross-turn live behavior remain unverified. Only CSV is agent-addressable; no generated write, other workflow, research/web, custom task execution, or chat transcript/history is exposed through this agent path. Phase 12 remains IN PROGRESS until the missing-input/ambiguous-intent and approval/failure/cancellation matrix is complete.
+
+**Package/tracked artifact recheck:** `npm pack --dry-run --json` lists 46 files and matches no generated-build, `.env`, credentials, session data, private workspace, reports or TLS-key fixture. Git tracks no generated build folder, `.env`, credentials, session state or personal/private workspace artifact. One tracked exception is the documented disposable `test/fixtures/browser-egress-fixture.key` self-signed local-test key; it is not a service credential and is excluded from the package. `.env.example` contains placeholders. All 35 legacy `.taskforge-build-*` folders remain preserved and untracked.
 
 ### Phase 13 — Agent investigation, previews, approved changes and verification — NOT STARTED
 
