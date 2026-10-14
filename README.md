@@ -1,8 +1,10 @@
 # taskforge
 
-An open-source terminal AI agent for repeatable developer workflows and extensible tasks.
+A terminal assistant for a fixed set of explicit, approval-controlled developer workflows, with optional bounded model features.
 
 **Status:** TaskForge is in early development. Bounded file/data, software, local browser fixture, research, GitHub-read, local-draft, schedule, specialist-review, and dedicated ephemeral manual-login workflows are implemented. Public-site journeys remain read-only and require explicit approval. The full serial test suite passed on 2026-10-14 (152 passed, zero failed or skipped) against a dedicated isolated loopback MongoDB test database. Owner-operated live search-journey acceptance and the independent developer trial remain pending; see `task.md`.
+
+**Current capability boundary:** Choose a named workflow explicitly with `run <workflow> ...`. TaskForge does not yet turn free-form natural-language instructions into workflow/tool actions, and `chat` is a bounded text conversation with no tools, file access, or workflow execution. The supported command set is built into the CLI; there is no runtime workflow registry or extension loader. Persisted approvals, runs, history, and schedules require MongoDB; no local-file database backend is implemented. Providers are Groq and loopback-only Ollama. Authenticated browser checks use the dedicated ephemeral manual-login flow; browser profiles and saved sessions are not imported. Architecture analysis and GitHub/Vercel deployment tracing remain proposals, not features. See the [capability audit and owner testing walkthrough](CAPABILITY_AUDIT.md) for exact commands, gates, and evidence.
 
 Repository: https://github.com/shazzark/taskforge
 
