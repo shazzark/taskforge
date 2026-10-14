@@ -383,7 +383,7 @@ Replaced ExcelJS as the runtime XLSX reader with the existing bounded ZIP/XML st
 
 - **Recovered checkpoint:** Base commit 771839f (Phase 6.5: compare sourced research results). The initial working tree had four unstaged changes in `DEVELOPER_TRIAL.md`, `THIRD_PARTY_NOTICES.md`, `src/documents/xlsx-parser.ts`, and `test/xlsx-parser.test.mjs`; there were no staged or untracked files. The package metadata, lockfile, tracker, and implementation plan were changed while completing verification.
 - **Verified recovery:** Phase 8.5 is now complete in this local checkpoint. Strict TypeScript, build, all 127 tests with isolated loopback MongoDB, the live synthetic Groq model-check, package audits, a fresh tarball, and a production-only Windows consumer install passed. The package consumer contains no ExcelJS or deprecated packages. Ollama and the previously downloaded qwen3 model were live; no model was downloaded. Exact evidence is in Phase 8.5.
-- **Requirements authority:** MongoDB remains the confirmed persistence choice. No recorded approval exists for optional local-file persistence, guided setup, architecture analysis, or deployment tracing; deployment remains deferred. These proposals are not implementation requirements.
+- **Historical requirements authority (superseded 14 October 2026):** The MongoDB-only requirement was the last recorded choice at that checkpoint. The owner subsequently approved local persistence by default with optional MongoDB, guided setup/Windows bundled runtime, evidence-based architecture reports, and read-only GitHub/Vercel deployment tracing. Current code remains Mongo-only until those phases are implemented; no automatic migration, deletion, or silent fallback is allowed.
 - **Remaining release work:** Phase 6 real-site acceptance requires an owner-approved target and journey; broader browser acceptance remains pending. Phase 7 browser/data specialist integrations are future work requiring separate scoped tool contracts and review. Phase 8.3 requires another developer to complete DEVELOPER_TRIAL.md. Phase 8 remains IN PROGRESS; mocked checks do not satisfy live acceptance or the independent trial.
 - **Services and safety:** The registered MongoDB service was already running and the loopback ping succeeded; the configured MongoDB doctor ping also succeeded outside the sandbox after the sandbox attempt timed out. Ollama was already responding with qwen3:4b-q4_K_M installed. No unrelated process was stopped, no provider was switched, and no secret values were printed. No push, publication, or deployment was performed.
 - **Next action:** Await an owner-approved real-site target/journey and an independent developer trial; clarify whether browser/data specialist integration slices should enter first-release scope before designing their permissions and data-transfer boundaries.
@@ -444,7 +444,7 @@ Added browser/data specialist roles under the existing read-only specialist engi
 
 ### Scope and release reconciliation
 
-MongoDB remains the approved persistence choice. Optional local storage, guided setup, architecture analysis, and read-only GitHub/Vercel deployment tracing remain unapproved proposals and are not implemented requirements. Deployment actions remain deferred. Phase 8 remains IN PROGRESS: Phase 8.5 release checks are recorded above, but another developer must complete `DEVELOPER_TRIAL.md`; Codex/subagent review does not satisfy that trial.
+MongoDB was the sole implemented/approved persistence choice at this checkpoint; the owner later approved the expanded scope documented in Phase 9 below. Deployment actions remain deferred. Phase 8 remains IN PROGRESS: another developer must complete `DEVELOPER_TRIAL.md`; Codex/subagent review does not satisfy that trial.
 
 **Recovery state:** Last verified base commit was `dc58ff7` (`Phase 8.5: record configured MongoDB check`); its initial tree was clean. Integrated Phase 6.6/7.6 work and Phase 8.6 verification passed and were committed locally as `fc137e4` (`Phase 6.6-8.6: add approved audits and specialist integrations`). MongoDB and Ollama were already live; configured provider checks exposed no credentials, no unrelated process was stopped, and no model was downloaded. No public site was visited, and no push, publish, deploy, or message was performed.
 
@@ -546,6 +546,88 @@ The final review also bounded page-structure counts to the existing 2,000-elemen
 
 ### Phase 8.9 - Current capability audit and owner walkthrough - COMPLETE (documentation; owner tests pending)
 
-Inspected planning documents, current CLI help and dispatch, workflow implementations, focused tests, and recorded live/fixture evidence. Added `CAPABILITY_AUDIT.md` with exact command inputs, setup and grants, outputs, evidence, status, limits, explicit proposal boundaries, and a synthetic PowerShell owner walkthrough. Updated README to state that chat is model-only with no tools, workflows are explicitly named fixed CLI commands, MongoDB is the only persistence backend, and architecture/deployment analysis remains proposed. Clarified the earlier Phase 5.9 status using the resolved Phase 8.8 full-suite evidence.
+At that checkpoint, inspected planning documents, current CLI help and dispatch, workflow implementations, focused tests, and recorded live/fixture evidence. Added `CAPABILITY_AUDIT.md` with exact command inputs, setup and grants, outputs, evidence, status, limits, then-current proposal boundaries, and a synthetic PowerShell owner walkthrough. README recorded the then-current model-only chat, fixed workflows, Mongo-only persistence, and non-existent architecture/deployment features. The owner approved those expanded roadmap areas in the continuation below; capability implementation status remains accurately bounded by the audit. Clarified the earlier Phase 5.9 status using the resolved Phase 8.8 full-suite evidence.
 
 **Verification:** `node dist/cli.js --help` passed and lists the current command families; `git diff --check` passed. This is a documentation-only audit; no external provider, public GitHub, or live website workflow was run. The recent full serial suite evidence remains 152/152 in Phase 8.8. Owner-operated BookFinder live journey and the independent developer trial remain pending.
+
+## Approved scope continuation - 14 October 2026
+
+Owner approved the 11 work areas and the development target Sunday 18 October 2026. The target is not currently credible for full verified completion: local/Mongo dual persistence, intent+tool chat, generated approved changes, stronger research citations, bundled Windows runtime, two authorized external services, BookFinder owner acceptance, and another developer's trial are distinct acceptance burdens. No scope or test gate is reduced. Continue through numbered phases and report unfinished work honestly. The reviewed checkpoint through `c0b35cc` was pushed before this scope began; do not push further commits without a new explicit request.
+
+### Phase 9 — Requirements reconciliation — IN PROGRESS
+
+**Goal:** Align root PRD, TRD, architecture, backend schema, app flow, implementation plan, tracker and README with the approved 11 areas, while keeping current implementation facts separate from planned work.
+
+**Acceptance:** Documents agree on scope, dependency order, permissions/data/provider constraints and status vocabulary; current capabilities remain accurate; each future phase has concrete verification criteria and external human gates are not fabricated.
+
+### Phase 10 — Local-default persistence with optional MongoDB — NOT STARTED
+
+Depends on Phase 9. Choose a Windows-compatible local backend only after evaluating crash consistency, locking, backup/restore, schema upgrades, runtime/package fit and data privacy. No existing MongoDB data is migrated, deleted, overwritten or silently abandoned. Backend choice is explicit; errors fail closed; no fallback.
+
+**Acceptance:** Adapter contract passes against isolated temporary local and disposable Mongo stores, including durability, malformed/versioned records, locking/concurrency, interrupted writes, outages and redaction. New-install local default and explicit Mongo use are proven. Data path, ACL/privacy, backup, restore, retention and recovery are documented.
+
+### Phase 11 — Validated declarative task registry — NOT STARTED
+
+Depends on Phase 9 and Phase 10 interfaces. Definitions include bounded instructions, validated inputs/outputs, fixed tool names, examples and tests; no arbitrary executable code.
+
+**Acceptance:** Built-ins/examples load; malformed definitions, unknown tools and attempted permission escalation fail closed; runtime validation and intersection with the central tool allowlist are tested.
+
+### Phase 12 — Natural-language one-shot and tool-enabled chat — NOT STARTED
+
+Depends on Phases 10–11 plus existing approvals/budgets. Groq remains default; no silent provider change. Missing/ambiguous inputs are asked explicitly.
+
+**Acceptance:** Tests cover intent selection, plan disclosure, missing-input questions, multi-turn continuation, approved tool result use, refusal, unknown intent, malformed tool call, provider/storage failure, cancellation, history boundaries and shared worker budgets.
+
+### Phase 13 — Agent investigation, previews, approved changes and verification — NOT STARTED
+
+Depends on Phases 11–12 and path/command approvals.
+
+**Acceptance:** Synthetic seeded bug has a reproducible failing check; model produces an exact hash-bound patch preview; refusal leaves bytes unchanged; approval applies only the preview; stale target is rejected; relevant fixed check is separately approved and reported truthfully; no Git publication.
+
+### Phase 14 — Evidence-cited web research — NOT STARTED
+
+Depends on Phase 12 and exact external-transfer consent.
+
+**Acceptance:** Fixtures tie factual comparison claims to retrieved passages/URLs and surface unsupported claims, contradictions, retrieval failure, invalid URLs and escaping. Live synthetic retrieval is separately recorded and never inferred from fixtures.
+
+### Phase 15 — Cancellation, resume and history contract — NOT STARTED
+
+Depends on Phases 10, 12 and 13. Preserve safe CSV/document resume and current schedule semantics during expansion.
+
+**Acceptance:** Per-workflow cancel/checkpoint/resume capability is documented; interruption matrix covers approval/read/mutation/check boundaries, side-effect uncertainty, state/hash and fresh-permission checks, duplicate replay prevention, DB failure and history redaction/retention/delete behavior. Unsupported general resume remains explicit.
+
+### Phase 16 — Browser and specialist end-to-end acceptance — IN PROGRESS for implementation; acceptance PENDING
+
+Depends on existing browser/specialist boundaries and Phases 12, 14 and 15.
+
+**Acceptance:** Automated synthetic integration covers ephemeral login, separate journey approval, no session/profile import, specialist limits/shared budgets/tool denials. BookFinder search/results/details/back requires owner manual login and journey approval in the fresh ephemeral browser. It remains pending until owner-operated evidence exists; the earlier authorization remains valid.
+
+### Phase 17 — Evidence-based architecture reports/diagrams — NOT STARTED
+
+Depends on Phases 11–12 and approved path access.
+
+**Acceptance:** Synthetic repositories produce reports/diagrams with verifiable file/line evidence, bounded scope, inference/coverage labels, redaction and unsupported-language handling; no source execution or outside-root reads.
+
+### Phase 18 — Read-only GitHub/Vercel deployment tracing — NOT STARTED
+
+Depends on Phase 12 and permission/secret handling. No deployment actions.
+
+**Acceptance:** API fixtures prove minimum read scopes, no writes, source links, redaction and honest auth/expiry/partial-result states. Live tracing waits for authorized account/project setup and is separately verified.
+
+### Phase 19 — Guided setup and Windows bundled-runtime distribution — NOT STARTED
+
+Depends on Phase 10 and stable CLI/integrations. Evaluate licensing, architecture, browser runtime, size and updates before choosing distribution mechanics.
+
+**Acceptance:** Clean Windows machine without preinstalled Node launches documented workflows with bundled runtime; package excludes credentials/session/private artifacts; integrity, license, data preservation, upgrade/side-by-side and uninstall-retention checks pass. No service provisioning or model download.
+
+### Phase 20 — Owner and independent developer acceptance — PENDING EXTERNAL TRIAL
+
+Depends on all applicable prior acceptance gates.
+
+**Acceptance:** Owner synthetic walkthrough covers approval, cancellation, failure and expected artifacts. A different developer completes clean Windows trial. BookFinder live journey is recorded separately. Neither can be marked complete from agent review.
+
+### Phase 9 documentation checkpoint — COMPLETE
+
+Updated in this checkpoint: `prd.md`, `trd.md`, `architecture.md`, `backendschema.md`, `appflow.md`, `implementation-plan.md`, `CAPABILITY_AUDIT.md`, and README record the approved scope and distinguish target design from current behavior. Cross-document proposal/status scan and `git diff --check` passed. No code changed, so the Phase 8.8 full-suite evidence remains the latest full-suite result; no new test claim is made. Commit this verified documentation checkpoint locally before starting Phase 10.
+
+**Phase 9 verification:** Searched all seven planning/tracker documents plus README and capability audit for stale claims that the newly approved areas remain unapproved; only explicitly historical notes marked superseded remain. `git diff --check` passed. Existing CLI help was observed as `node dist/cli.js --help`; the walkthrough and exact current commands remain in `CAPABILITY_AUDIT.md`. Typecheck/build/full-suite were not rerun because this checkpoint changes documentation only; full serial suite evidence remains Phase 8.8 (152/152, isolated MongoDB test database).

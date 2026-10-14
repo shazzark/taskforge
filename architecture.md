@@ -56,4 +56,18 @@ Phase 4.14 adds an exact-file move operation for TXT, Markdown, CSV, PDF, DOCX, 
 
 `run data-specialist --input <file> --goal <question>` supports locally parsed CSV, XLSX, text PDF, DOCX, TXT, and Markdown. It previews bounded heuristically redacted evidence before separately approved transfer; local paths and filenames are excluded. The browser `--specialist` option transfers aggregate evidence only. Specialist and parent requests share budgets, use the selected provider without switching, and require parent review. Results are unverified and not persisted.
 
-MongoDB remains approved. Optional local storage, guided setup, architecture analysis, and read-only GitHub/Vercel deployment tracing remain proposals; deployment actions remain deferred. The independent developer trial remains pending.
+At the time of this recovery note MongoDB was the only persistence implementation. The owner has since approved local persistence as the new-install default, the existing MongoDB adapter as an explicit option, guided Windows setup/distribution, evidence-based architecture analysis, and read-only GitHub/Vercel deployment tracing. They remain planned until implemented and verified. Deployment actions remain deferred. The independent developer trial remains pending.
+
+## Approved target architecture - 14 October 2026
+
+This target does not describe the current implementation; see `CAPABILITY_AUDIT.md` for current facts. The current CLI dispatch and explicit built-in workflow code remain the compatibility baseline.
+
+The target path is CLI/interactive conversation -> intent resolver -> validated local task registry -> orchestrator -> central fixed tool catalog and approval broker -> configured provider and selected storage adapter. Registry definitions express task instructions, input/output schemas, examples and required tool names, but the host intersects requested tools with a centrally reviewed allowlist and current user grants. Definition text cannot create permissions, code, shell commands, network origins, provider transfers, or worker budgets. Agents share the parent's action/request/time budgets and permissions. Generated edits are content-bound previews; application and relevant verification are distinct approved actions.
+
+Persistence has an explicit adapter boundary. New installations select local storage by default; selecting MongoDB is explicit. A backend error is surfaced and never triggers fallback. Existing MongoDB records remain untouched unless the owner explicitly selects that backend. There is no automatic migration, deletion, or format conversion. Storage schema versions, backup/restore, file locking, crash recovery, retention, and permissions must be validated for the selected local backend before implementation is accepted.
+
+Browser login continues to use a fresh ephemeral browser context and owner-entered credentials; no profile import or session export. Website content remains untrusted. Architecture reports read only explicitly approved roots/files and cite observed paths/lines. GitHub/Vercel integration is read-only, narrowly scoped, redacts secrets, and has no deployment execution path. Groq remains the default provider; no service or model is silently provisioned.
+
+## Approved scope and phase authority
+
+The approved requirements cover natural-language one-shot/chat, agent investigation and reviewed edits, a declarative task registry, evidence-cited web research, browser/specialist acceptance, cancellation/resume/history, owner and independent trials, local-default persistence with optional MongoDB, guided setup/Windows bundled runtime, evidence-backed architecture reports, and authorized read-only GitHub/Vercel tracing. The numbered sequence and acceptance criteria are in `implementation-plan.md`. None of these statements changes current feature status before code and acceptance evidence exist.

@@ -54,7 +54,43 @@ The owner approved browser and data specialists and public-site URL auditing. Ph
 
 Phase 7.6 implements browser/data specialist handoff with explicit disclosure and transfer approval, selected-provider-only execution, shared request/action/time budgets, zero retries, cancellation, and parent review. Data extraction and heuristic redaction happen locally; only approved bounded evidence is transferred. Existing schedule semantics remain accepted and unchanged.
 
-MongoDB remains the approved persistence choice. Optional local storage, guided setup, architecture analysis, and read-only GitHub/Vercel deployment tracing remain proposals pending separate scope approval. Deployment actions remain deferred. Phase 8 remains IN PROGRESS until the independent developer trial is completed by another developer.
+At the time of this note MongoDB was the only approved persistence choice. The owner's 14 October decision below supersedes proposal status for local-default storage, guided setup, architecture analysis, and read-only GitHub/Vercel tracing. Deployment actions remain deferred. Phase 8 remains IN PROGRESS until another developer completes the independent trial.
+
+## Approved scope continuation - Phases 9–20 (14 October 2026)
+
+The approved target is Sunday 18 October 2026. Four days are not credibly sufficient on current evidence for all new runtime layers, dual-storage acceptance, bundled Windows runtime, authorized external integrations, and separately operated human gates. This is an honest feasibility assessment, not a scope cut or date change. Continue the phases in dependency order and retain all unfinished work in the tracker. Every phase stays IN PROGRESS until its concrete gates pass.
+
+| Phase | Work and dependencies | Acceptance gate |
+|---|---|---|
+| 9 — Requirements reconciliation | Current baseline plus approved 11 areas; update PRD/TRD/architecture/schema/app flow/plan/tracker. No runtime change. | Cross-document scope, status, authority and acceptance language agrees; proposals are no longer confused with approved-but-unimplemented work. |
+| 10 — Persistence adapters | Local-default storage and explicit MongoDB adapter; depends on Phase 9. Preserve existing MongoDB records; no migration/deletion/fallback. | Adapter contract passes on isolated local and Mongo databases; parity, restart, locking, interrupted-write, schema-validation and unavailable-store checks pass; new-install default and explicit selection are proven; data/backup/restore policy is documented. |
+| 11 — Declarative task registry | Local validated definitions over a fixed tool catalog; depends on Phase 9 and stable storage/config contracts. | Built-ins and examples validate; invalid schemas, unknown tools and permission escalation are rejected; definitions contain no executable plugin path; registry CLI/help and tests match. |
+| 12 — Natural-language execution and tool-enabled chat | Shared intent resolver/orchestrator; depends on Phases 10–11 and existing approval/budget primitives. | Synthetic one-shot and multi-turn tests cover required-input questions, ambiguous/unknown intent, provider consent, tool result use, unapproved-tool rejection, shared budgets, denial, cancellation and failure. Groq remains default; no silent provider switch. |
+| 13 — Agent investigation and approved changes | Evidence-backed code investigation, model-generated preview, exact approval/application and relevant checks; depends on Phases 11–12 and current safe file/command primitives. | Seeded synthetic bug fails relevant check; generated preview is hash-bound; decline leaves bytes unchanged; approval applies exactly previewed change; stale targets fail closed; relevant check result is truthful; no commit/push. |
+| 14 — Research citations | Retrieval provenance, claim-linked citations and evidence-based comparisons; depends on consent/provider boundaries and Phase 12. | Deterministic fixtures verify every factual comparison claim maps to retrieved evidence, source disagreement/unsupported claims are labeled, escaping/partial provider failures are safe; an approved live synthetic retrieval is separately recorded. |
+| 15 — Cancellation, history and resume | Complete lifecycle matrix; depends on Phase 10 and Phases 12–13. Preserve existing safe CSV/document recovery. | Per-command capability table; cancellation at each supported boundary, uncertain side effect handling, stale-state checks, no duplicate replay, retention/redaction/delete behavior, DB failure and crash/restart tests pass. Unsupported workflows explicitly remain non-resumable. |
+| 16 — Browser and specialist acceptance | Retain tested boundaries; end-to-end browser and specialist scenarios; depends on Phases 12, 14 and 15. | Synthetic integration covers manual login + separate journey consent, worker shared budgets and tool limits. BookFinder search/results/details/back is separately owner-operated using fresh ephemeral browser/manual login; no profile import. Until done, live acceptance is pending. |
+| 17 — Architecture reports and diagrams | Evidence-backed reports using approved project access; depends on permission/registry contracts and Phase 12. | Synthetic repo report cites actual inspected file/line evidence; scope escape, secret redaction, unsupported language, missing evidence and inference labeling fixtures pass; source is never executed. |
+| 18 — GitHub/Vercel deployment tracing | Read-only APIs from explicitly authorized access; depends on Phase 12 and access-scope design. | Fixtures prove least-read scope, source links, redaction, no write endpoints, auth denial/expiry handling and partial status. Live verification waits for owner-authorized project/account access; no deployment action. |
+| 19 — Guided setup and Windows distribution | Installer/bootstrap and bundled required runtime; depends on Phase 10 and stabilized CLI/provider/browser integrations. | Clean Windows machine without preinstalled Node installs/runs; license/SBOM/package scan, no secret/session/private artifacts, package/runtime integrity, data preservation, upgrade/side-by-side and uninstall retention checks pass. No service provisioning/model download. |
+| 20 — Acceptance and release readiness | Owner synthetic walkthrough plus independent developer trial; depends on all applicable implementation phases. | Owner approves or records each scenario result; another developer completes clean setup/trial; BookFinder live gate is recorded; full serial suite with isolated MongoDB, local storage tests, strict typecheck/build and package audit pass. No fabricated external acceptance. |
+
+### Dependency graph and external gates
+
+```text
+9 -> 10 -> 11 -> 12 -> 13 -> 15 -> 16 -> 20
+                    |      |      |
+                    |      +-> 14 -+
+                    +-> 17 --------+
+                    +-> 18 --------+
+10 + 12 + stable integrations -> 19 -> 20
+```
+
+Phase 16 BookFinder acceptance requires the owner to operate the dedicated ephemeral headed browser, enter credentials manually, and approve the exact read-only journey. Phase 18 live tracing requires owner-authorized GitHub/Vercel access and selected account/project scope; request setup only when implementation reaches that gate. Phase 20 independent trial requires another developer. Keep these external gates pending until actually performed. No personal browser profile, credentials in reports, or model downloads.
+
+### Verification cadence
+
+Before each phase, record a bounded scope and status. Add focused tests with implementation; run them before proceeding. For changes to shared runtime, CLI dispatch, storage, permissions or workflow state, also run strict `npm run typecheck`, `npm run build`, and serial `npm test` with `TASKFORGE_TEST_MONGODB_URI` set to a dedicated loopback test URI; include local-adapter tests as soon as Phase 10 exists. Browser/provider fixtures are not live service proof. Inspect `git diff`, `git diff --check`, package contents and secrets/artifacts before each local numbered checkpoint. Do not push further commits without a new explicit request.
 
 
 Phase 4.14 adds a persistent-scope-gated exact-file move for supported document/data suffixes. It refuses existing destinations and uses a verified same-volume hard link before unlinking the source. Acceptance includes source digest/path revalidation, collision/change tests, interactive CLI gating, and independent review; the full isolated MongoDB suite is required before completion.
