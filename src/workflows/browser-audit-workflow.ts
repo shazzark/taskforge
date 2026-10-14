@@ -34,6 +34,15 @@ export type BrowserJourneyStep =
 export interface PublicBrowserAuditOptions {
   readonly approvedOrigins: readonly string[];
   readonly journey: readonly BrowserJourneyStep[];
+  readonly manualLogin?: boolean;
+}
+
+/** Human callbacks used only by the explicit, headed manual-login flow. */
+export interface BrowserManualLoginInteraction {
+  readonly approveOrigin: (origin: string) => Promise<boolean>;
+  readonly approveLoginPost: (origin: string, pathname: string) => Promise<boolean>;
+  readonly completeLogin: () => Promise<boolean>;
+  readonly approveJourney: (journey: readonly BrowserJourneyStep[]) => Promise<boolean>;
 }
 
 /** Test-only seams; public CLI workflows never accept these values. */
@@ -41,6 +50,10 @@ export type BrowserAuditFixtureDependencies = Pick<BrowserEgressProxyOptions, "l
   readonly ignoreHTTPSErrors?: boolean;
   readonly onBrowserRequestFailure?: (url: string, error: string | undefined) => void;
   readonly onUnexpectedAuditError?: (error: unknown) => void;
+  readonly onBrowserClosed?: () => void;
+  readonly manualLoginInteraction?: BrowserManualLoginInteraction;
+  readonly onManualLoginReady?: (page: import("playwright").Page) => Promise<void>;
+  readonly headless?: boolean;
 };
 
 export interface BrowserAuditResult {
@@ -266,6 +279,15 @@ function containsMutatingRouteTerms(destination: URL): boolean {
   return false;
 }
 
+function isAuthenticationEndpoint(destination: URL): boolean {
+  let path: string;
+  try { path = decodeURIComponent(destination.pathname); } catch { return false; }
+  const segments = path.split("/").filter(Boolean);
+  const safeStaticSegments = /^(?:api|v[0-9]{1,3}|auth|oauth|login|signin|sign-in|authenticate)$/iu;
+  return segments.length > 0 && segments.length <= 8 && segments.every((segment) => safeStaticSegments.test(segment)) &&
+    /(?:^|\/)(?:login|signin|sign-in|authenticate)(?:\/|$)/iu.test(path);
+}
+
 /** Fail closed for page-provided links outside recognizable read-only content routes. */
 function isClassifiedReadOnlyBrowserDestination(destination: URL): boolean {
   let decodedPath: string;
@@ -301,6 +323,11 @@ async function auditPage(
 ): Promise<BrowserAuditResult["metrics"]> {
   const startedAt = Date.now();
   const approvedOrigins = new Set(publicOptions?.approvedOrigins ?? [target.origin]);
+  const manualLogin = publicOptions?.manualLogin === true;
+  const manualInteraction = fixtureDependencies?.manualLoginInteraction;
+  if (manualLogin && manualInteraction === undefined) {
+    throw new BrowserAuditError("Manual login requires interactive origin, authentication-request, and journey approvals.");
+  }
   const metrics = {
     httpErrorCount: 0,
     brokenLinkCount: 0,
@@ -381,7 +408,7 @@ async function auditPage(
       });
     }
     browser = await chromium.launch({
-      headless: true,
+      headless: manualLogin ? (fixtureDependencies?.headless ?? false) : true,
       timeout: MAX_PAGE_TIMEOUT_MS,
       ...(egressProxy === undefined ? {} : { proxy: { server: egressProxy.url } }),
       ...(publicOptions === undefined ? {} : { args: ["--disable-webrtc", "--disable-quic", "--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE 127.0.0.1"] }),
@@ -399,6 +426,9 @@ async function auditPage(
       page.setDefaultTimeout(MAX_PAGE_TIMEOUT_MS);
       page.setDefaultNavigationTimeout(MAX_PAGE_TIMEOUT_MS);
       let pageRequestCount = 0;
+      let manualLoginPhase = false;
+      let manualLoginClosing = false;
+      const pendingManualApprovals = new Set<Promise<void>>();
       const approvedNavigationUrls = new Set<string>();
       const diagnosticRouteProbeUrls = new Set<string>();
       const blockedOriginSet = new Set<string>();
@@ -420,11 +450,16 @@ async function auditPage(
         }
       };
       const recordObservedFailure = (failure: string): void => {
+        if (manualLogin) return;
         if (metrics.pageDiagnostics.observedFailures.length >= MAX_DIAGNOSTIC_FAILURES || Buffer.byteLength(failure, "utf8") > 300) return;
         metrics.pageDiagnostics.observedFailures.push(failure);
       };
       const recordJourneyEvidence = (evidence: string): void => {
         if (metrics.journeyEvidence.length >= MAX_JOURNEY_STEPS || Buffer.byteLength(evidence, "utf8") > 300) return;
+        if (manualLogin) {
+          metrics.journeyEvidence.push("A read-only journey step completed.");
+          return;
+        }
         const withoutFormatControls = evidence.replace(/\p{Cf}/gu, (character) => {
           const codePoint = character.codePointAt(0);
           return codePoint === undefined ? "" : `\\u{${codePoint.toString(16)}}`;
@@ -432,7 +467,9 @@ async function auditPage(
         metrics.journeyEvidence.push(escapeTerminalControls(withoutFormatControls));
       };
       const recordJourneyFailure = (reason: string): void => {
-        if (metrics.journeyFailureReasons.length < MAX_JOURNEY_STEPS) metrics.journeyFailureReasons.push(reason);
+        if (metrics.journeyFailureReasons.length < MAX_JOURNEY_STEPS) {
+          metrics.journeyFailureReasons.push(manualLogin ? "A read-only journey step did not complete." : reason);
+        }
         metrics.journeyStepsFailed += 1;
       };
       const policyAbortedRequests = new WeakSet<import("playwright").Request>();
@@ -479,14 +516,27 @@ async function auditPage(
           await webSocket.close({ code: 1008, reason: "WebSocket access is blocked during a read-only audit." });
         });
       }
-      await context.addInitScript(() => {
+      await context.addInitScript((allowAuthenticationPost: boolean) => {
         Object.defineProperty(window, "RTCPeerConnection", { configurable: false, value: undefined });
         Object.defineProperty(window, "webkitRTCPeerConnection", { configurable: false, value: undefined });
         const blockFormSubmission = (event: Event): void => {
+          if (allowAuthenticationPost && event.target instanceof HTMLFormElement &&
+              event.target.method.toUpperCase() === "POST") return;
           event.preventDefault();
           event.stopImmediatePropagation();
         };
         window.addEventListener("submit", blockFormSubmission, true);
+        if (allowAuthenticationPost) {
+          const nativeSubmit = HTMLFormElement.prototype.submit;
+          Object.defineProperty(HTMLFormElement.prototype, "submit", {
+            configurable: false,
+            value: function (this: HTMLFormElement): void {
+              if (this.method.toUpperCase() !== "POST") throw new Error("GET form submission is blocked during manual login.");
+              nativeSubmit.call(this);
+            },
+          });
+          return;
+        }
         Object.defineProperty(HTMLFormElement.prototype, "submit", {
           configurable: false,
           value: () => { throw new Error("Form submission is blocked during a read-only audit."); },
@@ -495,7 +545,7 @@ async function auditPage(
           configurable: false,
           value: () => { throw new Error("Form submission is blocked during a read-only audit."); },
         });
-      });
+      }, manualLogin);
       await context.route("**/*", async (route) => {
         const request = route.request();
         pageRequestCount += 1;
@@ -511,14 +561,39 @@ async function auditPage(
         } catch {
           requestUrl = undefined;
         }
+        if (manualLogin && manualLoginPhase && !manualLoginClosing && requestUrl !== undefined && requestUrl.protocol === "https:" && !approvedOrigins.has(requestUrl.origin) &&
+            approvedOrigins.size < MAX_APPROVED_ORIGINS && manualInteraction !== undefined) {
+          let candidateOrigin: string | undefined;
+          try { candidateOrigin = validateApprovedBrowserOrigin(requestUrl.origin); } catch { /* Private/invalid origins cannot be approved. */ }
+          if (candidateOrigin !== undefined) {
+            let finishApproval: (() => void) | undefined;
+            const pendingApproval = new Promise<void>((resolve) => { finishApproval = resolve; });
+            pendingManualApprovals.add(pendingApproval);
+            try {
+              if (await manualInteraction.approveOrigin(candidateOrigin)) {
+                approvedOrigins.add(candidateOrigin);
+                egressProxy?.approveOrigin(candidateOrigin);
+                metrics.approvedOriginCount = approvedOrigins.size;
+              }
+            } finally {
+              pendingManualApprovals.delete(pendingApproval);
+              finishApproval?.();
+            }
+          }
+        }
         const isMixedContent = publicOptions !== undefined && requestUrl?.protocol === "http:";
         if (isMixedContent) metrics.mixedContentRequestCount += 1;
         const allowedProtocol = publicOptions === undefined ? requestUrl?.protocol === "http:" : requestUrl?.protocol === "https:";
         const documentNavigation = request.isNavigationRequest() || request.resourceType() === "document";
+        const permittedManualNavigation = manualLogin && manualLoginPhase && requestUrl !== undefined &&
+          approvedOrigins.has(requestUrl.origin) &&
+          (isClassifiedReadOnlyBrowserDestination(requestUrl) ||
+            (request.method() === "POST" && requestUrl.search.length === 0 && isAuthenticationEndpoint(requestUrl)));
         const unapprovedNavigation = publicOptions !== undefined && documentNavigation &&
           (requestUrl === undefined || (!approvedNavigationUrls.has(requestUrl.toString()) &&
             !(request.redirectedFrom() !== null && requestUrl.origin === target.origin &&
-              isClassifiedReadOnlyBrowserDestination(requestUrl))));
+              isClassifiedReadOnlyBrowserDestination(requestUrl)) &&
+            !permittedManualNavigation));
         const mutatingRouteRequest = publicOptions !== undefined && requestUrl !== undefined && containsMutatingRouteTerms(requestUrl);
         if (requestUrl === undefined || !allowedProtocol || !approvedOrigins.has(requestUrl.origin) ||
             requestUrl.username.length > 0 || requestUrl.password.length > 0 || unapprovedNavigation || mutatingRouteRequest) {
@@ -544,6 +619,39 @@ async function auditPage(
           return;
         }
         if (request.method() !== "GET" && request.method() !== "HEAD") {
+          if (manualLogin && manualLoginPhase && !manualLoginClosing && request.method() === "POST" && requestUrl !== undefined &&
+              approvedOrigins.has(requestUrl.origin) && requestUrl.search.length === 0 &&
+              isAuthenticationEndpoint(requestUrl) && !mutatingRouteRequest &&
+              manualInteraction !== undefined) {
+            let finishApproval: (() => void) | undefined;
+            const pendingApproval = new Promise<void>((resolve) => { finishApproval = resolve; });
+            pendingManualApprovals.add(pendingApproval);
+            try {
+              if (await manualInteraction.approveLoginPost(requestUrl.origin, requestUrl.pathname) &&
+                  manualLoginPhase && requestUrl.search.length === 0 && approvedOrigins.has(requestUrl.origin)) {
+                // Avoid Chromium following an authentication response redirect
+                // without re-entering the policy route. Fulfill only the first
+                // response when it is not a redirect. Redirecting login responses
+                // are unsupported and aborted before Chromium can follow them.
+                const response = await route.fetch({ maxRedirects: 0, timeout: MAX_PAGE_TIMEOUT_MS });
+                const responseHeaders = response.headers();
+                if (HTTP_REDIRECT_STATUSES.has(response.status()) ||
+                    (response.status() === 300 && Object.hasOwn(responseHeaders, "location"))) {
+                  metrics.blockedNavigationCount += 1;
+                  metrics.navigationRedirectCount += 1;
+                  recordObservedFailure("An authentication POST returned a redirect; the redirect was blocked before following it.");
+                  policyAbortedRequests.add(request);
+                  await route.abort();
+                  return;
+                }
+                await route.fulfill({ response });
+                return;
+              }
+            } finally {
+              pendingManualApprovals.delete(pendingApproval);
+              finishApproval?.();
+            }
+          }
           metrics.blockedUnsafeMethodCount += 1;
           policyAbortedRequests.add(request);
           await route.abort();
@@ -749,11 +857,30 @@ async function auditPage(
       await waitForRenderedContent();
       await settleNetwork();
       if (isAborted(signal)) throw new BrowserAuditError("Browser audit was cancelled.");
-      const initialSnapshot = await captureSnapshot("initial");
-      await captureScreenshot("initial");
+      let initialSnapshot: BrowserPageSnapshot | undefined;
+      if (manualLogin) {
+        if (manualInteraction === undefined) throw new BrowserAuditError("Manual login approvals are unavailable.");
+        manualLoginPhase = true;
+        await fixtureDependencies?.onManualLoginReady?.(page);
+        const loginCompleted = await manualInteraction.completeLogin();
+        if (!loginCompleted) throw new BrowserAuditError("Manual login was cancelled before the read-only journey.");
+        manualLoginClosing = true;
+        await Promise.all([...pendingManualApprovals]);
+        manualLoginPhase = false;
+        await waitForRenderedContent();
+        await settleNetwork();
+        if (!await manualInteraction.approveJourney(publicOptions?.journey ?? [])) {
+          throw new BrowserAuditError("The read-only journey was not approved after manual login.");
+        }
+      } else {
+        initialSnapshot = await captureSnapshot("initial");
+        await captureScreenshot("initial");
+      }
       try {
-        const finalUrl = new URL(page.url());
-        if (publicOptions === undefined || finalUrl.origin === target.origin) metrics.finalPath = finalUrl.pathname.slice(0, 512);
+        if (!manualLogin) {
+          const finalUrl = new URL(page.url());
+          if (publicOptions === undefined || finalUrl.origin === target.origin) metrics.finalPath = finalUrl.pathname.slice(0, 512);
+        }
       } catch { /* Final path remains unavailable for a failed navigation. */ }
 
       if (publicOptions !== undefined) {
@@ -915,17 +1042,19 @@ async function auditPage(
         }
       }
 
-      const finalSnapshot = await captureSnapshot("final");
-      if (JSON.stringify({ ...initialSnapshot, stage: "final" }) !== JSON.stringify(finalSnapshot)) {
-        await captureScreenshot("final");
+      if (!manualLogin) {
+        const finalSnapshot = await captureSnapshot("final");
+        if (initialSnapshot !== undefined && JSON.stringify({ ...initialSnapshot, stage: "final" }) !== JSON.stringify(finalSnapshot)) {
+          await captureScreenshot("final");
+        }
       }
 
-      try {
+      if (!manualLogin) try {
         const finalUrl = new URL(page.url());
         if (finalUrl.origin === target.origin) metrics.finalPath = finalUrl.pathname.slice(0, 512);
       } catch { /* Final path remains unavailable for a failed navigation. */ }
 
-      try {
+      if (!manualLogin) try {
         const desktop = await page.evaluate(({ maxElements, maxLabelNodes }) => {
           const isVisible = (element: Element): boolean => {
             if (element.closest("[aria-hidden='true'], [hidden]")) return false;
@@ -967,6 +1096,7 @@ async function auditPage(
         metrics.pageInspectionFailed = true;
       }
 
+      if (!manualLogin) {
       try {
         metrics.designObservations = await page.evaluate(({ maxElements }) => {
           const observations: string[] = [];
@@ -1126,6 +1256,7 @@ async function auditPage(
           metrics.pageDiagnostics.observedFailures.every((failure) => !/(?:fetch|xhr)/iu.test(failure))) {
         metrics.pageDiagnostics.suspectedCauses.push("The page was empty after bounded rendering, but no data-request failure was observed to explain it.");
       }
+      }
     } finally {
       await context.close();
     }
@@ -1135,6 +1266,7 @@ async function auditPage(
     throw new BrowserAuditError("The local browser could not complete the fixture audit. Verify the Playwright package and Chromium binary.");
   } finally {
     if (browser !== undefined) await browser.close().catch(() => undefined);
+    fixtureDependencies?.onBrowserClosed?.();
     if (egressProxy !== undefined) await egressProxy.close().catch(() => undefined);
     clearTimeout(runtimeTimer);
     signal?.removeEventListener("abort", abortContext);
@@ -1183,11 +1315,19 @@ export async function runPublicBrowserAudit(
   targetValue: unknown,
   optionsValue: unknown,
   signal?: AbortSignal,
+  manualLoginInteraction?: BrowserManualLoginInteraction,
 ): Promise<BrowserAuditResult> {
   const target = validatePublicBrowserTarget(targetValue);
-  if (!isRecord(optionsValue) || Object.keys(optionsValue).some((key) => key !== "approvedOrigins" && key !== "journey") ||
+  if (!isRecord(optionsValue) || Object.keys(optionsValue).some((key) => key !== "approvedOrigins" && key !== "journey" && key !== "manualLogin") ||
       !Array.isArray(optionsValue["approvedOrigins"])) {
     throw new BrowserAuditError("Public browser audit requires approved origins and an explicit journey.");
+  }
+  const manualLogin = optionsValue["manualLogin"] === true;
+  if (optionsValue["manualLogin"] !== undefined && typeof optionsValue["manualLogin"] !== "boolean") {
+    throw new BrowserAuditError("Manual-login mode must be a boolean opt-in.");
+  }
+  if (manualLogin && manualLoginInteraction === undefined) {
+    throw new BrowserAuditError("Manual-login mode requires explicit interactive approvals.");
   }
   const rawOrigins = optionsValue["approvedOrigins"];
   if (rawOrigins.length > MAX_APPROVED_ORIGINS - 1) throw new BrowserAuditError("At most 7 additional resource origins may be approved.");
@@ -1197,7 +1337,9 @@ export async function runPublicBrowserAudit(
   const options: PublicBrowserAuditOptions = {
     approvedOrigins: [...origins],
     journey: validateBrowserJourney(optionsValue["journey"]),
+    ...(manualLogin ? { manualLogin: true } : {}),
   };
-  const metrics = await auditPublicBrowserPage(target, options, signal);
+  const metrics = await auditPublicBrowserPage(target, options, signal,
+    manualLoginInteraction === undefined ? undefined : { manualLoginInteraction });
   return persistBrowserAudit(store, metrics, "browser-public-audit", "Public browser audit started; target URL, journey text, page contents, links, and console messages are not persisted.");
 }

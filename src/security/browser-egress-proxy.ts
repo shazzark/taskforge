@@ -22,6 +22,8 @@ export interface BrowserEgressProxyOptions {
 
 export interface BrowserEgressProxy {
   readonly url: string;
+  /** Add one exact HTTPS origin after explicit owner approval. */
+  approveOrigin(origin: string): void;
   close(): Promise<void>;
 }
 
@@ -78,7 +80,7 @@ export function isGlobalUnicastAddress(address: string): boolean {
   return true;
 }
 
-function normalizeApprovedOrigins(origins: readonly string[]): ReadonlySet<string> {
+function normalizeApprovedOrigins(origins: readonly string[]): Set<string> {
   const normalized = new Set<string>();
   for (const value of origins) {
     let url: URL;
@@ -314,6 +316,10 @@ export async function createBrowserEgressProxy(options: BrowserEgressProxyOption
 
   return {
     url: `http://127.0.0.1:${address.port}`,
+    approveOrigin(origin: string): void {
+      const approved = normalizeApprovedOrigins([origin]);
+      for (const value of approved) approvedOrigins.add(value);
+    },
     async close(): Promise<void> {
       if (closed) return;
       closed = true;

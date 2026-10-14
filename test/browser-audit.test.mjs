@@ -244,10 +244,18 @@ test("Chromium traverses the actual egress proxy for an explicitly bounded GET s
   const requests = [];
   const server = createHttpsServer({ key, cert }, (request, response) => {
     requests.push({ method: request.method, url: request.url, host: request.headers.host });
-    const knownRoute = request.url === "/" || request.url === "/auth-discover" || request.url === "/many-passwords" || request.url === "/blocked-data" || request.url === "/blocked-private-data" || request.url === "/mutating-link" || request.url === "/resource-redirect" || request.url === "/search?q=Harry+Potter" || request.url === "/book/azkaban?edition=1";
+    const knownRoute = request.url === "/" || request.url === "/manual-login" || request.url === "/api/auth/login" || request.url === "/api/auth/signin" || request.url === "/auth-discover" || request.url === "/many-passwords" || request.url === "/blocked-data" || request.url === "/blocked-private-data" || request.url === "/mutating-link" || request.url === "/resource-redirect" || request.url === "/search?q=Harry+Potter" || request.url === "/book/azkaban?edition=1";
     if (request.url === "/resource-redirect") response.writeHead(302, { location: "https://api-fixture.example.net/books/details" });
+    else if (request.url === "/api/auth/signin" && request.method === "POST") response.writeHead(302, { location: "/account/delete" });
+    else if (request.url === "/api/auth/login" && request.method === "POST") response.writeHead(200, { "content-type": "text/html; charset=utf-8", "set-cookie": "fixture_session=synthetic; HttpOnly; Secure; SameSite=Lax" });
     else response.writeHead(knownRoute ? 200 : 404, { "content-type": "text/html; charset=utf-8" });
-    if (request.url === "/auth-discover") {
+    if (request.url === "/api/auth/login" && request.method === "POST") {
+      response.end('<main><h1>Signed in</h1><form action="/search" method="get"><label>Search<input type="search" name="q"></label><button>Search</button></form></main>');
+    } else if (request.url === "/api/auth/signin" && request.method === "POST") {
+      response.end();
+    } else if (request.url === "/manual-login") {
+      response.end('<!doctype html><form action="/api/auth/login" method="post"><label>Email<input name="email" type="email"></label><label>Password<input name="password" type="password"></label><button>Sign in</button></form>');
+    } else if (request.url === "/auth-discover") {
       response.end('<!doctype html><body><p>Loading session</p><script>history.replaceState(null, "", "/login"); setTimeout(() => { document.body.innerHTML = "<form><label>Search<input type=search name=q></label><label>Email<input type=email></label><label>Password<input type=password></label></form>"; }, 200);</script></body>');
     } else if (request.url === "/many-passwords") {
       response.end(`<!doctype html><body><form><input type=search aria-label=Search>${"<input type=password hidden>".repeat(21)}<input type=password></form></body>`);
@@ -330,6 +338,143 @@ test("Chromium traverses the actual egress proxy for an explicitly bounded GET s
     assert.ok(metrics.blockedExternalRequestCount >= 1);
     assert.deepEqual(metrics.blockedResourceOrigins, ["https://telemetry-fixture.example.net"]);
     assert.doesNotMatch(JSON.stringify(requests), /telemetry-fixture/u);
+
+    const approvals = [];
+    let manualBrowserClosed = false;
+    let manualPage;
+    let notifyAuthPostPrompted;
+    let notifyAuthPostApproved;
+    const authPostPrompted = new Promise((resolve) => { notifyAuthPostPrompted = resolve; });
+    const authPostApproved = new Promise((resolve) => { notifyAuthPostApproved = resolve; });
+    const manualMetrics = await auditPublicBrowserPage(new URL(origin + "/manual-login"), {
+      approvedOrigins: [origin],
+      journey: [{ type: "search", text: "Harry Potter" }, { type: "expect-text", text: "Results for Harry Potter" }],
+      manualLogin: true,
+    }, undefined, {
+      headless: true,
+      lookupAddresses: async (requestedHost) => {
+        assert.equal(requestedHost, hostname);
+        return ["93.184.216.34"];
+      },
+      connectAddress: async () => new Promise((resolve, reject) => {
+        const socket = connect(address.port, "127.0.0.1");
+        socket.once("error", reject);
+        socket.once("connect", () => {
+          socket.removeListener("error", reject);
+          resolve(socket);
+        });
+      }),
+      ignoreHTTPSErrors: true,
+      onBrowserClosed: () => { manualBrowserClosed = true; },
+      onManualLoginReady: async (page) => {
+        const queryPostWasBlocked = await page.evaluate(async () => {
+          try {
+            await fetch("/api/auth/login?intent=delete", { method: "POST" });
+            return false;
+          } catch {
+            return true;
+          }
+        });
+        assert.equal(queryPostWasBlocked, true, "query-bearing authentication POST must be blocked");
+        const tokenPathPostWasBlocked = await page.evaluate(async () => {
+          try {
+            await fetch("/api/auth/login/user12345678901234567890", { method: "POST" });
+            return false;
+          } catch {
+            return true;
+          }
+        });
+        assert.equal(tokenPathPostWasBlocked, true, "dynamic credential-like path segments must be blocked");
+        const redirectedUnsafePostWasBlocked = await page.evaluate(async () => {
+          try {
+            await fetch("/api/auth/signin", { method: "POST" });
+            return false;
+          } catch {
+            return true;
+          }
+        });
+        assert.equal(redirectedUnsafePostWasBlocked, true, "redirect to mutating-looking path must be blocked");
+        manualPage = page;
+        await page.getByRole("button", { name: "Sign in" }).click({ noWaitAfter: true });
+        await authPostPrompted;
+      },
+      manualLoginInteraction: {
+        approveOrigin: async (approvedOrigin) => { approvals.push(["origin", approvedOrigin]); return approvedOrigin === origin; },
+        approveLoginPost: async (approvedOrigin, pathname) => {
+          approvals.push(["post", approvedOrigin, pathname]);
+          if (pathname === "/api/auth/login") {
+            notifyAuthPostPrompted();
+            await authPostApproved;
+          }
+          return approvedOrigin === origin && ["/api/auth/login", "/api/auth/signin"].includes(pathname);
+        },
+        completeLogin: async () => {
+          approvals.push(["complete-login"]);
+          notifyAuthPostApproved();
+          return true;
+        },
+        approveJourney: async (journey) => {
+          approvals.push(["journey", journey.length]);
+          assert.ok(manualPage);
+          const postAfterFreezeWasBlocked = await manualPage.evaluate(async () => {
+            try {
+              await fetch("/api/auth/login", { method: "POST" });
+              return false;
+            } catch {
+              return true;
+            }
+          });
+          assert.equal(postAfterFreezeWasBlocked, true);
+          return journey.length === 2;
+        },
+      },
+    });
+    assert.equal(manualMetrics.journeyStepsCompleted, 2);
+    assert.equal(manualMetrics.journeyStepsFailed, 0);
+    assert.deepEqual(approvals, [["post", origin, "/api/auth/signin"], ["post", origin, "/api/auth/login"], ["complete-login"], ["journey", 2]]);
+    assert.equal(manualMetrics.pageDiagnostics.snapshots.length, 0);
+    assert.equal(manualMetrics.pageDiagnostics.screenshots.length, 0);
+    assert.equal(manualBrowserClosed, true);
+    assert.deepEqual(manualMetrics.designObservations, []);
+    assert.ok(manualMetrics.journeyEvidence.every((evidence) => evidence === "A read-only journey step completed."));
+    assert.doesNotMatch(JSON.stringify(manualMetrics), /synthetic|fixture_session|Password|Sign in|Results for Harry Potter/u);
+    assert.ok(requests.some(({ method, url }) => method === "POST" && url === "/api/auth/login"));
+    assert.ok(!requests.some(({ method, url }) => method === "GET" && url === "/account/delete"));
+    assert.ok(!requests.some(({ method, url }) => method === "POST" && url.includes("?")));
+    assert.ok(!requests.some(({ method, url }) => method === "POST" && url.startsWith("/api/auth/login/")));
+    assert.ok(requests.filter(({ method }) => method !== "GET" && method !== "HEAD").every(({ method, url }) => method === "POST" && ["/api/auth/login", "/api/auth/signin"].includes(url)));
+
+    const beforeCancelledRequests = requests.length;
+    let cancelledBrowserClosed = false;
+    await assert.rejects(() => auditPublicBrowserPage(new URL(origin + "/manual-login"), {
+      approvedOrigins: [origin],
+      journey: [{ type: "expect-text", text: "Signed in" }],
+      manualLogin: true,
+    }, undefined, {
+      headless: true,
+      lookupAddresses: async (requestedHost) => {
+        assert.equal(requestedHost, hostname);
+        return ["93.184.216.34"];
+      },
+      connectAddress: async () => new Promise((resolve, reject) => {
+        const socket = connect(address.port, "127.0.0.1");
+        socket.once("error", reject);
+        socket.once("connect", () => {
+          socket.removeListener("error", reject);
+          resolve(socket);
+        });
+      }),
+      ignoreHTTPSErrors: true,
+      onBrowserClosed: () => { cancelledBrowserClosed = true; },
+      manualLoginInteraction: {
+        approveOrigin: async () => false,
+        approveLoginPost: async () => false,
+        completeLogin: async () => false,
+        approveJourney: async () => false,
+      },
+    }), /Manual login was cancelled/u);
+    assert.equal(cancelledBrowserClosed, true);
+    assert.ok(!requests.slice(beforeCancelledRequests).some(({ method }) => method === "POST"));
 
     const beforeAuthRequests = requests.length;
     const authMetrics = await auditPublicBrowserPage(new URL(`${origin}/auth-discover`), {

@@ -1680,10 +1680,16 @@ async function runBrowserAuditCommand(commandArgs: readonly string[]): Promise<v
   let journeyValue: string | undefined;
   const rawOrigins: string[] = [];
   let withSpecialist = false;
+  let manualLogin = false;
   for (let index = 0; index < commandArgs.length;) {
     const option = commandArgs[index];
     if (option === "--specialist" && !withSpecialist) {
       withSpecialist = true;
+      index += 1;
+      continue;
+    }
+    if (option === "--manual-login" && !manualLogin) {
+      manualLogin = true;
       index += 1;
       continue;
     }
@@ -1697,7 +1703,7 @@ async function runBrowserAuditCommand(commandArgs: readonly string[]): Promise<v
     else if (option === "--journey" && journeyValue === undefined) journeyValue = value;
     else if (option === "--origin" && rawOrigins.length < 7) rawOrigins.push(value);
     else {
-      process.stderr.write("Expected --url <url> [--journey <json-array>] [--origin <https-origin>]... [--specialist].\n");
+      process.stderr.write("Expected --url <url> [--journey <json-array>] [--origin <https-origin>]... [--manual-login] [--specialist].\n");
       process.exitCode = 1;
       return;
     }
@@ -1754,6 +1760,11 @@ async function runBrowserAuditCommand(commandArgs: readonly string[]): Promise<v
     process.exitCode = 1;
     return;
   }
+  if (manualLogin && (!isPublic || withSpecialist)) {
+    process.stderr.write("--manual-login requires a public HTTPS audit and cannot be combined with --specialist.\n");
+    process.exitCode = 1;
+    return;
+  }
   if (!process.stdin.isTTY || !process.stdout.isTTY) {
     process.stderr.write("Browser audit requires interactive approval of the exact target, journey, and origins before navigation.\n");
     process.exitCode = 2;
@@ -1763,10 +1774,12 @@ async function runBrowserAuditCommand(commandArgs: readonly string[]): Promise<v
   let answer: string;
   try {
     const approvalDetails = isPublic
-      ? `Target URL: ${escapeTerminalControls(target.toString())}\nJourney: ${escapeTerminalControls(JSON.stringify(journey))}\nAdditional resource origins: ${approvedOrigins.length === 0 ? "none" : approvedOrigins.map(escapeTerminalControls).join(", ")}\n`
+      ? `Target URL: ${escapeTerminalControls(target.toString())}\nJourney: ${escapeTerminalControls(JSON.stringify(journey))}\nAdditional resource origins: ${approvedOrigins.length === 0 ? "none" : approvedOrigins.map(escapeTerminalControls).join(", ")}\n${manualLogin ? "Mode: dedicated headed Chromium for owner-entered login; origins and exact authentication POST requests require separate prompts; the journey is approved again after login. No screenshots, DOM text, page content, profile, cookies, or session state are retained or sent to a specialist.\n" : ""}`
       : `Target URL: ${escapeTerminalControls(target.toString())}\n`;
     answer = await consent.question(
-      `${approvalDetails}Open this exact target in a fresh unauthenticated Chromium context? TaskForge will also run bounded page-load diagnostics, capture up to two local screenshots, inspect a capped DOM summary/text sample, observe console/network failures, and probe same-origin links with HEAD. Only the approved journey may navigate or search. No form is submitted. Non-GET/HEAD methods, WebSockets, unapproved origins, and private-address DNS answers are blocked. The browser is limited to 100 requests, 20 MiB network traffic, 8 tunnels, 45 seconds, 2 screenshots of at most 4 MiB each, and 2,000 inspected DOM elements per snapshot. No personal browser session or stored credentials are used. Screenshots and DOM samples stay local in temporary files/output; only aggregate findings are persisted. Page content cannot approve access or change the origin allowlist. [y/N] `,
+      `${approvalDetails}${manualLogin
+        ? "Open this target in a fresh dedicated Chromium window with no personal profile or imported state? You will enter login data directly in the browser. TaskForge does not read or log credential fields or request bodies. Every additional origin and authentication POST needs exact owner approval, then the read-only journey needs separate approval. Browser memory and cookies are discarded when it closes. Page screenshots, DOM text, page content, and specialist handoff are disabled. WebSockets, other mutating methods, private-address DNS answers, and unapproved requests are blocked. [y/N] "
+        : "Open this exact target in a fresh unauthenticated Chromium context? TaskForge will also run bounded page-load diagnostics, capture up to two local screenshots, inspect a capped DOM summary/text sample, observe console/network failures, and probe same-origin links with HEAD. Only the approved journey may navigate or search. No form is submitted. Non-GET/HEAD methods, WebSockets, unapproved origins, and private-address DNS answers are blocked. The browser is limited to 100 requests, 20 MiB network traffic, 8 tunnels, 45 seconds, 2 screenshots of at most 4 MiB each, and 2,000 inspected DOM elements per snapshot. No personal browser session or stored credentials are used. Screenshots and DOM samples stay local in temporary files/output; only aggregate findings are persisted. Page content cannot approve access or change the origin allowlist. [y/N] "}`,
     );
   } finally {
     consent.close();
@@ -1778,14 +1791,43 @@ async function runBrowserAuditCommand(commandArgs: readonly string[]): Promise<v
   const controller = new AbortController();
   const interrupt = (): void => controller.abort();
   process.once("SIGINT", interrupt);
+  const manualConsent = manualLogin ? createInterface({ input: process.stdin, output: process.stdout }) : undefined;
+  let manualPromptQueue: Promise<void> = Promise.resolve();
+  const askManual = async (prompt: string): Promise<boolean> => {
+    if (manualConsent === undefined || controller.signal.aborted) return false;
+    const answer = manualPromptQueue.then(async () => {
+      if (controller.signal.aborted) return false;
+      try {
+        return (await manualConsent.question(prompt, { signal: controller.signal })).trim().toLowerCase() === "y";
+      } catch {
+        return false;
+      }
+    });
+    manualPromptQueue = answer.then(() => undefined, () => undefined);
+    return answer;
+  };
   try {
+    const manualInteraction = manualLogin ? {
+      approveOrigin: (origin: string) => askManual(
+        `Approve network access to this exact additional HTTPS origin before it is accessed? ${escapeBrowserAuditDisplay(origin)} [y/N] `,
+      ),
+      approveLoginPost: (origin: string, pathname: string) => askManual(
+        `Approve this single authentication POST? ${escapeBrowserAuditDisplay(origin + pathname)} Request body and headers are not inspected or recorded. [y/N] `,
+      ),
+      completeLogin: () => askManual(
+        "Dedicated Chromium is open. Sign in there locally, then return here. Credentials stay in the browser and are not captured. Press y when done to close the authentication-request window; requests already paused still require their own approval, and new non-GET/HEAD requests will be blocked. [y/N] ",
+      ),
+      approveJourney: (approvedJourney: readonly BrowserJourneyStep[]) => askManual(
+        `Approve this exact read-only journey after login? ${escapeTerminalControls(JSON.stringify(approvedJourney))} No screenshots, DOM text, page content, or specialist handoff will be captured. [y/N] `,
+      ),
+    } : undefined;
     const result = await withMongoStore((store) => isPublic
-      ? runPublicBrowserAudit(store, target.toString(), { approvedOrigins, journey }, controller.signal)
+      ? runPublicBrowserAudit(store, target.toString(), { approvedOrigins, journey, ...(manualLogin ? { manualLogin: true } : {}) }, controller.signal, manualInteraction)
       : runBrowserAudit(store, target.toString(), controller.signal));
     if (result !== undefined) {
       const metrics = result.metrics;
       let screenshotPaths: readonly string[] = [];
-      try { screenshotPaths = await saveBrowserAuditScreenshots(metrics.pageDiagnostics.screenshots); }
+      try { screenshotPaths = manualLogin ? [] : await saveBrowserAuditScreenshots(metrics.pageDiagnostics.screenshots); }
       catch { process.stderr.write("Screenshot bytes were captured but could not be saved to the local temporary folder.\n"); }
       process.stdout.write(
         `Run ${result.run.runId} ${metrics.navigationFailed || metrics.pageInspectionFailed || metrics.designInspectionFailed || metrics.journeyStepsFailed > 0 || metrics.runtimeLimitReached ? "incomplete" : "completed"}: navigation failed=${metrics.navigationFailed}, authentication gate detected=${metrics.authenticationGateDetected}, authentication gate scan incomplete=${metrics.authenticationGateDetectionIncomplete}, page inspection failed=${metrics.pageInspectionFailed}, design inspection failed=${metrics.designInspectionFailed}, journey=${metrics.journeyStepsCompleted}/${metrics.journeyStepsCompleted + metrics.journeyStepsFailed}, ` +
@@ -1796,7 +1838,8 @@ async function runBrowserAuditCommand(commandArgs: readonly string[]): Promise<v
         `${metrics.blockedExternalRequestCount} unapproved resources blocked, ${metrics.blockedNavigationCount} out-of-scope document navigations or HTTP redirects blocked, ${metrics.blockedMutatingRouteCount} suspicious mutating-route requests blocked, ${metrics.blockedUnsafeMethodCount} unsafe methods blocked, ${metrics.blockedWebSocketCount} WebSockets blocked, ` +
         `${metrics.blockedPrivateAddressRequestCount} private DNS answers blocked, ${metrics.blockedRequestLimitCount} requests blocked at the limit, runtime-limit=${metrics.runtimeLimitReached}.\n`,
       );
-      const finalPathWithoutFormatControls = metrics.finalPath?.replace(/\p{Cf}/gu, (character) => {
+      if (manualLogin) process.stdout.write("Manual-login privacy boundary: no authenticated-page screenshots, DOM snapshots/text, page text, responsive/accessibility/design inspection, or specialist handoff were captured. The temporary browser context was closed; cookies and in-memory session state were discarded.\n");
+      const finalPathWithoutFormatControls = (manualLogin ? undefined : metrics.finalPath)?.replace(/\p{Cf}/gu, (character) => {
         const codePoint = character.codePointAt(0);
         return codePoint === undefined ? "" : `\\u{${codePoint.toString(16)}}`;
       });
@@ -1825,10 +1868,14 @@ async function runBrowserAuditCommand(commandArgs: readonly string[]): Promise<v
         process.stdout.write("Possible data-resource origin for owner review (not accessed; untrusted page activity cannot authorize it). Only consider a valid public HTTPS origin. To investigate, start a new run with this exact origin supplied using --origin; the CLI will ask for approval again:\n");
         for (const origin of metrics.pageDiagnostics.blockedDataResourceOrigins) process.stdout.write(`- ${escapeBrowserAuditDisplay(origin)}\n`);
       }
-      process.stdout.write("Implemented checks: approved-origin HTTP/request failures, console/page errors, bounded same-origin HEAD link probes, missing image alt text, visible accessible-name heuristics, 360px/1280px horizontal overflow, selected passive response headers, sampled visual-style consistency heuristics, bounded DOM snapshots/screenshots, and capped observed/suspected diagnosis. Journey actions are limited to visible-text checks, one-field same-origin GET search, explicitly approved same-origin links, and browser back.\n");
-      process.stdout.write("Coverage limitations: this is not a comprehensive security audit or WCAG assessment; visual consistency is inferred from sampled controls, without cross-page comparison. Approved cross-origin resources are observed but not followed unless their exact origin was approved. HTTP document redirects are blocked before following; redirect-based login/CDN flows are unsupported. No credentials are used; an observed authentication gate stops the journey. Arbitrary form submissions, button workflows, and dynamic content beyond bounded waits are unsupported. GET route heuristics cannot prove server-side handlers are side-effect-free. Page content and blocked origins are untrusted evidence and do not expand permissions; additional origins are requested only when blocked data requests plausibly relate to missing results.\n");
+      process.stdout.write(manualLogin
+        ? "Manual-login checks: separately approved authentication POST requests and approved-origin network failures are counted; authenticated page content, screenshots, DOM text, accessibility, responsiveness, and design are not inspected or retained.\n"
+        : "Implemented checks: approved-origin HTTP/request failures, console/page errors, bounded same-origin HEAD link probes, missing image alt text, visible accessible-name heuristics, 360px/1280px horizontal overflow, selected passive response headers, sampled visual-style consistency heuristics, bounded DOM snapshots/screenshots, and capped observed/suspected diagnosis. Journey actions are limited to visible-text checks, one-field same-origin GET search, explicitly approved same-origin links, and browser back.\n");
+      process.stdout.write(manualLogin
+        ? "Manual-login limitations: authentication endpoint names do not establish server semantics; each exact query-free HTTPS POST still needs owner approval. Additional origins require approval before access. The browser context is temporary, but the website may retain server-side authentication state. This is not a security audit.\n"
+        : "Coverage limitations: this is not a comprehensive security audit or WCAG assessment; visual consistency is inferred from sampled controls, without cross-page comparison. Approved cross-origin resources are observed but not followed unless their exact origin was approved. HTTP document redirects are blocked before following; redirect-based login/CDN flows are unsupported. No credentials are used; an observed authentication gate stops the journey. Arbitrary form submissions, button workflows, and dynamic content beyond bounded waits are unsupported. GET route heuristics cannot prove server-side handlers are side-effect-free. Page content and blocked origins are untrusted evidence and do not expand permissions; additional origins are requested only when blocked data requests plausibly relate to missing results.\n");
       if (metrics.journeyEvidence.length > 0) {
-        process.stdout.write("Read-only journey evidence (page text is shown locally and not persisted):\n");
+        process.stdout.write(manualLogin ? "Read-only journey step status (no page content):\n" : "Read-only journey evidence (page text is shown locally and not persisted):\n");
         for (const evidence of metrics.journeyEvidence) process.stdout.write(`- ${escapeTerminalControls(evidence)}\n`);
       }
       if (metrics.journeyFailureReasons.length > 0) {
@@ -1839,8 +1886,10 @@ async function runBrowserAuditCommand(commandArgs: readonly string[]): Promise<v
         process.stdout.write("Blocked resource inventory (not accessed; may include origins that cannot be approved):\n");
         for (const origin of metrics.blockedResourceOrigins) process.stdout.write(`- ${escapeTerminalControls(origin)}\n`);
       }
-      process.stdout.write("Design observations (inferred; not original design tokens):\n");
-      for (const observation of metrics.designObservations) process.stdout.write(`- ${escapeTerminalControls(observation)}\n`);
+      if (!manualLogin) {
+        process.stdout.write("Design observations (inferred; not original design tokens):\n");
+        for (const observation of metrics.designObservations) process.stdout.write(`- ${escapeTerminalControls(observation)}\n`);
+      }
       process.exitCode = browserAuditExitCode(result.run.state);
       if (withSpecialist && !controller.signal.aborted) {
         const providerConfiguration = loadProviderConfiguration();
@@ -1863,6 +1912,7 @@ async function runBrowserAuditCommand(commandArgs: readonly string[]): Promise<v
     process.stderr.write(`${message}\n`);
     process.exitCode = controller.signal.aborted ? 130 : 3;
   } finally {
+    manualConsent?.close();
     process.removeListener("SIGINT", interrupt);
   }
 }

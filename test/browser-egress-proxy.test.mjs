@@ -80,6 +80,30 @@ test("proxy accepts only explicitly approved HTTPS CONNECT requests on port 443"
   }
 });
 
+test("proxy accepts a newly approved exact origin only after explicit approval", async () => {
+  let lookupCount = 0;
+  const proxy = await createBrowserEgressProxy({
+    approvedOrigins: [allowedOrigin],
+    lookupAddresses: async () => { lookupCount += 1; return ["93.184.216.34"]; },
+    connectAddress: async () => { throw new Error("fixture deliberately stops after DNS validation"); },
+  });
+  try {
+    const denied = await openProxyClient(proxy.url, "resource.example:443");
+    assert.equal(denied.status, 403);
+    await closeSocket(denied.socket);
+    assert.equal(lookupCount, 0);
+
+    proxy.approveOrigin("https://resource.example");
+    const approved = await openProxyClient(proxy.url, "resource.example:443");
+    assert.equal(approved.status, 502);
+    await closeSocket(approved.socket);
+    assert.equal(lookupCount, 1);
+    assert.throws(() => proxy.approveOrigin("http://resource.example"), TypeError);
+  } finally {
+    await proxy.close();
+  }
+});
+
 test("proxy caps lifetime CONNECT attempts including denied requests", async () => {
   let lookupCount = 0;
   const proxy = await createBrowserEgressProxy({
