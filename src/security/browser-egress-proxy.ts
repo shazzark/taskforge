@@ -17,6 +17,7 @@ export interface BrowserEgressProxyOptions {
   readonly lookupAddresses?: (hostname: string) => Promise<readonly string[]>;
   readonly connectAddress?: (address: string, port: number) => Promise<Socket>;
   readonly onPrivateAddressBlocked?: () => void;
+  readonly onConnectRequest?: (authority: string | undefined) => void;
 }
 
 export interface BrowserEgressProxy {
@@ -186,6 +187,7 @@ export async function createBrowserEgressProxy(options: BrowserEgressProxyOption
     socket.once("close", () => clients.delete(socket));
   });
   server.on("connect", (request, clientSocket, head) => {
+    options.onConnectRequest?.(request.url);
     // Count every CONNECT request handled, including malformed, denied, and over-cap attempts.
     connectAttempts += 1;
     if (connectAttempts > MAX_CONNECT_ATTEMPTS) {

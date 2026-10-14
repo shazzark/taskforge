@@ -1,8 +1,9 @@
 import { randomUUID } from "node:crypto";
 import { isIP } from "node:net";
 import type { MongoStore, RunSummary } from "../mongo-store.js";
-import { createBrowserEgressProxy, isGlobalUnicastAddress } from "../security/browser-egress-proxy.js";
+import { createBrowserEgressProxy, isGlobalUnicastAddress, type BrowserEgressProxyOptions } from "../security/browser-egress-proxy.js";
 import { isRecord } from "../providers/types.js";
+import { escapeTerminalControls } from "../security/terminal-text.js";
 
 const WORKFLOW_ID = "browser-fixture-audit";
 const STEP_ID = "audit-local-page";
@@ -16,12 +17,22 @@ const MAX_APPROVED_ORIGINS = 8;
 
 export type BrowserJourneyStep =
   | { readonly type: "click-link"; readonly text: string }
-  | { readonly type: "expect-text"; readonly text: string };
+  | { readonly type: "expect-text"; readonly text: string }
+  | { readonly type: "search"; readonly text: string }
+  | { readonly type: "open-first-book" }
+  | { readonly type: "go-back" };
 
 export interface PublicBrowserAuditOptions {
   readonly approvedOrigins: readonly string[];
   readonly journey: readonly BrowserJourneyStep[];
 }
+
+/** Test-only seams; public CLI workflows never accept these values. */
+export type BrowserAuditFixtureDependencies = Pick<BrowserEgressProxyOptions, "lookupAddresses" | "connectAddress" | "onConnectRequest"> & {
+  readonly ignoreHTTPSErrors?: boolean;
+  readonly onBrowserRequestFailure?: (url: string, error: string | undefined) => void;
+  readonly onUnexpectedAuditError?: (error: unknown) => void;
+};
 
 export interface BrowserAuditResult {
   readonly run: RunSummary;
@@ -44,6 +55,9 @@ export interface BrowserAuditResult {
     readonly blockedRequestLimitCount: number;
     readonly blockedWebSocketCount: number;
     readonly blockedPrivateAddressRequestCount: number;
+    readonly blockedResourceOrigins: readonly string[];
+    readonly journeyEvidence: readonly string[];
+    readonly journeyFailureReasons: readonly string[];
     readonly mixedContentRequestCount: number;
     readonly journeyStepsCompleted: number;
     readonly journeyStepsFailed: number;
@@ -144,13 +158,22 @@ export function validateBrowserJourney(value: unknown): readonly BrowserJourneyS
   for (const item of journeyItems) {
     if (!isRecord(item)) throw new BrowserAuditError("A browser journey step is invalid.");
     const step = item;
+    if (step["type"] === "go-back" && Object.keys(step).length === 1) {
+      steps.push({ type: "go-back" });
+      continue;
+    }
+    if (step["type"] === "open-first-book" && Object.keys(step).length === 1) {
+      steps.push({ type: "open-first-book" });
+      continue;
+    }
     if (Object.keys(step).length !== 2 || typeof step["text"] !== "string" || step["text"].trim().length === 0 ||
         Buffer.byteLength(step["text"], "utf8") > 200 || /[\u0000-\u001f\u007f]/u.test(step["text"])) {
       throw new BrowserAuditError("Journey text must be 1–200 printable UTF-8 bytes.");
     }
     if (step["type"] === "expect-text") steps.push({ type: "expect-text", text: step["text"] });
     else if (step["type"] === "click-link") steps.push({ type: "click-link", text: step["text"] });
-    else throw new BrowserAuditError("Supported journey steps are expect-text and click-link; form and button submissions are not supported.");
+    else if (step["type"] === "search") steps.push({ type: "search", text: step["text"] });
+    else throw new BrowserAuditError("Supported journey steps are expect-text, search, open-first-book, click-link, and go-back; arbitrary form/button actions are not supported.");
   }
   return steps;
 }
@@ -174,14 +197,16 @@ export async function auditPublicBrowserPage(
   target: URL,
   options: PublicBrowserAuditOptions,
   signal?: AbortSignal,
+  fixtureDependencies?: BrowserAuditFixtureDependencies,
 ): Promise<BrowserAuditResult["metrics"]> {
-  return auditPage(target, options, signal);
+  return auditPage(target, options, signal, fixtureDependencies);
 }
 
 async function auditPage(
   target: URL,
   publicOptions: PublicBrowserAuditOptions | undefined,
   signal?: AbortSignal,
+  fixtureDependencies?: BrowserAuditFixtureDependencies,
 ): Promise<BrowserAuditResult["metrics"]> {
   const startedAt = Date.now();
   const approvedOrigins = new Set(publicOptions?.approvedOrigins ?? [target.origin]);
@@ -204,6 +229,9 @@ async function auditPage(
     blockedRequestLimitCount: 0,
     blockedWebSocketCount: 0,
     blockedPrivateAddressRequestCount: 0,
+    blockedResourceOrigins: [] as string[],
+    journeyEvidence: [] as string[],
+    journeyFailureReasons: [] as string[],
     mixedContentRequestCount: 0,
     journeyStepsCompleted: 0,
     journeyStepsFailed: 0,
@@ -239,16 +267,20 @@ async function auditPage(
         tunnelTimeoutMs: 15_000,
         maxAggregateBytes: 20 * 1024 * 1024,
         onPrivateAddressBlocked: () => { metrics.blockedPrivateAddressRequestCount += 1; },
+        ...(fixtureDependencies?.lookupAddresses === undefined ? {} : { lookupAddresses: fixtureDependencies.lookupAddresses }),
+        ...(fixtureDependencies?.connectAddress === undefined ? {} : { connectAddress: fixtureDependencies.connectAddress }),
+        ...(fixtureDependencies?.onConnectRequest === undefined ? {} : { onConnectRequest: fixtureDependencies.onConnectRequest }),
       });
     }
     browser = await chromium.launch({
       headless: true,
       timeout: MAX_PAGE_TIMEOUT_MS,
       ...(egressProxy === undefined ? {} : { proxy: { server: egressProxy.url } }),
-      ...(publicOptions === undefined ? {} : { args: ["--disable-webrtc", "--disable-quic", "--host-resolver-rules=MAP * ~NOTFOUND"] }),
+      ...(publicOptions === undefined ? {} : { args: ["--disable-webrtc", "--disable-quic", "--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE 127.0.0.1"] }),
     });
     context = await browser.newContext({
       serviceWorkers: "block",
+      ...(fixtureDependencies?.ignoreHTTPSErrors === undefined ? {} : { ignoreHTTPSErrors: fixtureDependencies.ignoreHTTPSErrors }),
       ...(publicOptions === undefined ? {} : { storageState: { cookies: [], origins: [] } }),
     });
     closeForAbort = () => { void context?.close().catch(() => undefined); };
@@ -259,9 +291,29 @@ async function auditPage(
       page.setDefaultTimeout(MAX_PAGE_TIMEOUT_MS);
       page.setDefaultNavigationTimeout(MAX_PAGE_TIMEOUT_MS);
       let pageRequestCount = 0;
+      const approvedNavigationUrls = new Set<string>();
+      const blockedOriginSet = new Set<string>();
+      const recordBlockedOrigin = (url: URL | undefined): void => {
+        if (url === undefined || url.origin === target.origin || blockedOriginSet.size >= MAX_APPROVED_ORIGINS) return;
+        blockedOriginSet.add(url.origin);
+        metrics.blockedResourceOrigins = [...blockedOriginSet];
+      };
+      const recordJourneyEvidence = (evidence: string): void => {
+        if (metrics.journeyEvidence.length >= MAX_JOURNEY_STEPS || Buffer.byteLength(evidence, "utf8") > 300) return;
+        const withoutFormatControls = evidence.replace(/\p{Cf}/gu, (character) => {
+          const codePoint = character.codePointAt(0);
+          return codePoint === undefined ? "" : `\\u{${codePoint.toString(16)}}`;
+        });
+        metrics.journeyEvidence.push(escapeTerminalControls(withoutFormatControls));
+      };
+      const recordJourneyFailure = (reason: string): void => {
+        if (metrics.journeyFailureReasons.length < MAX_JOURNEY_STEPS) metrics.journeyFailureReasons.push(reason);
+        metrics.journeyStepsFailed += 1;
+      };
       const policyAbortedRequests = new WeakSet<import("playwright").Request>();
       page.on("response", (response) => incrementOnHttpError(response.status(), metrics));
       page.on("requestfailed", (request) => {
+        fixtureDependencies?.onBrowserRequestFailure?.(request.url(), request.failure()?.errorText);
         if (policyAbortedRequests.has(request)) return;
         try {
           if (approvedOrigins.has(new URL(request.url()).origin)) metrics.networkFailureCount += 1;
@@ -313,10 +365,11 @@ async function auditPage(
         if (isMixedContent) metrics.mixedContentRequestCount += 1;
         const allowedProtocol = publicOptions === undefined ? requestUrl?.protocol === "http:" : requestUrl?.protocol === "https:";
         const unapprovedNavigation = publicOptions !== undefined && request.isNavigationRequest() &&
-          (requestUrl === undefined || requestUrl.search.length > 0);
+          (requestUrl === undefined || (requestUrl.search.length > 0 && !approvedNavigationUrls.has(requestUrl.toString())));
         if (requestUrl === undefined || !allowedProtocol || !approvedOrigins.has(requestUrl.origin) ||
             requestUrl.username.length > 0 || requestUrl.password.length > 0 || unapprovedNavigation) {
           metrics.blockedExternalRequestCount += 1;
+          recordBlockedOrigin(requestUrl);
           policyAbortedRequests.add(request);
           await route.abort();
           return;
@@ -347,41 +400,108 @@ async function auditPage(
         for (const step of publicOptions.journey) {
           if (isAborted(signal)) throw new BrowserAuditError("Browser audit was cancelled.");
           if (runtimeLimitReached) {
-            metrics.journeyStepsFailed += publicOptions.journey.length - metrics.journeyStepsCompleted - metrics.journeyStepsFailed;
+            const remainingSteps = publicOptions.journey.length - metrics.journeyStepsCompleted - metrics.journeyStepsFailed;
+            for (let remaining = 0; remaining < remainingSteps; remaining += 1) recordJourneyFailure("audit-runtime-limit");
             break;
           }
           try {
+            if (step.type === "go-back") {
+              const previous = await page.goBack({ waitUntil: "domcontentloaded", timeout: MAX_PAGE_TIMEOUT_MS });
+              if (previous === null) recordJourneyFailure("browser-history-unavailable");
+              else {
+                metrics.journeyStepsCompleted += 1;
+                recordJourneyEvidence(`Returned to ${new URL(page.url()).pathname} with browser history.`);
+              }
+              continue;
+            }
             if (step.type === "expect-text") {
               const text = page.getByText(step.text, { exact: true });
               if (await text.count() === 0 || !(await text.first().isVisible())) {
-                metrics.journeyStepsFailed += 1;
+                recordJourneyFailure("expected-visible-text-not-found");
                 continue;
               }
               metrics.journeyStepsCompleted += 1;
               continue;
             }
-            const link = page.getByRole("link", { name: step.text, exact: true });
+            if (step.type === "search") {
+              const searchboxes = page.getByRole("searchbox");
+              if (await searchboxes.count() !== 1 || !(await searchboxes.isVisible())) {
+                recordJourneyFailure("searchbox-not-unique-and-visible");
+                continue;
+              }
+              const field = await searchboxes.evaluate((element) => {
+                if (!(element instanceof HTMLInputElement) || element.form === null || element.form.method.toUpperCase() !== "GET" ||
+                    element.type !== "search" || element.name.trim().length === 0) return null;
+                const namedControls = Array.from(element.form.elements).filter((control) => {
+                  if (!(control instanceof HTMLElement) || ("disabled" in control && control.disabled)) return false;
+                  return "name" in control && typeof control.name === "string" && control.name.trim().length > 0;
+                });
+                if (namedControls.length !== 1 || namedControls[0] !== element) return null;
+                return { action: element.form.action, name: element.name };
+              });
+              if (!isRecord(field) || typeof field["action"] !== "string" || typeof field["name"] !== "string") {
+                recordJourneyFailure("search-field-is-not-a-single-named-get-control");
+                continue;
+              }
+              const searchUrl = new URL(field["action"]);
+              if (searchUrl.origin !== target.origin || searchUrl.protocol !== "https:" || searchUrl.search.length > 0 || searchUrl.hash.length > 0 ||
+                  searchUrl.username.length > 0 || searchUrl.password.length > 0) {
+                recordBlockedOrigin(searchUrl);
+                metrics.blockedExternalRequestCount += 1;
+                recordJourneyFailure("search-action-is-not-same-origin-https");
+                continue;
+              }
+              searchUrl.searchParams.set(field["name"], step.text);
+              approvedNavigationUrls.add(searchUrl.toString());
+              const response = await page.goto(searchUrl.toString(), { waitUntil: "domcontentloaded", timeout: MAX_PAGE_TIMEOUT_MS });
+              if (response === null || response.status() >= 400) recordJourneyFailure("search-get-did-not-return-success");
+              else {
+                metrics.journeyStepsCompleted += 1;
+                recordJourneyEvidence(`Performed approved GET search on ${searchUrl.pathname} using one search field.`);
+              }
+              continue;
+            }
+            let link: import("playwright").Locator;
+            if (step.type === "open-first-book") {
+              const main = page.getByRole("main");
+              if (await main.count() !== 1) {
+                recordJourneyFailure("main-landmark-not-unique");
+                continue;
+              }
+              const bookLinks = main.getByRole("link", { name: /Harry Potter/i }).filter({ visible: true });
+              if (await bookLinks.count() === 0) {
+                recordJourneyFailure("visible-harry-potter-result-link-not-found");
+                continue;
+              }
+              link = bookLinks.first();
+            } else {
+              link = page.getByRole("link", { name: step.text, exact: true });
+            }
             if (await link.count() !== 1) {
-              metrics.journeyStepsFailed += 1;
+              recordJourneyFailure("requested-link-not-unique");
               continue;
             }
             const href = await link.getAttribute("href");
             if (href === null) {
-              metrics.journeyStepsFailed += 1;
+              recordJourneyFailure("requested-link-has-no-destination");
               continue;
             }
             const destination = new URL(href, page.url());
             if (destination.protocol !== "https:" || !approvedOrigins.has(destination.origin) ||
                 destination.username.length > 0 || destination.password.length > 0 || destination.port.length > 0 ||
-                destination.search.length > 0 || destination.hash.length > 0) {
+                destination.origin !== target.origin) {
+              recordBlockedOrigin(destination);
               metrics.blockedExternalRequestCount += 1;
-              metrics.journeyStepsFailed += 1;
+              recordJourneyFailure("link-destination-not-approved-same-origin-https");
               continue;
             }
+            approvedNavigationUrls.add(destination.toString());
+            const linkLabel = (await link.innerText()).trim().replace(/\s+/gu, " ").slice(0, 200);
             await link.click({ timeout: MAX_PAGE_TIMEOUT_MS });
             metrics.journeyStepsCompleted += 1;
+            recordJourneyEvidence(`Opened same-origin link: ${linkLabel}`);
           } catch {
-            metrics.journeyStepsFailed += 1;
+            recordJourneyFailure("journey-action-failed-within-bounds");
           }
         }
       }
@@ -444,12 +564,18 @@ async function auditPage(
           }
           const componentSelectors = [["navigation", "nav"], ["header", "header"], ["main", "main"], ["footer", "footer"], ["form", "form"], ["button", "button"], ["card-like class", "[class*=card i]"]] as const;
           const componentCounts = componentSelectors.map(() => 0);
+          const structureCounts = { headings: 0, mainLandmarks: 0, forms: 0, searchControls: 0, links: 0 };
           const componentWalker = document.createTreeWalker(document.documentElement, NodeFilter.SHOW_ELEMENT);
           let inspectedElements = 0;
           while (inspectedElements < 2_000 && componentWalker.nextNode() !== null) {
             const element = componentWalker.currentNode;
             if (!(element instanceof Element)) continue;
             inspectedElements += 1;
+            if (element.matches("h1, h2, h3, h4, h5, h6")) structureCounts.headings += 1;
+            if (element.matches("main")) structureCounts.mainLandmarks += 1;
+            if (element.matches("form")) structureCounts.forms += 1;
+            if (element.matches('input[type="search"], [role="searchbox"]')) structureCounts.searchControls += 1;
+            if (element.matches("a[href]")) structureCounts.links += 1;
             for (let selectorIndex = 0; selectorIndex < componentSelectors.length; selectorIndex += 1) {
               const selector = componentSelectors[selectorIndex]?.[1];
               if (selector !== undefined && element.matches(selector)) componentCounts[selectorIndex] = (componentCounts[selectorIndex] ?? 0) + 1;
@@ -461,6 +587,8 @@ async function auditPage(
             if (label !== undefined && count !== undefined && count > 0) observations.push(`observed component ${label}: ${count}`);
             if (observations.length >= 31) break;
           }
+          const structureSample = inspectedElements === 2_000 ? " (sampled first 2000 elements)" : "";
+          observations.push(`observed page structure${structureSample}: ${structureCounts.headings} headings, ${structureCounts.mainLandmarks} main landmarks, ${structureCounts.forms} forms, ${structureCounts.searchControls} search controls, ${structureCounts.links} links`);
           if (inspectedElements === 2_000 && observations.length < 32) observations.push("component counts sampled from first 2000 elements");
           for (const [label, selector] of [["buttons", "button"], ["links", "a[href]"]] as const) {
             const visible = [...document.querySelectorAll<HTMLElement>(selector)].filter((element) => {
@@ -503,7 +631,10 @@ async function auditPage(
             continue;
           }
           if (link.origin !== new URL(page.url()).origin || link.username.length > 0 || link.password.length > 0) {
-            if (!approvedOrigins.has(link.origin)) metrics.blockedExternalRequestCount += 1;
+            if (!approvedOrigins.has(link.origin)) {
+              recordBlockedOrigin(link);
+              metrics.blockedExternalRequestCount += 1;
+            }
             continue;
           }
           metrics.linksChecked += 1;
@@ -533,6 +664,7 @@ async function auditPage(
     }
   } catch (error: unknown) {
     if (error instanceof BrowserAuditError) throw error;
+    fixtureDependencies?.onUnexpectedAuditError?.(error);
     throw new BrowserAuditError("The local browser could not complete the fixture audit. Verify the Playwright package and Chromium binary.");
   } finally {
     if (browser !== undefined) await browser.close().catch(() => undefined);

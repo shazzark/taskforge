@@ -65,7 +65,7 @@ The github-issues workflow reads at most 20 open issue titles from one public re
 The draft workflow creates a new local Markdown GitHub issue or email draft from an explicitly approved JSON input; it never contacts GitHub or an email service.
 The specialist-review workflow sends approved, heuristically redacted source excerpts to bounded read-only workers and asks the same configured model to review their findings; repository workers can use only literal search over those excerpts, the browser-specialist receives aggregate audit evidence, and the data-specialist receives a locally redacted sample from one approved file. Every local-content transfer requires a separate disclosure and confirmation.
 The research workflow sends an approved query to Groq browser search, then displays bounded source metadata and an unverified answer; --compare <question> --against <question> runs two searches and shows source excerpts and exact shared URLs side by side without inferring source agreement.
-The browser-audit workflow preserves approved loopback HTTP fixtures and supports public HTTPS audits only after exact target, read-only journey, and resource-origin approval. Public audits use fresh unauthenticated Chromium behind DNS-pinned egress controls; they block private/internal addresses, non-GET/HEAD methods, WebSockets, forms, unapproved origins, and over-budget requests. They report aggregate findings and coverage limitations, not comprehensive security or accessibility certification. --specialist optionally sends only aggregate evidence to the configured specialist after a separate provider disclosure and confirmation.
+The browser-audit workflow preserves approved loopback HTTP fixtures and supports public HTTPS audits only after exact target, read-only journey, and resource-origin approval. Public audits use fresh unauthenticated Chromium behind DNS-pinned egress controls; they block private/internal addresses, non-GET/HEAD methods, WebSockets, unapproved origins, and over-budget requests. The bounded journey supports exact visible text, a same-origin GET search with exactly one named search field, ordinary anchor clicks, and browser back; arbitrary form submissions remain blocked. Blocked resource origins are listed without paths or queries and are never followed until approved. Findings and coverage limitations are reported without claiming a comprehensive security or accessibility certification. --specialist optionally sends only aggregate evidence to the configured specialist after a separate provider disclosure and confirmation.
 The document-analyze workflow parses one approved TXT, Markdown, text PDF, DOCX, or XLSX file and stores counts only; optional JSON, CSV, or Markdown exports contain counts only and require separate output approval.
 The document-convert workflow extracts one approved document to a new bounded plain-text artifact after preview and hash confirmation.
 The schedule command stores one-time or recurring CSV/document workflows; execution occurs only while its foreground scheduler is running and every occurrence requires fresh interactive approval.
@@ -1735,7 +1735,7 @@ async function runBrowserAuditCommand(commandArgs: readonly string[]): Promise<v
       ? `Target URL: ${escapeTerminalControls(target.toString())}\nJourney: ${escapeTerminalControls(JSON.stringify(journey))}\nAdditional resource origins: ${approvedOrigins.length === 0 ? "none" : approvedOrigins.map(escapeTerminalControls).join(", ")}\n`
       : `Target URL: ${escapeTerminalControls(target.toString())}\n`;
     answer = await consent.question(
-      `${approvalDetails}Open this exact target in a fresh unauthenticated Chromium context? Only the named exact-text checks and ordinary anchor clicks are used. Forms, button actions, and submissions are blocked or not invoked; non-GET/HEAD methods, WebSockets, unapproved origins, and private-address DNS answers are blocked. The browser is limited to 100 requests, 20 MiB network traffic, 8 tunnels, and 45 seconds. No personal browser session or stored credentials are used. Aggregate findings only are persisted; blocked resources and unsupported checks remain coverage limitations. [y/N] `,
+      `${approvalDetails}Open this exact target in a fresh unauthenticated Chromium context? Only named exact-text checks, a constrained same-origin GET search, ordinary anchor clicks, and browser back are used. No form is submitted. Non-GET/HEAD methods, WebSockets, unapproved origins, and private-address DNS answers are blocked. The browser is limited to 100 requests, 20 MiB network traffic, 8 tunnels, and 45 seconds. No personal browser session or stored credentials are used. Aggregate findings only are persisted; blocked resources and unsupported checks remain coverage limitations. [y/N] `,
     );
   } finally {
     consent.close();
@@ -1762,15 +1762,28 @@ async function runBrowserAuditCommand(commandArgs: readonly string[]): Promise<v
         `${metrics.blockedExternalRequestCount} unapproved resources blocked, ${metrics.blockedUnsafeMethodCount} unsafe methods blocked, ${metrics.blockedWebSocketCount} WebSockets blocked, ` +
         `${metrics.blockedPrivateAddressRequestCount} private DNS answers blocked, ${metrics.blockedRequestLimitCount} requests blocked at the limit, runtime-limit=${metrics.runtimeLimitReached}.\n`,
       );
-      process.stdout.write("Implemented checks: approved-origin HTTP/request failures, console/page errors, bounded same-origin link checks, missing image alt text, visible accessible-name heuristics, 360px/1280px horizontal overflow, selected passive response headers, sampled visual-style consistency heuristics, and bounded CSS/semantic observations.\n");
-      process.stdout.write("Coverage limitations: this is not a comprehensive security audit or WCAG assessment; visual consistency is inferred from sampled controls, without screenshots or cross-page comparison. Only same-origin links on the final page are probed. Approved cross-origin resources are permitted but not separately link-tested. Authentication, form submissions, button workflows, dynamic content coverage, and blocked resources are not verified.\n");
+      process.stdout.write("Implemented checks: approved-origin HTTP/request failures, console/page errors, bounded same-origin link checks, missing image alt text, visible accessible-name heuristics, 360px/1280px horizontal overflow, selected passive response headers, sampled visual-style consistency heuristics, and bounded CSS/semantic observations. Journey actions are limited to visible-text checks, one-field same-origin GET search, ordinary same-origin links, and browser back.\n");
+      process.stdout.write("Coverage limitations: this is not a comprehensive security audit or WCAG assessment; visual consistency is inferred from sampled controls, without screenshots or cross-page comparison. Only same-origin links on the final page are probed. Approved cross-origin resources are permitted but not separately link-tested. Authentication, arbitrary form submissions, button workflows, dynamic content coverage, and blocked resources are not verified.\n");
+      if (metrics.journeyEvidence.length > 0) {
+        process.stdout.write("Read-only journey evidence (page text is shown locally and not persisted):\n");
+        for (const evidence of metrics.journeyEvidence) process.stdout.write(`- ${escapeTerminalControls(evidence)}\n`);
+      }
+      if (metrics.journeyFailureReasons.length > 0) {
+        process.stdout.write("Journey steps not completed (bounded reason codes):\n");
+        for (const reason of metrics.journeyFailureReasons) process.stdout.write(`- ${reason}\n`);
+      }
+      if (metrics.blockedResourceOrigins.length > 0) {
+        process.stdout.write("Blocked resource origins discovered (not accessed); approve any needed HTTPS origins explicitly before rerunning:\n");
+        for (const origin of metrics.blockedResourceOrigins) process.stdout.write(`- ${escapeTerminalControls(origin)}\n`);
+      }
       process.stdout.write("Design observations (inferred; not original design tokens):\n");
       for (const observation of metrics.designObservations) process.stdout.write(`- ${escapeTerminalControls(observation)}\n`);
       process.exitCode = browserAuditExitCode(result.run.state);
       if (withSpecialist && !controller.signal.aborted) {
         const providerConfiguration = loadProviderConfiguration();
+        const findingsWithoutPrivateEvidence = (({ blockedResourceOrigins: _blockedResourceOrigins, journeyEvidence: _journeyEvidence, journeyFailureReasons: _journeyFailureReasons, ...shareableMetrics }) => shareableMetrics)(metrics);
         const evidence = JSON.stringify({
-          findings: metrics,
+          findings: findingsWithoutPrivateEvidence,
           coverageLimitations: [
             "No page text, target URL, origin list, credentials, or session data is included.",
             "Browser observations are aggregate and heuristic; comprehensive security and WCAG checks were not performed.",

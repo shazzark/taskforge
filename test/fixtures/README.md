@@ -1,0 +1,1 @@
+`browser-egress-fixture.key` and `.crt` are a disposable self-signed key pair used only by the local Chromium-through-proxy integration fixture. The certificate identifies `bookfinder-fixture.example.com`; the test injects DNS and connector behavior and never uses this key for a real site or service. Do not reuse it outside tests.

@@ -1,12 +1,15 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import { readFile } from "node:fs/promises";
+import { connect } from "node:net";
 import { createServer } from "node:http";
+import { createServer as createHttpsServer } from "node:https";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 import { AgentBudgetLedger } from "../dist/agent/tool-loop.js";
 import { runSpecialistReview } from "../dist/agent/specialist-review.js";
 import {
-  runBrowserAudit, runPublicBrowserAudit, BrowserAuditError, browserAuditExitCode,
+  auditPublicBrowserPage, runBrowserAudit, runPublicBrowserAudit, BrowserAuditError, browserAuditExitCode,
   validateApprovedBrowserOrigin, validateBrowserJourney, validatePublicBrowserTarget,
 } from "../dist/workflows/browser-audit-workflow.js";
 
@@ -79,6 +82,7 @@ test("browser fixture audit blocks external/unsafe requests and persists aggrega
     assert.ok(result.metrics.networkFailureCount >= 1);
     assert.ok(result.metrics.consoleErrorCount >= 1);
     assert.equal(result.metrics.blockedExternalRequestCount, 1);
+    assert.deepEqual(result.metrics.blockedResourceOrigins, ["https://example.invalid"]);
     assert.equal(result.metrics.blockedUnsafeMethodCount, 1);
     assert.equal(result.metrics.navigationFailed, false);
     assert.equal(result.metrics.missingAltCount, 1);
@@ -154,19 +158,108 @@ test("public browser target and additional-origin validation reject private, res
   }
 });
 
-test("public browser journeys accept only bounded visible-text checks and ordinary anchor clicks", () => {
+test("public browser journeys accept bounded text, GET search, book links, ordinary links, and browser back", () => {
   assert.deepEqual(validateBrowserJourney([
     { type: "expect-text", text: "Documentation" },
+    { type: "search", text: "Harry Potter" },
+    { type: "open-first-book" },
     { type: "click-link", text: "API reference" },
+    { type: "go-back" },
   ]), [
     { type: "expect-text", text: "Documentation" },
+    { type: "search", text: "Harry Potter" },
+    { type: "open-first-book" },
     { type: "click-link", text: "API reference" },
+    { type: "go-back" },
   ]);
   for (const value of [
     [], [{ type: "submit-form", text: "Send" }], [{ type: "click-button", text: "Buy" }],
     [{ type: "click-link", text: "\u001b[31munsafe" }], [{ type: "expect-text", text: "x".repeat(201) }],
     [{ type: "expect-text", text: "allowed", selector: "body" }], Array.from({ length: 9 }, () => ({ type: "expect-text", text: "ok" })),
   ]) assert.throws(() => validateBrowserJourney(value), BrowserAuditError);
+});
+
+test("Chromium traverses the actual egress proxy for an explicitly bounded GET search journey", async () => {
+  const hostname = "bookfinder-fixture.example.com";
+  const origin = `https://${hostname}`;
+  const [key, cert] = await Promise.all([
+    readFile(new URL("./fixtures/browser-egress-fixture.key", import.meta.url)),
+    readFile(new URL("./fixtures/browser-egress-fixture.crt", import.meta.url)),
+  ]);
+  const requests = [];
+  const server = createHttpsServer({ key, cert }, (request, response) => {
+    requests.push({ method: request.method, url: request.url });
+    const knownRoute = request.url === "/" || request.url === "/search?q=Harry+Potter" || request.url === "/book/azkaban?edition=1";
+    response.writeHead(knownRoute ? 200 : 404, { "content-type": "text/html; charset=utf-8" });
+    if (request.url === "/") {
+      response.end('<main><h1>BookFinder fixture</h1><img src="https://telemetry-fixture.example.net/pixel"><form action="/search" method="get"><label for="q">Search books</label><input id="q" name="q" type="search"><button>Search</button></form></main>');
+    } else if (request.url === "/search?q=Harry+Potter") {
+      response.end('<main><h1>Results for Harry Potter</h1><a href="/book/azkaban?edition=1">Harry Potter &#x202e;and the Prisoner of Azkaban</a></main>');
+    } else if (request.url === "/book/azkaban?edition=1") {
+      response.end('<main><h1>Book details</h1><p>Harry Potter and the Prisoner of Azkaban</p></main>');
+    } else {
+      response.end("not found");
+    }
+  });
+  await new Promise((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", resolve);
+  });
+  const address = server.address();
+  if (address === null || typeof address === "string") throw new Error("HTTPS proxy fixture did not bind to a TCP port.");
+  const upstreams = [];
+  const connectRequests = [];
+  const browserFailures = [];
+  try {
+    const metrics = await auditPublicBrowserPage(new URL(origin), {
+      approvedOrigins: [origin],
+      journey: [
+        { type: "search", text: "Harry Potter" },
+        { type: "expect-text", text: "Results for Harry Potter" },
+        { type: "open-first-book" },
+        { type: "expect-text", text: "Book details" },
+        { type: "go-back" },
+        { type: "expect-text", text: "Results for Harry Potter" },
+      ],
+    }, undefined, {
+      lookupAddresses: async (requestedHost) => {
+        assert.equal(requestedHost, hostname);
+        return ["93.184.216.34"];
+      },
+      connectAddress: async (ip, port) => {
+        upstreams.push({ ip, port });
+        return new Promise((resolve, reject) => {
+          const socket = connect(address.port, "127.0.0.1");
+          socket.once("error", reject);
+          socket.once("connect", () => {
+            socket.removeListener("error", reject);
+            resolve(socket);
+          });
+        });
+      },
+      onConnectRequest: (authority) => connectRequests.push(authority),
+      onBrowserRequestFailure: (url, error) => browserFailures.push({ url, error }),
+      ignoreHTTPSErrors: true,
+    });
+    assert.equal(metrics.navigationFailed, false, JSON.stringify({ metrics, requests, upstreams, connectRequests, browserFailures }));
+    assert.equal(metrics.journeyStepsCompleted, 6, JSON.stringify({ metrics, requests, upstreams, connectRequests, browserFailures }));
+    assert.equal(metrics.journeyStepsFailed, 0);
+    assert.deepEqual(metrics.journeyFailureReasons, []);
+    assert.equal(metrics.navigationFailed, false);
+    const bookEvidence = metrics.journeyEvidence.find((evidence) => evidence.includes("Harry Potter"));
+    assert.ok(bookEvidence?.includes("\\u{202e}"));
+    assert.doesNotMatch(bookEvidence ?? "", /\u202e/u);
+    assert.ok(upstreams.length >= 1);
+    assert.ok(upstreams.every(({ ip, port }) => ip === "93.184.216.34" && port === 443));
+    assert.ok(requests.some(({ method, url }) => method === "GET" && url === "/search?q=Harry+Potter"));
+    assert.ok(requests.some(({ method, url }) => method === "GET" && url === "/book/azkaban?edition=1"));
+    assert.ok(requests.every(({ method }) => method === "GET" || method === "HEAD"));
+    assert.ok(metrics.blockedExternalRequestCount >= 1);
+    assert.deepEqual(metrics.blockedResourceOrigins, ["https://telemetry-fixture.example.net"]);
+    assert.doesNotMatch(JSON.stringify(requests), /telemetry-fixture/u);
+  } finally {
+    await new Promise((resolve, reject) => server.close((error) => error === undefined ? resolve() : reject(error)));
+  }
 });
 
 test("public workflow rejects a private target or unapproved private origin before persistence or connection", async () => {
