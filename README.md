@@ -2,7 +2,7 @@
 
 An open-source terminal AI agent for repeatable developer workflows and extensible tasks.
 
-**Status:** TaskForge is in early development. Bounded file/data, software, local browser fixture, research, GitHub-read, local-draft, schedule, specialist-review, and dedicated ephemeral manual-login workflows are implemented. Public-site journeys remain read-only and require explicit approval. The owner confirmed their BookFinder screenshot was from a signed-in session, explaining its difference from TaskForge's unauthenticated `/discover` audit, which reached `/login`. Owner-operated live search-journey acceptance, a clean full serial suite, and the independent developer trial remain pending; see `task.md`.
+**Status:** TaskForge is in early development. Bounded file/data, software, local browser fixture, research, GitHub-read, local-draft, schedule, specialist-review, and dedicated ephemeral manual-login workflows are implemented. Public-site journeys remain read-only and require explicit approval. The full serial test suite passed on 2026-10-14 (152 passed, zero failed or skipped) against a dedicated isolated loopback MongoDB test database. Owner-operated live search-journey acceptance and the independent developer trial remain pending; see `task.md`.
 
 Repository: https://github.com/shazzark/taskforge
 
