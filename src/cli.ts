@@ -1754,7 +1754,7 @@ async function runBrowserAuditCommand(commandArgs: readonly string[]): Promise<v
     if (result !== undefined) {
       const metrics = result.metrics;
       process.stdout.write(
-        `Run ${result.run.runId} ${metrics.navigationFailed || metrics.pageInspectionFailed || metrics.designInspectionFailed || metrics.journeyStepsFailed > 0 || metrics.runtimeLimitReached ? "incomplete" : "completed"}: navigation failed=${metrics.navigationFailed}, page inspection failed=${metrics.pageInspectionFailed}, design inspection failed=${metrics.designInspectionFailed}, journey=${metrics.journeyStepsCompleted}/${metrics.journeyStepsCompleted + metrics.journeyStepsFailed}, ` +
+        `Run ${result.run.runId} ${metrics.navigationFailed || metrics.pageInspectionFailed || metrics.designInspectionFailed || metrics.journeyStepsFailed > 0 || metrics.runtimeLimitReached ? "incomplete" : "completed"}: navigation failed=${metrics.navigationFailed}, authentication gate detected=${metrics.authenticationGateDetected}, authentication gate scan incomplete=${metrics.authenticationGateDetectionIncomplete}, page inspection failed=${metrics.pageInspectionFailed}, design inspection failed=${metrics.designInspectionFailed}, journey=${metrics.journeyStepsCompleted}/${metrics.journeyStepsCompleted + metrics.journeyStepsFailed}, ` +
         `${metrics.httpErrorCount} HTTP errors, ${metrics.networkFailureCount} failed approved-origin requests excluding policy blocks, ${metrics.brokenLinkCount}/${metrics.linksChecked} same-origin links broken, ` +
         `${metrics.consoleErrorCount} console errors, ${metrics.pageErrorCount} page errors, ${metrics.missingAltCount} images without alt text, ` +
         `${metrics.unnamedControlCount} unnamed controls, mobile overflow=${metrics.mobileHorizontalOverflow}, desktop overflow=${metrics.desktopHorizontalOverflow}, ` +
@@ -1762,8 +1762,13 @@ async function runBrowserAuditCommand(commandArgs: readonly string[]): Promise<v
         `${metrics.blockedExternalRequestCount} unapproved resources blocked, ${metrics.blockedUnsafeMethodCount} unsafe methods blocked, ${metrics.blockedWebSocketCount} WebSockets blocked, ` +
         `${metrics.blockedPrivateAddressRequestCount} private DNS answers blocked, ${metrics.blockedRequestLimitCount} requests blocked at the limit, runtime-limit=${metrics.runtimeLimitReached}.\n`,
       );
+      const finalPathWithoutFormatControls = metrics.finalPath?.replace(/\p{Cf}/gu, (character) => {
+        const codePoint = character.codePointAt(0);
+        return codePoint === undefined ? "" : `\\u{${codePoint.toString(16)}}`;
+      });
+      process.stdout.write(`Navigation evidence (local only): last approved-origin navigation status=${metrics.navigationHttpStatus ?? "unavailable"}, final path=${escapeTerminalControls(finalPathWithoutFormatControls ?? "unavailable")}, navigation redirects=${metrics.navigationRedirectCount}, bounded render wait=${metrics.renderWaitMs}ms (maximum ${2_500 * (journey === undefined ? 0 : journey.length * 2) + 2_500}ms across inspected page states).\n`);
       process.stdout.write("Implemented checks: approved-origin HTTP/request failures, console/page errors, bounded same-origin link checks, missing image alt text, visible accessible-name heuristics, 360px/1280px horizontal overflow, selected passive response headers, sampled visual-style consistency heuristics, and bounded CSS/semantic observations. Journey actions are limited to visible-text checks, one-field same-origin GET search, ordinary same-origin links, and browser back.\n");
-      process.stdout.write("Coverage limitations: this is not a comprehensive security audit or WCAG assessment; visual consistency is inferred from sampled controls, without screenshots or cross-page comparison. Only same-origin links on the final page are probed. Approved cross-origin resources are permitted but not separately link-tested. Authentication, arbitrary form submissions, button workflows, dynamic content coverage, and blocked resources are not verified.\n");
+      process.stdout.write("Coverage limitations: this is not a comprehensive security audit or WCAG assessment; visual consistency is inferred from sampled controls, without screenshots or cross-page comparison. Only same-origin links on the final page are probed. Approved cross-origin resources are permitted but not separately link-tested. No credentials are used; an observed authentication gate stops the journey. Arbitrary form submissions, button workflows, dynamic content beyond bounded waits, and blocked-resource behavior are not verified.\n");
       if (metrics.journeyEvidence.length > 0) {
         process.stdout.write("Read-only journey evidence (page text is shown locally and not persisted):\n");
         for (const evidence of metrics.journeyEvidence) process.stdout.write(`- ${escapeTerminalControls(evidence)}\n`);
@@ -1781,7 +1786,7 @@ async function runBrowserAuditCommand(commandArgs: readonly string[]): Promise<v
       process.exitCode = browserAuditExitCode(result.run.state);
       if (withSpecialist && !controller.signal.aborted) {
         const providerConfiguration = loadProviderConfiguration();
-        const findingsWithoutPrivateEvidence = (({ blockedResourceOrigins: _blockedResourceOrigins, journeyEvidence: _journeyEvidence, journeyFailureReasons: _journeyFailureReasons, ...shareableMetrics }) => shareableMetrics)(metrics);
+        const findingsWithoutPrivateEvidence = (({ blockedResourceOrigins: _blockedResourceOrigins, journeyEvidence: _journeyEvidence, journeyFailureReasons: _journeyFailureReasons, finalPath: _finalPath, ...shareableMetrics }) => shareableMetrics)(metrics);
         const evidence = JSON.stringify({
           findings: findingsWithoutPrivateEvidence,
           coverageLimitations: [

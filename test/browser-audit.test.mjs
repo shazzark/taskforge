@@ -189,10 +189,15 @@ test("Chromium traverses the actual egress proxy for an explicitly bounded GET s
   const requests = [];
   const server = createHttpsServer({ key, cert }, (request, response) => {
     requests.push({ method: request.method, url: request.url });
-    const knownRoute = request.url === "/" || request.url === "/search?q=Harry+Potter" || request.url === "/book/azkaban?edition=1";
+    const knownRoute = request.url === "/" || request.url === "/auth-discover" || request.url === "/many-passwords" || request.url === "/search?q=Harry+Potter" || request.url === "/book/azkaban?edition=1";
     response.writeHead(knownRoute ? 200 : 404, { "content-type": "text/html; charset=utf-8" });
-    if (request.url === "/") {
-      response.end('<main><h1>BookFinder fixture</h1><img src="https://telemetry-fixture.example.net/pixel"><form action="/search" method="get"><label for="q">Search books</label><input id="q" name="q" type="search"><button>Search</button></form></main>');
+    if (request.url === "/auth-discover") {
+      response.end('<!doctype html><body><p>Loading session</p><script>history.replaceState(null, "", "/login"); setTimeout(() => { document.body.innerHTML = "<form><label>Search<input type=search name=q></label><label>Email<input type=email></label><label>Password<input type=password></label></form>"; }, 200);</script></body>');
+    } else if (request.url === "/many-passwords") {
+      response.end(`<!doctype html><body><form><input type=search aria-label=Search>${"<input type=password hidden>".repeat(21)}<input type=password></form></body>`);
+    } else if (request.url === "/") {
+      const delayedShell = '<main><h1>BookFinder fixture</h1><img src="https://telemetry-fixture.example.net/pixel"><form action="/search" method="get"><label for="q">Search books</label><input id="q" name="q" type="search"><button>Search</button></form></main>';
+      response.end(`<!doctype html><body><p>Loading...</p><script>setTimeout(() => { document.body.innerHTML = ${JSON.stringify(delayedShell)}; }, 200);</script></body>`);
     } else if (request.url === "/search?q=Harry+Potter") {
       response.end('<main><h1>Results for Harry Potter</h1><a href="/book/azkaban?edition=1">Harry Potter &#x202e;and the Prisoner of Azkaban</a></main>');
     } else if (request.url === "/book/azkaban?edition=1") {
@@ -242,6 +247,10 @@ test("Chromium traverses the actual egress proxy for an explicitly bounded GET s
       ignoreHTTPSErrors: true,
     });
     assert.equal(metrics.navigationFailed, false, JSON.stringify({ metrics, requests, upstreams, connectRequests, browserFailures }));
+    assert.equal(metrics.navigationHttpStatus, 200);
+    assert.equal(metrics.finalPath, "/search");
+    assert.equal(metrics.navigationRedirectCount, 0);
+    assert.ok(metrics.renderWaitMs >= 150 && metrics.renderWaitMs <= 2_500 * 13, metrics.renderWaitMs);
     assert.equal(metrics.journeyStepsCompleted, 6, JSON.stringify({ metrics, requests, upstreams, connectRequests, browserFailures }));
     assert.equal(metrics.journeyStepsFailed, 0);
     assert.deepEqual(metrics.journeyFailureReasons, []);
@@ -257,6 +266,59 @@ test("Chromium traverses the actual egress proxy for an explicitly bounded GET s
     assert.ok(metrics.blockedExternalRequestCount >= 1);
     assert.deepEqual(metrics.blockedResourceOrigins, ["https://telemetry-fixture.example.net"]);
     assert.doesNotMatch(JSON.stringify(requests), /telemetry-fixture/u);
+
+    const beforeAuthRequests = requests.length;
+    const authMetrics = await auditPublicBrowserPage(new URL(`${origin}/auth-discover`), {
+      approvedOrigins: [origin],
+      journey: [
+        { type: "search", text: "Harry Potter" },
+        { type: "expect-text", text: "Results for Harry Potter" },
+        { type: "open-first-book" },
+        { type: "expect-text", text: "Book details" },
+        { type: "go-back" },
+      ],
+    }, undefined, {
+      lookupAddresses: async (requestedHost) => {
+        assert.equal(requestedHost, hostname);
+        return ["93.184.216.34"];
+      },
+      connectAddress: async (_ip, _port) => new Promise((resolve, reject) => {
+        const socket = connect(address.port, "127.0.0.1");
+        socket.once("error", reject);
+        socket.once("connect", () => { socket.removeListener("error", reject); resolve(socket); });
+      }),
+      ignoreHTTPSErrors: true,
+    });
+    assert.equal(authMetrics.authenticationGateDetected, true);
+    assert.equal(authMetrics.navigationHttpStatus, 200);
+    assert.equal(authMetrics.finalPath, "/login");
+    assert.equal(authMetrics.journeyStepsCompleted, 0);
+    assert.equal(authMetrics.journeyStepsFailed, 5);
+    assert.ok(authMetrics.journeyFailureReasons.every((reason) => reason === "authentication-gate-detected"));
+    assert.equal(requests.slice(beforeAuthRequests).some(({ url }) => url?.startsWith("/search?")), false);
+
+    const beforeLimitRequests = requests.length;
+    const limitMetrics = await auditPublicBrowserPage(new URL(`${origin}/many-passwords`), {
+      approvedOrigins: [origin],
+      journey: [{ type: "search", text: "Harry Potter" }],
+    }, undefined, {
+      lookupAddresses: async (requestedHost) => {
+        assert.equal(requestedHost, hostname);
+        return ["93.184.216.34"];
+      },
+      connectAddress: async (_ip, _port) => new Promise((resolve, reject) => {
+        const socket = connect(address.port, "127.0.0.1");
+        socket.once("error", reject);
+        socket.once("connect", () => { socket.removeListener("error", reject); resolve(socket); });
+      }),
+      ignoreHTTPSErrors: true,
+    });
+    assert.equal(limitMetrics.authenticationGateDetected, false);
+    assert.equal(limitMetrics.authenticationGateDetectionIncomplete, true);
+    assert.equal(limitMetrics.journeyStepsCompleted, 0);
+    assert.equal(limitMetrics.journeyStepsFailed, 1);
+    assert.deepEqual(limitMetrics.journeyFailureReasons, ["password-field-scan-limit-reached"]);
+    assert.equal(requests.slice(beforeLimitRequests).some(({ url }) => url?.startsWith("/search?")), false);
   } finally {
     await new Promise((resolve, reject) => server.close((error) => error === undefined ? resolve() : reject(error)));
   }

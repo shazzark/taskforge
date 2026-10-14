@@ -8,6 +8,7 @@ import { escapeTerminalControls } from "../security/terminal-text.js";
 const WORKFLOW_ID = "browser-fixture-audit";
 const STEP_ID = "audit-local-page";
 const MAX_PAGE_TIMEOUT_MS = 8_000;
+const MAX_RENDER_WAIT_MS = 2_500;
 const MAX_LINKS_TO_CHECK = 10;
 const MAX_LINK_TIMEOUT_MS = 1_500;
 const MAX_PAGE_REQUESTS = 100;
@@ -66,6 +67,12 @@ export interface BrowserAuditResult {
     readonly runtimeLimitReached: boolean;
     readonly designObservations: readonly string[];
     readonly navigationFailed: boolean;
+    readonly navigationHttpStatus: number | null;
+    readonly finalPath: string | null;
+    readonly renderWaitMs: number;
+    readonly navigationRedirectCount: number;
+    readonly authenticationGateDetected: boolean;
+    readonly authenticationGateDetectionIncomplete: boolean;
     readonly pageInspectionFailed: boolean;
     readonly designInspectionFailed: boolean;
     readonly durationMs: number;
@@ -240,6 +247,12 @@ async function auditPage(
     runtimeLimitReached: false,
     designObservations: [] as string[],
     navigationFailed: false,
+    navigationHttpStatus: null as number | null,
+    finalPath: null as string | null,
+    renderWaitMs: 0,
+    navigationRedirectCount: 0,
+    authenticationGateDetected: false,
+    authenticationGateDetectionIncomplete: false,
     pageInspectionFailed: false,
     designInspectionFailed: false,
     durationMs: 0,
@@ -311,7 +324,17 @@ async function auditPage(
         metrics.journeyStepsFailed += 1;
       };
       const policyAbortedRequests = new WeakSet<import("playwright").Request>();
-      page.on("response", (response) => incrementOnHttpError(response.status(), metrics));
+      page.on("response", (response) => {
+        incrementOnHttpError(response.status(), metrics);
+        if (response.request().isNavigationRequest()) {
+          try {
+            if (approvedOrigins.has(new URL(response.url()).origin)) metrics.navigationHttpStatus = response.status();
+          } catch { /* Ignore malformed browser-generated URLs. */ }
+        }
+      });
+      page.on("request", (request) => {
+        if (request.isNavigationRequest() && request.redirectedFrom() !== null) metrics.navigationRedirectCount += 1;
+      });
       page.on("requestfailed", (request) => {
         fixtureDependencies?.onBrowserRequestFailure?.(request.url(), request.failure()?.errorText);
         if (policyAbortedRequests.has(request)) return;
@@ -382,6 +405,36 @@ async function auditPage(
         }
         await route.continue();
       });
+      const waitForRenderedContent = async (): Promise<void> => {
+        const startedAt = Date.now();
+        try {
+          await page.waitForFunction(() => {
+            const body = document.body;
+            if (body === null) return false;
+            if (body.innerText.trim().length >= 40) return true;
+            return Array.from(body.querySelectorAll("main, [role=main], h1, h2, form, input, button, a[href], [role=searchbox]"))
+              .some((element) => {
+                const style = window.getComputedStyle(element);
+                return style.display !== "none" && style.visibility !== "hidden" && element.getClientRects().length > 0;
+              });
+          }, undefined, { timeout: MAX_RENDER_WAIT_MS, polling: 100 });
+        } catch { /* Keep the empty-page observation after the bounded render window. */ }
+        metrics.renderWaitMs += Math.min(MAX_RENDER_WAIT_MS, Math.max(0, Date.now() - startedAt));
+      };
+      const waitForVisibleJourneyTarget = async (locator: import("playwright").Locator): Promise<void> => {
+        const startedAt = Date.now();
+        try { await locator.waitFor({ state: "visible", timeout: MAX_RENDER_WAIT_MS }); }
+        catch { /* The step records a bounded unsupported/missing-target reason below. */ }
+        metrics.renderWaitMs += Math.min(MAX_RENDER_WAIT_MS, Math.max(0, Date.now() - startedAt));
+      };
+      const inspectPasswordFields = async (): Promise<"none" | "visible" | "limit"> => page.locator('input[type="password"]').evaluateAll((elements) => {
+        if (elements.length > 20) return "limit";
+        return elements.some((element) => {
+          if (!(element instanceof HTMLInputElement) || element.closest("[aria-hidden='true'], [hidden]")) return false;
+          const style = window.getComputedStyle(element);
+          return style.display !== "none" && style.visibility !== "hidden" && element.getClientRects().length > 0;
+        }) ? "visible" : "none";
+      });
       try {
         const navigation = await page.goto(target.toString(), { waitUntil: "domcontentloaded", timeout: MAX_PAGE_TIMEOUT_MS });
         if (navigation !== null) {
@@ -394,10 +447,17 @@ async function auditPage(
       } catch {
         metrics.navigationFailed = true;
       }
+      await waitForRenderedContent();
       if (isAborted(signal)) throw new BrowserAuditError("Browser audit was cancelled.");
+      try {
+        const finalUrl = new URL(page.url());
+        if (publicOptions === undefined || finalUrl.origin === target.origin) metrics.finalPath = finalUrl.pathname.slice(0, 512);
+      } catch { /* Final path remains unavailable for a failed navigation. */ }
 
       if (publicOptions !== undefined) {
-        for (const step of publicOptions.journey) {
+        for (let stepIndex = 0; stepIndex < publicOptions.journey.length; stepIndex += 1) {
+          const step = publicOptions.journey[stepIndex];
+          if (step === undefined) continue;
           if (isAborted(signal)) throw new BrowserAuditError("Browser audit was cancelled.");
           if (runtimeLimitReached) {
             const remainingSteps = publicOptions.journey.length - metrics.journeyStepsCompleted - metrics.journeyStepsFailed;
@@ -405,10 +465,38 @@ async function auditPage(
             break;
           }
           try {
+            const passwordInspection = await inspectPasswordFields();
+            if (passwordInspection !== "none") {
+              metrics.authenticationGateDetected = passwordInspection === "visible";
+              metrics.authenticationGateDetectionIncomplete = passwordInspection === "limit";
+              const remainingSteps = publicOptions.journey.length - metrics.journeyStepsCompleted - metrics.journeyStepsFailed;
+              const reason = passwordInspection === "visible" ? "authentication-gate-detected" : "password-field-scan-limit-reached";
+              for (let remaining = 0; remaining < remainingSteps; remaining += 1) recordJourneyFailure(reason);
+              break;
+            }
+            if (step.type === "search") {
+              await waitForVisibleJourneyTarget(page.getByRole("searchbox").first());
+            } else if (step.type === "expect-text") {
+              await waitForVisibleJourneyTarget(page.getByText(step.text, { exact: true }).first());
+            } else if (step.type === "click-link") {
+              await waitForVisibleJourneyTarget(page.getByRole("link", { name: step.text, exact: true }).first());
+            } else if (step.type === "open-first-book") {
+              await waitForVisibleJourneyTarget(page.getByRole("main").first().getByRole("link", { name: /Harry Potter/i }).first());
+            }
+            const postWaitPasswordInspection = await inspectPasswordFields();
+            if (postWaitPasswordInspection !== "none") {
+              metrics.authenticationGateDetected = postWaitPasswordInspection === "visible";
+              metrics.authenticationGateDetectionIncomplete = postWaitPasswordInspection === "limit";
+              const remainingSteps = publicOptions.journey.length - metrics.journeyStepsCompleted - metrics.journeyStepsFailed;
+              const reason = postWaitPasswordInspection === "visible" ? "authentication-gate-detected" : "password-field-scan-limit-reached";
+              for (let remaining = 0; remaining < remainingSteps; remaining += 1) recordJourneyFailure(reason);
+              break;
+            }
             if (step.type === "go-back") {
               const previous = await page.goBack({ waitUntil: "domcontentloaded", timeout: MAX_PAGE_TIMEOUT_MS });
               if (previous === null) recordJourneyFailure("browser-history-unavailable");
               else {
+                await waitForRenderedContent();
                 metrics.journeyStepsCompleted += 1;
                 recordJourneyEvidence(`Returned to ${new URL(page.url()).pathname} with browser history.`);
               }
@@ -454,6 +542,7 @@ async function auditPage(
               searchUrl.searchParams.set(field["name"], step.text);
               approvedNavigationUrls.add(searchUrl.toString());
               const response = await page.goto(searchUrl.toString(), { waitUntil: "domcontentloaded", timeout: MAX_PAGE_TIMEOUT_MS });
+              await waitForRenderedContent();
               if (response === null || response.status() >= 400) recordJourneyFailure("search-get-did-not-return-success");
               else {
                 metrics.journeyStepsCompleted += 1;
@@ -498,6 +587,7 @@ async function auditPage(
             approvedNavigationUrls.add(destination.toString());
             const linkLabel = (await link.innerText()).trim().replace(/\s+/gu, " ").slice(0, 200);
             await link.click({ timeout: MAX_PAGE_TIMEOUT_MS });
+            await waitForRenderedContent();
             metrics.journeyStepsCompleted += 1;
             recordJourneyEvidence(`Opened same-origin link: ${linkLabel}`);
           } catch {
@@ -505,6 +595,11 @@ async function auditPage(
           }
         }
       }
+
+      try {
+        const finalUrl = new URL(page.url());
+        if (finalUrl.origin === target.origin) metrics.finalPath = finalUrl.pathname.slice(0, 512);
+      } catch { /* Final path remains unavailable for a failed navigation. */ }
 
       try {
         const desktop = await page.evaluate(() => ({
@@ -678,7 +773,7 @@ async function auditPage(
 }
 
 function summarize(metrics: BrowserAuditResult["metrics"]): string {
-  return `Browser audit ${metrics.navigationFailed || metrics.pageInspectionFailed || metrics.designInspectionFailed || metrics.journeyStepsFailed > 0 || metrics.runtimeLimitReached ? "incomplete" : "complete"}: navigation failed=${metrics.navigationFailed}, page inspection failed=${metrics.pageInspectionFailed}, design inspection failed=${metrics.designInspectionFailed}, journey=${metrics.journeyStepsCompleted}/${metrics.journeyStepsCompleted + metrics.journeyStepsFailed} steps, ${metrics.httpErrorCount} HTTP errors, ${metrics.networkFailureCount} failed approved-origin requests excluding policy blocks, ${metrics.brokenLinkCount}/${metrics.linksChecked} same-origin links broken, ${metrics.consoleErrorCount} console errors, ${metrics.pageErrorCount} page errors, ${metrics.missingAltCount} images missing alt text, ${metrics.unnamedControlCount} unnamed visible controls (heuristic), mobile overflow=${metrics.mobileHorizontalOverflow}, desktop overflow=${metrics.desktopHorizontalOverflow}, ${metrics.missingSecurityHeaderCount}/${metrics.securityHeadersChecked} checked passive security headers missing, mixed-content check=${metrics.mixedContentCheck} (${metrics.mixedContentRequestCount} requests), ${metrics.blockedExternalRequestCount} unapproved resources blocked, ${metrics.blockedUnsafeMethodCount} unsafe methods blocked, ${metrics.blockedWebSocketCount} WebSockets blocked, ${metrics.blockedPrivateAddressRequestCount} private-address DNS attempts blocked, ${metrics.blockedRequestLimitCount} requests blocked at the limit, total runtime limit reached=${metrics.runtimeLimitReached}.`;
+  return `Browser audit ${metrics.navigationFailed || metrics.pageInspectionFailed || metrics.designInspectionFailed || metrics.journeyStepsFailed > 0 || metrics.runtimeLimitReached ? "incomplete" : "complete"}: navigation failed=${metrics.navigationFailed}, authentication gate detected=${metrics.authenticationGateDetected}, authentication gate scan incomplete=${metrics.authenticationGateDetectionIncomplete}, page inspection failed=${metrics.pageInspectionFailed}, design inspection failed=${metrics.designInspectionFailed}, journey=${metrics.journeyStepsCompleted}/${metrics.journeyStepsCompleted + metrics.journeyStepsFailed} steps, ${metrics.httpErrorCount} HTTP errors, ${metrics.networkFailureCount} failed approved-origin requests excluding policy blocks, ${metrics.brokenLinkCount}/${metrics.linksChecked} same-origin links broken, ${metrics.consoleErrorCount} console errors, ${metrics.pageErrorCount} page errors, ${metrics.missingAltCount} images missing alt text, ${metrics.unnamedControlCount} unnamed visible controls (heuristic), mobile overflow=${metrics.mobileHorizontalOverflow}, desktop overflow=${metrics.desktopHorizontalOverflow}, ${metrics.missingSecurityHeaderCount}/${metrics.securityHeadersChecked} checked passive security headers missing, mixed-content check=${metrics.mixedContentCheck} (${metrics.mixedContentRequestCount} requests), ${metrics.blockedExternalRequestCount} unapproved resources blocked, ${metrics.blockedUnsafeMethodCount} unsafe methods blocked, ${metrics.blockedWebSocketCount} WebSockets blocked, ${metrics.blockedPrivateAddressRequestCount} private-address DNS attempts blocked, ${metrics.blockedRequestLimitCount} requests blocked at the limit, total runtime limit reached=${metrics.runtimeLimitReached}.`;
 }
 
 async function persistBrowserAudit(
