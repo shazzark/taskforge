@@ -8,7 +8,7 @@ import { tmpdir } from "node:os";
 import { createInterface } from "node:readline/promises";
 import { ConfigurationError, formatStoreConfigurationSummary, loadProviderConfiguration, loadStoreConfiguration } from "./config.js";
 import { AgentBudgetLedger, AgentToolError, runToolLoop } from "./agent/tool-loop.js";
-import { createCsvAnalysisTool, TASKFORGE_AGENT_SYSTEM_MESSAGE } from "./agent/session-tools.js";
+import { createCsvAnalysisTool, createDocumentAnalysisTool, TASKFORGE_AGENT_SYSTEM_MESSAGE } from "./agent/session-tools.js";
 import { BUILT_IN_TASKS, getBuiltInTask, TaskRegistryError, validateTaskInputs } from "./agent/task-registry.js";
 import { runSpecialistReview, type SpecialistTask, SpecialistReviewError } from "./agent/specialist-review.js";
 import {
@@ -57,7 +57,7 @@ The config command validates local settings and prints a redacted summary.
 The doctor command checks the selected local SQLite or MongoDB storage and reports available setup areas.
 The model-check command makes a synthetic read-only tool call through the selected model provider.
 The chat command opens a bounded interactive conversation with the selected provider.
-The do command sends one natural-language instruction to the selected provider. Agent-directed CSV analysis is the only currently enabled tool and still requires explicit file and stored-folder read approval.
+The do command sends one natural-language instruction to the selected provider. Agent-directed CSV and supported-document analysis require explicit file and stored-folder read approval.
 The tasks command lists or inspects built-in validated declarative task definitions; validate checks one definition's JSON inputs. These definitions cannot grant permissions or execute code, and tasks are not yet executable.
 The csv-analyze workflow reads one explicitly approved CSV file, stores redacted run metadata, and can calculate exact selected-column decimal totals with --numeric-column.
 The repo-inspect workflow inventories one explicitly approved repository root without reading file contents or running commands.
@@ -2183,6 +2183,32 @@ function createCliCsvAnalysisTool(question: ApprovalQuestion) {
   });
 }
 
+function createCliDocumentAnalysisTool(question: ApprovalQuestion) {
+  return createDocumentAnalysisTool(async (argumentsValue, signal) => {
+    process.stdout.write("Proposed action: analyze one supported document; only format and aggregate counts are sent back to the model.\n");
+    let readFailure: InputReadFailure | undefined;
+    const input = await readApprovedInputFile(argumentsValue.input, question, signal, (failure) => {
+      readFailure = failure;
+    });
+    if (input === undefined) {
+      if (readFailure === "cancelled" || isSignalAborted(signal)) {
+        process.stdout.write("Document analysis cancelled before reading the file.\n");
+        return "Document analysis was cancelled before the file was read.";
+      }
+      throw new Error("Document file access was denied or unavailable.");
+    }
+    const extension = extname(argumentsValue.input).toLowerCase();
+    const result = await withStore((store) => analyzeDocument(store, extension, input));
+    if (result === undefined) throw new Error("Document analysis could not open configured storage.");
+    const analysis = result.analysis;
+    const summary = analysis.format === "xlsx"
+      ? `Document analysis complete: XLSX; ${analysis.sheetCount ?? 0} sheets; ${analysis.rowCount ?? 0} rows; ${analysis.cellCount ?? 0} scalar cells.`
+      : `Document analysis complete: ${analysis.format}; ${analysis.wordCount} words; ${analysis.lineCount} lines; ${analysis.byteCount} bytes.`;
+    process.stdout.write(`${summary}\n`);
+    return summary;
+  });
+}
+
 async function runNaturalLanguageInstruction(instruction: string): Promise<void> {
   if (!process.stdin.isTTY || !process.stdout.isTTY) {
     process.stderr.write("Natural-language execution requires an interactive terminal.\n");
@@ -2201,7 +2227,7 @@ async function runNaturalLanguageInstruction(instruction: string): Promise<void>
       const consent = createInterface({ input: process.stdin, output: process.stdout });
       let answer: string;
       try {
-        answer = await consent.question("This instruction and any approved CSV aggregate summary, including selected header labels but not source rows, will be sent to the configured Groq service. Continue? [y/N] ");
+        answer = await consent.question("This instruction and approved CSV/document aggregates, including any selected column labels but not source rows or extracted document text, will be sent to the configured Groq service. Continue? [y/N] ");
       } finally {
         consent.close();
       }
@@ -2218,7 +2244,7 @@ async function runNaturalLanguageInstruction(instruction: string): Promise<void>
       ? terminal.question(prompt)
       : terminal.question(prompt, { signal });
     try {
-      process.stdout.write("TaskForge is interpreting one instruction. Only approved CSV analysis is currently available as an agent action.\n");
+      process.stdout.write("TaskForge is interpreting one instruction. Approved CSV or supported-document analysis are the currently enabled agent actions.\n");
       const result = await runToolLoop(
         selected.provider,
         selected.model,
@@ -2226,8 +2252,8 @@ async function runNaturalLanguageInstruction(instruction: string): Promise<void>
           { role: "system", content: TASKFORGE_AGENT_SYSTEM_MESSAGE },
           { role: "user", content: instruction },
         ],
-        [createCliCsvAnalysisTool(question)],
-        { maxModelRequests: 8, maxToolActions: 1, signal: controller.signal },
+        [createCliCsvAnalysisTool(question), createCliDocumentAnalysisTool(question)],
+        { maxModelRequests: 8, maxToolActions: 2, signal: controller.signal },
       );
       if (result.content.length > 0) process.stdout.write(`TaskForge> ${result.content}\n`);
     } catch (error: unknown) {
@@ -2261,7 +2287,7 @@ async function runChat(): Promise<void> {
     const providerConfiguration = loadProviderConfiguration();
     const selected = createModelProvider(providerConfiguration);
     if (providerConfiguration.kind === "groq") {
-      process.stdout.write("This session sends your messages and any approved CSV aggregate summaries, including selected header labels but not source rows, to the configured Groq service. Continue? [y/N] ");
+      process.stdout.write("This session sends your messages and approved CSV/document aggregates, including selected column labels but not source rows or extracted document text, to the configured Groq service. Continue? [y/N] ");
       const consent = createInterface({ input: process.stdin, output: process.stdout });
       const answer = await consent.question("");
       consent.close();
@@ -2278,7 +2304,7 @@ async function runChat(): Promise<void> {
     const question: ApprovalQuestion = (prompt, signal) => signal === undefined
       ? terminal.question(prompt)
       : terminal.question(prompt, { signal });
-    const tools = [createCliCsvAnalysisTool(question)];
+    const tools = [createCliCsvAnalysisTool(question), createCliDocumentAnalysisTool(question)];
     let activeController: AbortController | undefined;
     let stopRequested = false;
     terminal.on("SIGINT", () => {

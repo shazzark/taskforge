@@ -13,11 +13,20 @@ export type CsvAnalysisToolExecutor = (
   signal?: AbortSignal,
 ) => Promise<string>;
 
+export interface DocumentAnalysisToolArguments {
+  readonly input: string;
+}
+
+export type DocumentAnalysisToolExecutor = (
+  argumentsValue: DocumentAnalysisToolArguments,
+  signal?: AbortSignal,
+) => Promise<string>;
+
 function parseCsvToolArguments(value: unknown): CsvAnalysisToolArguments {
   if (!isRecord(value)) throw new AgentToolError();
   const input = value["input"];
   if (Object.keys(value).some((key) => !CSV_TOOL_ARGUMENT_KEYS.has(key)) ||
-      typeof input !== "string" || input.trim().length === 0 || input.length > 2_048) {
+      typeof input !== "string" || input.trim().length === 0 || input.length > 2_048 || !input.toLowerCase().endsWith(".csv")) {
     throw new AgentToolError();
   }
   const numericColumnsValue = value["numericColumns"];
@@ -32,6 +41,17 @@ function parseCsvToolArguments(value: unknown): CsvAnalysisToolArguments {
   }
   if (new Set(numericColumns).size !== numericColumns.length) throw new AgentToolError();
   return { input, numericColumns };
+}
+
+function parseDocumentToolArguments(value: unknown): DocumentAnalysisToolArguments {
+  if (!isRecord(value)) throw new AgentToolError();
+  const input = value["input"];
+  if (Object.keys(value).some((key) => key !== "input") ||
+      typeof input !== "string" || input.trim().length === 0 || input.length > 2_048 ||
+      ![".txt", ".md", ".markdown", ".pdf", ".docx", ".xlsx"].some((suffix) => input.toLowerCase().endsWith(suffix))) {
+    throw new AgentToolError();
+  }
+  return { input };
 }
 
 export function createCsvAnalysisTool(execute: CsvAnalysisToolExecutor): AgentTool {
@@ -58,11 +78,30 @@ export function createCsvAnalysisTool(execute: CsvAnalysisToolExecutor): AgentTo
   };
 }
 
+export function createDocumentAnalysisTool(execute: DocumentAnalysisToolExecutor): AgentTool {
+  return {
+    definition: {
+      name: "analyze_document",
+      description: "Analyze one approved TXT, Markdown, text PDF, DOCX, or XLSX file after exact-file and stored-folder read approval. Never guess the path.",
+      parameters: {
+        type: "object",
+        properties: {
+          input: { type: "string", description: "Exact path to one supported document supplied by the user." },
+        },
+        required: ["input"],
+        additionalProperties: false,
+      },
+    },
+    validateArguments: parseDocumentToolArguments,
+    execute: async (argumentsValue, signal) => execute(parseDocumentToolArguments(argumentsValue), signal),
+  };
+}
+
 export const TASKFORGE_AGENT_SYSTEM_MESSAGE = [
   "You are TaskForge, a local developer assistant.",
-  "Use only tools explicitly supplied by the host. The only available action is analyze_csv.",
+  "Use only tools explicitly supplied by the host. Available actions may analyze one CSV or one supported document.",
   "Do not claim to inspect files, websites, repositories, or services without a tool result.",
   "Never ask a tool to grant permissions or infer a file path or numeric column. Ask the user to clarify missing or ambiguous inputs in plain language.",
-  "The host will request exact file-read approval before reading a CSV. A model tool call is not user approval.",
+  "The host will request exact-file read approval before reading a CSV or supported document. A model tool call is not user approval.",
   "Do not claim a successful analysis unless the host tool returns a result. Keep the answer concise and separate observed values from suggestions.",
 ].join(" ");

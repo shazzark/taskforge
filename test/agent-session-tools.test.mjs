@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { AgentBudgetLedger, AgentToolError, runToolLoop } from "../dist/agent/tool-loop.js";
-import { createCsvAnalysisTool, TASKFORGE_AGENT_SYSTEM_MESSAGE } from "../dist/agent/session-tools.js";
+import { createCsvAnalysisTool, createDocumentAnalysisTool, TASKFORGE_AGENT_SYSTEM_MESSAGE } from "../dist/agent/session-tools.js";
 
 test("CSV agent tool has a fixed schema and rejects malformed or extra arguments", () => {
   const tool = createCsvAnalysisTool(async () => "not reached");
@@ -19,6 +19,7 @@ test("CSV agent tool has a fixed schema and rejects malformed or extra arguments
     { input: "fixtures/sales.csv", permissions: ["read"] },
     { input: "fixtures/sales.csv", numericColumns: ["amount", "amount"] },
     { input: "fixtures/sales.csv", numericColumns: [4] },
+    { input: "fixtures/sales.txt" },
     { input: " " },
     { input: "x".repeat(2_049) },
   ]) assert.throws(() => tool.validateArguments(value), AgentToolError);
@@ -67,4 +68,29 @@ test("agent cannot execute an unprovided tool or run after shared tool budget is
   };
   await assert.rejects(runToolLoop(provider, "mock", [], [tool], { maxModelRequests: 1, maxToolActions: 1 }), AgentToolError);
   assert.equal(executed, 0);
+});
+
+test("document agent tool accepts one exact path and returns only the host analysis result", async () => {
+  let executed = 0;
+  const tool = createDocumentAnalysisTool(async (argumentsValue) => {
+    executed += 1;
+    assert.deepEqual(argumentsValue, { input: "fixtures/summary.txt" });
+    return "Document analysis complete: txt; 7 words; 2 lines; 61 bytes.";
+  });
+  assert.equal(tool.definition.name, "analyze_document");
+  assert.deepEqual(tool.validateArguments({ input: "fixtures/summary.txt" }), { input: "fixtures/summary.txt" });
+  assert.throws(() => tool.validateArguments({ input: "fixtures/summary.txt", permissions: ["read"] }), AgentToolError);
+  assert.throws(() => tool.validateArguments({ input: "fixtures/unsupported.doc" }), AgentToolError);
+  let requests = 0;
+  const result = await runToolLoop({
+    async complete(request) {
+      requests += 1;
+      assert.deepEqual(request.tools.map((item) => item.name), ["analyze_document"]);
+      if (requests > 1) return { content: "The document has seven words.", toolCalls: [], finishReason: "stop" };
+      return { content: null, toolCalls: [{ id: "document-1", name: "analyze_document", arguments: { input: "fixtures/summary.txt" } }], finishReason: "tool_calls" };
+    },
+  }, "mock", [], [tool], { maxModelRequests: 2, maxToolActions: 1 });
+  assert.equal(result.toolActions, 1);
+  assert.equal(executed, 1);
+  assert.equal(requests, 2);
 });
