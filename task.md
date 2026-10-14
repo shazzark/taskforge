@@ -504,7 +504,7 @@ The bounded render and unauthenticated gate observations are locally verified; p
 
 **Remaining acceptance:** BookFinder's approved fresh unauthenticated `/discover` audit still reaches `/login`, so its search/results/details/back journey is not verified. The earlier `/` blank report was explained by rendering before client hydration. Whether the owner's browser had signed-in or persisted state is unconfirmed; no browser session or credentials were reused and BookFinder was not modified. No extra API/resource origin was required or accessed. Redirect-based login/CDN flows and unknown server-side GET side effects remain explicit limitations. Phase 8 independent developer trial remains pending.
 
-**Commit:** pending local commit after final review.
+**Commit:** `90c7d05` (`Phase 6.10: add autonomous website diagnostics`), created locally after final review. No push was made.
 
 ### Phase 8.7 - Recovery, integration, and current release checks - VERIFIED (historical live observation superseded by Phase 6.9; external trial pending)
 
