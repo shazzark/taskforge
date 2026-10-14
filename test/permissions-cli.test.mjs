@@ -55,11 +55,11 @@ test("permission list reports database unavailability without exposing a stack t
     encoding: "utf8",
     timeout: 8_000,
     windowsHide: true,
-    env: { ...process.env, TASKFORGE_MONGODB_URI: "mongodb://127.0.0.1:1/taskforge_test" },
+    env: { ...process.env, TASKFORGE_STORAGE: "mongodb", TASKFORGE_MONGODB_URI: "mongodb://127.0.0.1:1/taskforge_test" },
   });
 
   assert.equal(result.status, 2);
-  assert.match(result.stderr, /Database unavailable/u);
+  assert.match(result.stderr, /Unable to open the configured TaskForge storage/u);
   assert.doesNotMatch(result.stderr, /\n\s+at\s/u);
   assert.doesNotMatch(result.stdout + result.stderr, /mongodb:\/\/127\.0\.0\.1:1/u);
 });

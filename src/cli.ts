@@ -6,19 +6,18 @@ import { mkdtemp, open, realpath, stat, writeFile } from "node:fs/promises";
 import { basename, dirname, extname, join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { createInterface } from "node:readline/promises";
-import { ConfigurationError, formatConfigurationSummary, loadConfiguration, loadProviderConfiguration } from "./config.js";
+import { ConfigurationError, formatStoreConfigurationSummary, loadProviderConfiguration, loadStoreConfiguration } from "./config.js";
 import { AgentBudgetLedger, AgentToolError, runToolLoop } from "./agent/tool-loop.js";
 import { runSpecialistReview, type SpecialistTask, SpecialistReviewError } from "./agent/specialist-review.js";
 import {
-  DatabaseConnectionError,
   DatabasePersistenceError,
   DatabaseShutdownError,
-  MongoStore,
   PersistenceInputError,
   type ArtifactType,
   type FolderApproval,
 } from "./mongo-store.js";
 import type { TaskForgeStore } from "./persistence/store.js";
+import { connectTaskForgeStore } from "./persistence/store-factory.js";
 import { createModelProvider } from "./providers/create-provider.js";
 import { ModelProviderError } from "./providers/types.js";
 import { PathPolicyError, WorkspacePathPolicy } from "./security/path-policy.js";
@@ -53,7 +52,7 @@ const helpText = `TaskForge ${packageJson.version} (early development)
 Usage: taskforge [--help | --version | config | doctor | model-check | chat | permissions approve/list/revoke | run csv-analyze --input <path> [--numeric-column <header>]... [--output <new.json|csv|md>] | run document-analyze --input <path> [--output <new.json|csv|md>] | run data-specialist --input <path> --goal <question> | run browser-audit --url <url> [--journey <json-array>] [--origin <https-origin>]... [--specialist] | run document-convert --input <path> --output <new.txt> | run file-move --source <file> --target <new-file> | run ... | resume <run-id> --input <path> [--numeric-column <header>]... | history list | schedule ...]
 
 The config command validates local settings and prints a redacted summary.
-The doctor command checks configured MongoDB connectivity and reports available setup areas.
+The doctor command checks the selected local SQLite or MongoDB storage and reports available setup areas.
 The model-check command makes a synthetic read-only tool call through the selected model provider.
 The chat command opens a bounded interactive conversation with the selected provider.
 The csv-analyze workflow reads one explicitly approved CSV file, stores redacted run metadata, and can calculate exact selected-column decimal totals with --numeric-column.
@@ -75,7 +74,7 @@ The pdf-report workflow renders an approved JSON report and creates a new approv
 The software-check workflow runs only an explicitly approved Node test suite, one explicitly selected in-root JavaScript test file, TypeScript no-emit check, or local TypeScript build in one approved root.
 The resume command reacquires input-file approval, rechecks input and workflow hashes, then resumes an uncertain CSV or document analysis.
 History list prints up to 50 redacted run summaries.
-Permissions are stored in the configured local MongoDB database. Approvals are scoped to a canonical folder and exactly read or write access; revoke disables that scope.
+Permissions are stored in the selected TaskForge database. New installations use local SQLite; a configured MongoDB URI preserves the existing MongoDB selection unless TASKFORGE_STORAGE explicitly chooses a backend. Approvals are scoped to a canonical folder and exactly read or write access; revoke disables that scope.
 `;
 
 const args = process.argv.slice(2);
@@ -161,12 +160,12 @@ async function readApprovedInputFile(pathValue: string): Promise<Uint8Array | un
   }
 }
 
-async function withMongoStore<T>(action: (store: TaskForgeStore) => Promise<T>): Promise<T | undefined> {
-  let store: MongoStore;
+async function withStore<T>(action: (store: TaskForgeStore) => Promise<T>): Promise<T | undefined> {
+  let store: TaskForgeStore;
   try {
-    store = await MongoStore.connect(loadConfiguration());
-  } catch (error: unknown) {
-    process.stderr.write(error instanceof DatabaseConnectionError ? `Database unavailable: ${error.message}\n` : "Unable to open the configured database.\n");
+    store = await connectTaskForgeStore(loadStoreConfiguration());
+  } catch {
+    process.stderr.write("Unable to open the configured TaskForge storage. Check configuration and availability.\n");
     process.exitCode = 2;
     return undefined;
   }
@@ -191,7 +190,7 @@ async function requirePersistentFolderApproval(pathValue: string, access: "read"
   } catch {
     throw new PersistentFolderApprovalError();
   }
-  const approved = await withMongoStore((store) => store.hasFolderApproval(canonicalPath, access));
+  const approved = await withStore((store) => store.hasFolderApproval(canonicalPath, access));
   if (approved !== true) throw new PersistentFolderApprovalError();
 }
 
@@ -200,7 +199,7 @@ async function runPermissionsCommand(commandArgs: readonly string[]): Promise<vo
   if (action === "list" && (commandArgs.length === 1 || (commandArgs.length === 2 && commandArgs[1] === "--all"))) {
     let approvals: readonly FolderApproval[] | undefined;
     try {
-      approvals = await withMongoStore((store) => store.listFolderApprovals(commandArgs[1] === "--all"));
+      approvals = await withStore((store) => store.listFolderApprovals(commandArgs[1] === "--all"));
     } catch (error: unknown) {
       const detail = error instanceof DatabasePersistenceError || error instanceof PersistenceInputError
         ? error.message
@@ -254,7 +253,7 @@ async function runPermissionsCommand(commandArgs: readonly string[]): Promise<vo
   }
   let changed: boolean | undefined;
   try {
-    changed = await withMongoStore(async (store) => action === "approve"
+    changed = await withStore(async (store) => action === "approve"
       ? (await store.grantFolderApproval(canonicalRoot, access), true)
       : store.revokeFolderApproval(canonicalRoot, access));
   } catch (error: unknown) {
@@ -293,7 +292,7 @@ async function runCsvWorkflowCommand(commandArgs: readonly string[]): Promise<vo
   }
   let result: CsvWorkflowResult | undefined;
   try {
-    result = await withMongoStore((store) => runCsvAnalysisWorkflow(store, input, undefined, numericColumns));
+    result = await withStore((store) => runCsvAnalysisWorkflow(store, input, undefined, numericColumns));
   } catch (error: unknown) {
     process.stderr.write(error instanceof CsvWorkflowError ? `CSV workflow failed: ${error.message}\n` : "CSV workflow failed; run state was preserved where possible.\n");
     process.exitCode = 3;
@@ -329,7 +328,7 @@ async function runCsvWorkflowCommand(commandArgs: readonly string[]): Promise<vo
     const written = await writeApprovedTextArtifact(pending, approvals.approve(pending.preview.previewId), outputRoot, policy, approvals);
     createdArtifact = written;
     const artifactType: ArtifactType = exportFormat === "json" ? "csv-analysis-json" : exportFormat === "csv" ? "csv-analysis-csv" : "csv-analysis-markdown";
-    const references = await withMongoStore((store) => store.saveArtifactReference({
+    const references = await withStore((store) => store.saveArtifactReference({
       artifactId: randomUUID(),
       runId: result.run.runId,
       relativePath: basename(written.path),
@@ -376,7 +375,7 @@ async function resumeWorkflowCommand(runId: string, commandArgs: readonly string
   const input = await readApprovedInputFile(inputPath);
   if (input === undefined) return;
   try {
-    const result = await withMongoStore(async (store) => {
+    const result = await withStore(async (store) => {
       const existing = await store.getRunSummary(runId);
       if (existing?.workflowId === "csv-analyze") {
         return { kind: "csv" as const, value: await resumeCsvAnalysisWorkflow(store, runId, input, numericColumns) };
@@ -433,7 +432,7 @@ async function runDocumentAnalysisCommand(commandArgs: readonly string[]): Promi
   let attemptedOutputPath: string | undefined;
   try {
     const extension = extname(inputPath).toLowerCase();
-    const result = await withMongoStore((store) => analyzeDocument(store, extension, input));
+    const result = await withStore((store) => analyzeDocument(store, extension, input));
     if (result !== undefined) {
       const analysis = result.analysis;
       process.stdout.write(
@@ -466,7 +465,7 @@ async function runDocumentAnalysisCommand(commandArgs: readonly string[]): Promi
         const written = await writeApprovedTextArtifact(pending, approvals.approve(pending.preview.previewId), outputRoot, policy, approvals);
         createdArtifact = written;
         const artifactType: ArtifactType = exportFormat === "json" ? "document-analysis-json" : exportFormat === "csv" ? "document-analysis-csv" : "document-analysis-markdown";
-        const reference = await withMongoStore((store) => store.saveArtifactReference({
+        const reference = await withStore((store) => store.saveArtifactReference({
           artifactId: randomUUID(), runId: result.run.runId, relativePath: basename(written.path), type: artifactType,
           sha256: written.sha256, bytes: written.byteCount,
         }));
@@ -510,7 +509,7 @@ async function runDocumentConversionCommand(commandArgs: readonly string[]): Pro
   let attemptedOutputPath: string | undefined;
   try {
     const extension = extname(inputPath).toLowerCase();
-    const analysis = await withMongoStore((store) => analyzeDocument(store, extension, input));
+    const analysis = await withStore((store) => analyzeDocument(store, extension, input));
     if (analysis === undefined) return;
     const content = await convertDocumentToPlainText(extension, input);
     const requestedOutput = resolve(outputPath);
@@ -535,7 +534,7 @@ async function runDocumentConversionCommand(commandArgs: readonly string[]): Pro
     attemptedOutputPath = pending.preview.targetPath;
     const written = await writeApprovedTextArtifact(pending, approvals.approve(pending.preview.previewId), outputRoot, policy, approvals);
     createdArtifact = written;
-    const reference = await withMongoStore((store) => store.saveArtifactReference({
+    const reference = await withStore((store) => store.saveArtifactReference({
       artifactId: randomUUID(),
       runId: analysis.run.runId,
       relativePath: basename(written.path),
@@ -648,7 +647,7 @@ async function runScheduleCommand(commandArgs: readonly string[]): Promise<void>
       process.stdout.write(`Future executions store and read this exact local file: ${canonicalPath}\n`);
       process.stdout.write(`Approved root: ${approvedRoot}\nThe file will require fresh read approval for every scheduled run.\n`);
       if (!(await askScheduleQuestion("Create this schedule?"))) return;
-      const schedule = await withMongoStore((store) => store.createSchedule({
+      const schedule = await withStore((store) => store.createSchedule({
         scheduleId: randomUUID(), workflowId: definition.workflowId, inputPath: canonicalPath,
         nextRunAt: definition.nextRunAt,
         ...(definition.intervalMinutes === undefined ? {} : { intervalMinutes: definition.intervalMinutes }),
@@ -661,7 +660,7 @@ async function runScheduleCommand(commandArgs: readonly string[]): Promise<void>
     return;
   }
   if (action === "list" && commandArgs.length === 1) {
-    const schedules = await withMongoStore((store) => store.listSchedules());
+    const schedules = await withStore((store) => store.listSchedules());
     if (schedules === undefined) return;
     if (schedules.length === 0) process.stdout.write("No schedules found.\n");
     for (const schedule of schedules) {
@@ -674,7 +673,7 @@ async function runScheduleCommand(commandArgs: readonly string[]): Promise<void>
       if (!process.stdin.isTTY || !process.stdout.isTTY || !(await askScheduleQuestion(`Soft-delete schedule ${commandArgs[1]}?`))) return;
     }
     const nextStatus = action === "pause" ? "paused" : action === "resume" ? "active" : "deleted";
-    const schedule = await withMongoStore((store) => store.setScheduleStatus(commandArgs[1], nextStatus));
+    const schedule = await withStore((store) => store.setScheduleStatus(commandArgs[1], nextStatus));
     if (schedule !== undefined) process.stdout.write(`Schedule ${schedule.scheduleId}: ${schedule.status}.\n`);
     return;
   }
@@ -684,7 +683,7 @@ async function runScheduleCommand(commandArgs: readonly string[]): Promise<void>
       process.exitCode = 2;
       return;
     }
-    await withMongoStore(async (store) => {
+    await withStore(async (store) => {
       const schedule = (await store.listSchedules(true)).find((entry) => entry.scheduleId === commandArgs[1]);
       if (schedule?.pendingOccurrence === undefined || schedule.dispatchOwner === undefined) {
         process.stderr.write("No claimed pending occurrence was found for that schedule.\n");
@@ -704,7 +703,7 @@ async function runScheduleCommand(commandArgs: readonly string[]): Promise<void>
     const handleInterrupt = (): void => controller.abort();
     process.once("SIGINT", handleInterrupt);
     try {
-      await withMongoStore(async (store) => {
+      await withStore(async (store) => {
         const attempted = new Set<string>();
         const ownerId = randomUUID();
         const tick = async (now = new Date()) => {
@@ -739,7 +738,7 @@ async function runScheduleCommand(commandArgs: readonly string[]): Promise<void>
 async function listRunHistory(): Promise<void> {
   let history: { readonly runs: Awaited<ReturnType<TaskForgeStore["listRunSummaries"]>>; readonly artifacts: ReadonlyMap<string, Awaited<ReturnType<TaskForgeStore["listArtifactReferences"]>>> } | undefined;
   try {
-    history = await withMongoStore(async (store) => {
+    history = await withStore(async (store) => {
       const runs = await store.listRunSummaries();
       const artifacts = new Map<string, Awaited<ReturnType<TaskForgeStore["listArtifactReferences"]>>>();
       for (const run of runs) artifacts.set(run.runId, await store.listArtifactReferences(run.runId));
@@ -797,7 +796,7 @@ async function runRepositoryInspectionCommand(commandArgs: readonly string[]): P
     const policy = new WorkspacePathPolicy();
     const approvedRoot = await policy.approveRoot(requestedRoot);
     await requirePersistentFolderApproval(approvedRoot.path, "read");
-    const result = await withMongoStore((store) => inspectRepository(store, approvedRoot, policy));
+    const result = await withStore((store) => inspectRepository(store, approvedRoot, policy));
     if (result !== undefined) {
       const inventory = result.inventory;
       process.stdout.write(
@@ -873,7 +872,7 @@ async function runSoftwareCheckCommand(commandArgs: readonly string[]): Promise<
     process.once("SIGINT", handleInterrupt);
     let result: Awaited<ReturnType<typeof runReviewedCommand>> | undefined;
     try {
-      result = await withMongoStore((store) => runReviewedCommand(store, approvedRoot, policy, command, selectedTestFile, controller.signal));
+      result = await withStore((store) => runReviewedCommand(store, approvedRoot, policy, command, selectedTestFile, controller.signal));
     } finally {
       process.removeListener("SIGINT", handleInterrupt);
     }
@@ -1822,7 +1821,7 @@ async function runBrowserAuditCommand(commandArgs: readonly string[]): Promise<v
         `Approve this exact read-only journey after login? ${escapeTerminalControls(JSON.stringify(approvedJourney))} No screenshots, DOM text, page content, or specialist handoff will be captured. [y/N] `,
       ),
     } : undefined;
-    const result = await withMongoStore((store) => isPublic
+    const result = await withStore((store) => isPublic
       ? runPublicBrowserAudit(store, target.toString(), { approvedOrigins, journey, ...(manualLogin ? { manualLogin: true } : {}) }, controller.signal, manualInteraction)
       : runBrowserAudit(store, target.toString(), controller.signal));
     if (result !== undefined) {
@@ -1978,28 +1977,22 @@ async function runDoctor(): Promise<void> {
   }
 
   try {
-    const configuration = loadConfiguration();
-    process.stdout.write(`${formatConfigurationSummary(configuration)}\n`);
-    const store = await MongoStore.connect(configuration);
+    const configuration = loadStoreConfiguration();
+    process.stdout.write(`${formatStoreConfigurationSummary(configuration)}\n`);
+    const store = await connectTaskForgeStore(configuration);
     try {
       await store.close();
     } catch {
       throw new DatabaseShutdownError();
     }
-    process.stdout.write("MongoDB: available\n");
+    process.stdout.write(`${configuration.kind === "local" ? "Local storage" : "MongoDB"}: available\n`);
   } catch (error: unknown) {
     if (error instanceof ConfigurationError) {
-      if (error.message.includes("TASKFORGE_MONGODB_URI")) {
-        process.stdout.write(`MongoDB: not configured. ${error.message}\n`);
-      } else {
-        process.stdout.write(`Configuration: invalid. ${error.message}\n`);
-      }
-    } else if (error instanceof DatabaseConnectionError) {
-      process.stdout.write(`MongoDB: unavailable. ${error.message}\n`);
+      process.stdout.write(`Storage configuration: invalid or incomplete. ${error.message}\n`);
     } else if (error instanceof DatabaseShutdownError) {
-      process.stdout.write(`MongoDB: connection check could not close cleanly. ${error.message}\n`);
+      process.stdout.write(`Storage check could not close cleanly. ${error.message}\n`);
     } else {
-      process.stdout.write("MongoDB: check failed with an unexpected error.\n");
+      process.stdout.write("Configured storage: unavailable or could not be checked.\n");
     }
     process.stdout.write(`Model provider: ${providerStatus}.\n`);
     process.stdout.write("Browser tooling: loopback fixtures and approval-controlled public HTTPS audits are available; live owner-approved acceptance remains pending.\n");
@@ -2169,8 +2162,8 @@ if (args.length === 0 || (args.length === 1 && (args[0] === "--help" || args[0] 
   process.stdout.write(`${packageJson.version}\n`);
 } else if (args.length === 1 && args[0] === "config") {
   try {
-    const configuration = loadConfiguration();
-    process.stdout.write(`${formatConfigurationSummary(configuration)}\n`);
+    const configuration = loadStoreConfiguration();
+    process.stdout.write(`${formatStoreConfigurationSummary(configuration)}\n`);
   } catch (error: unknown) {
     const message = error instanceof ConfigurationError ? error.message : "Unable to load configuration.";
     process.stderr.write(`Configuration error: ${message}\n`);

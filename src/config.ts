@@ -1,6 +1,9 @@
 import dotenv from "dotenv";
+import { homedir, platform } from "node:os";
+import { isAbsolute, join } from "node:path";
 
 export const MONGODB_URI_ENVIRONMENT_VARIABLE = "TASKFORGE_MONGODB_URI";
+export const STORAGE_BACKEND_ENVIRONMENT_VARIABLE = "TASKFORGE_STORAGE";
 export const MODEL_PROVIDER_ENVIRONMENT_VARIABLE = "TASKFORGE_PROVIDER";
 export const GROQ_API_KEY_ENVIRONMENT_VARIABLE = "TASKFORGE_GROQ_API_KEY";
 export const GROQ_MODEL_ENVIRONMENT_VARIABLE = "TASKFORGE_GROQ_MODEL";
@@ -16,6 +19,10 @@ export interface AppConfiguration {
   readonly mongodbUri: string;
   readonly provider?: ProviderConfiguration;
 }
+
+export type StoreConfiguration =
+  | { readonly kind: "local"; readonly path: string }
+  | { readonly kind: "mongodb"; readonly mongodbUri: string };
 
 export class ConfigurationError extends Error {
   constructor(message: string) {
@@ -208,6 +215,37 @@ export function loadConfiguration(
     mongodbUri: environment[MONGODB_URI_ENVIRONMENT_VARIABLE],
     ...providerValues(environment),
   });
+}
+
+export function loadStoreConfiguration(
+  environment: Readonly<Record<string, string | undefined>> = process.env,
+): StoreConfiguration {
+  loadLocalEnvironmentFile(environment);
+  const configuredBackend = environment[STORAGE_BACKEND_ENVIRONMENT_VARIABLE];
+  const mongodbUri = environment[MONGODB_URI_ENVIRONMENT_VARIABLE];
+  if (configuredBackend !== undefined && configuredBackend !== "local" && configuredBackend !== "mongodb") {
+    throw new ConfigurationError(`${STORAGE_BACKEND_ENVIRONMENT_VARIABLE} must be either local or mongodb.`);
+  }
+  const backend = configuredBackend ?? (mongodbUri === undefined || mongodbUri.length === 0 ? "local" : "mongodb");
+  if (backend === "mongodb") {
+    if (mongodbUri === undefined || mongodbUri.length === 0) {
+      throw new ConfigurationError(`MongoDB storage requires ${MONGODB_URI_ENVIRONMENT_VARIABLE}.`);
+    }
+    const mongo = parseConfiguration({ mongodbUri });
+    return { kind: "mongodb", mongodbUri: mongo.mongodbUri };
+  }
+  const configuredDataRoot = environment["LOCALAPPDATA"] || environment["XDG_DATA_HOME"];
+  const localDataRoot = configuredDataRoot ?? join(homedir(), platform() === "win32" ? "AppData" : ".local", "share");
+  if (!isAbsolute(localDataRoot) || localDataRoot !== localDataRoot.trim() || /[\u0000-\u001f\u007f]/u.test(localDataRoot)) {
+    throw new ConfigurationError("The operating-system local data directory must be an absolute path without control characters.");
+  }
+  return { kind: "local", path: join(localDataRoot, "TaskForge", "taskforge.sqlite3") };
+}
+
+export function formatStoreConfigurationSummary(configuration: StoreConfiguration): string {
+  return configuration.kind === "local"
+    ? "Storage: local SQLite database (path redacted)."
+    : "Storage: MongoDB configured (connection string redacted).";
 }
 
 export function formatConfigurationSummary(configuration: AppConfiguration): string {

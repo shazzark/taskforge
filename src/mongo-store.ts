@@ -217,15 +217,15 @@ export class DatabaseConnectionError extends Error {
 }
 
 export class DatabaseShutdownError extends Error {
-  constructor() {
-    super("Unable to close the MongoDB connection cleanly.");
+  constructor(message = "Unable to close the TaskForge storage cleanly.") {
+    super(message);
     this.name = "DatabaseShutdownError";
   }
 }
 
 export class DatabasePersistenceError extends Error {
-  constructor() {
-    super("Unable to persist or read a run summary from MongoDB.");
+  constructor(message = "Unable to persist or read TaskForge data.") {
+    super(message);
     this.name = "DatabasePersistenceError";
   }
 }
