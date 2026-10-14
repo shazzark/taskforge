@@ -25,6 +25,28 @@ This checklist is for a developer other than the author. Do not use production d
 - [ ] Optional Groq check only if you already have an account/key and consent to a synthetic request. Never include the key or output containing it in this report.
 - [ ] Do not install Ollama or download a model unless the project owner has explicitly reopened that deferred step.
 
+## Approval and local file boundaries
+
+Use a disposable folder under the trial checkout for all file examples. Do not point these checks at personal, production, or unrelated project files. The commands below require an interactive terminal; cancel if the displayed canonical path or content is unexpected.
+
+- [ ] Create a read grant for the disposable fixture folder with `permissions approve --root <fixture-folder> --access read`; list it and confirm the canonical path and read scope are shown.
+- [ ] Create a separate write grant for that folder. Revoke the read grant, list all grants, and confirm it is shown as revoked; verify a read workflow requiring that grant is refused until read access is granted again. Record any mismatch: ____________________
+- [ ] Run a supported read workflow against a synthetic fixture within the granted folder. Confirm it asks for operation approval and its persisted summary contains aggregate metadata only.
+- [ ] For a file-patch smoke check, create a disposable text target and replacement file in that folder. Approve the exact root/target, inspect the preview and digest, then approve the operation. Confirm only the target's intended text changed. Do not use a real source file.
+- [ ] Run `software-check` with `--check typescript-check` on the clean TaskForge checkout after reviewing the root and command prompts. Confirm it reports success without writes. Optionally run one selected harmless fixture test with `--check node-test --test <relative-test-file>`; confirm the selected path is shown and unrelated tests are not selected. These commands execute approved repository code and are not an OS sandbox.
+
+## Browser fixture and research
+
+- [ ] Start a disposable HTTP fixture bound only to `127.0.0.1` or `localhost`; use synthetic content and no credentials. Run `run browser-audit --url <loopback-url>` in an interactive terminal and approve the exact local target. Confirm the report includes attempted checks, bounded CSS custom-property names and semantic component counts, and that page text/design observations are not persisted. Confirm mixed-content checks are marked skipped for HTTP. Stop the fixture afterward. Do not substitute a public website: real-site acceptance requires a target and journey approved by the project owner.
+- [ ] Optional live research check: only if you already have an appropriately configured provider account/key, you consent to an external request, and the selected model supports browser search. Use a synthetic, non-sensitive question with `run research --query "<synthetic question>"`; confirm the CLI asks before transfer, displays validated source references and labels the answer unverified, and persists no result. Do not add billing, create an account, or include secrets/project data. If unavailable or declined, mark N/A rather than failed: ____________________
+
+## Public read, local draft, and specialist review
+
+- [ ] Optional public GitHub read: select a public repository with no sensitive query, review the confirmation, and run `run github-issues --repository <owner/name>`. Confirm it performs a read-only public request, excludes pull requests, displays bounded issue titles/links, and uses no token. If network access is unavailable or you decline, mark N/A: ____________________
+- [ ] Create a synthetic issue or email JSON file inside the disposable folder and run `run draft --input <fixture.json> --output <new-draft.md>`. Inspect the preview and output path/hash prompt; approve it and confirm a new Markdown file is created without replacing an existing file or contacting a service.
+- [ ] Optional specialist review: place a synthetic source file in the disposable folder, inspect the locally displayed excerpt/redaction, then use `run specialist-review --root <fixture-folder> --file <relative-file>` only if you consent to sending that synthetic excerpt to the currently selected provider. Confirm the separate transfer prompt, bounded findings marked unverified, and no files/results written. Declining or lacking a configured provider is N/A, not a pass: ____________________
+- [ ] Do not use private GitHub credentials, send email, write to GitHub, or use personal/production content during this trial.
+
 ## Results
 
 - [ ] Pass
@@ -38,3 +60,5 @@ ____________________________________________________________________
 ____________________________________________________________________
 
 Trial date and reviewer initials: ____________________
+
+The independent trial remains pending until another developer completes the applicable checks, records actual outcomes above, and identifies any skipped optional live-provider checks. This checklist alone is not evidence that the trial passed.
