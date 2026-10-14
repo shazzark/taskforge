@@ -6,8 +6,9 @@ const MAX_WORKERS = 2;
 const MAX_REVIEW_INPUT_BYTES = 24 * 1024;
 const MAX_WORKER_OUTPUT_CHARACTERS = 8_000;
 const MAX_PARENT_OUTPUT_CHARACTERS = 8_000;
+const MAX_REVIEW_RUNTIME_MS = 120_000;
 
-export type SpecialistRole = "repository-investigator" | "reviewer" | "data-analyst";
+export type SpecialistRole = "repository-investigator" | "reviewer" | "data-analyst" | "browser-specialist" | "data-specialist";
 
 export interface SpecialistTask {
   readonly role: SpecialistRole;
@@ -40,11 +41,14 @@ export class SpecialistReviewError extends Error {
 const roleInstructions: Readonly<Record<SpecialistRole, string>> = {
   "repository-investigator": "Investigate the supplied source for concrete correctness risks and identify evidence in the excerpts.",
   reviewer: "Review the supplied source independently for correctness, boundary and validation gaps.",
-  "data-analyst": "Analyze only the supplied source and summarize relevant data or logic behavior with evidence.",
+  "data-analyst": "Analyze only the explicitly supplied, already approved data excerpts. Cite values or patterns present in those excerpts, state when the sample or coverage is limited, and do not infer access to the original file or any other data.",
+  "browser-specialist": "Analyze only the explicitly supplied browser audit evidence. Ground findings in the reported observations, distinguish measured results from heuristics and coverage limitations, and do not infer access to the website, browser session, credentials, or checks that were not reported.",
+  "data-specialist": "Analyze only the explicitly supplied, already approved data excerpts. Cite values or patterns present in those excerpts, state when the sample or coverage is limited, and do not infer access to the original file or any other data.",
 };
 
 function isSpecialistRole(value: unknown): value is SpecialistRole {
-  return value === "repository-investigator" || value === "reviewer" || value === "data-analyst";
+  return value === "repository-investigator" || value === "reviewer" || value === "data-analyst" ||
+    value === "browser-specialist" || value === "data-specialist";
 }
 
 function isUnknownArray(value: unknown): value is readonly unknown[] {
@@ -87,8 +91,10 @@ export async function runSpecialistReview(
     throw new SpecialistReviewError("Provide one or two unique specialist tasks, a goal, and source within the 24 KiB limit.");
   }
   if (isSignalAborted(signal)) throw new ModelProviderError("cancelled");
+  const runtimeSignal = AbortSignal.timeout(MAX_REVIEW_RUNTIME_MS);
+  const operationSignal = signal === undefined ? runtimeSignal : AbortSignal.any([signal, runtimeSignal]);
 
-  const workers = await Promise.all(tasks.map(async (task): Promise<SpecialistResult> => {
+  const settledWorkers = await Promise.allSettled(tasks.map(async (task): Promise<SpecialistResult> => {
     const remainingBudget = budget.snapshot();
     if (remainingBudget.modelRequestsRemaining === 0) return { role: task.role, status: "budget-exhausted" };
     const messages: readonly ProviderMessage[] = [
@@ -106,7 +112,7 @@ export async function runSpecialistReview(
         maxModelRequests: remainingBudget.modelRequestsRemaining,
         maxToolActions: remainingBudget.toolActionsRemaining,
         budget,
-        ...(signal === undefined ? {} : { signal }),
+        signal: operationSignal,
       });
       if (!boundedText(completion.content, MAX_WORKER_OUTPUT_CHARACTERS)) {
         return { role: task.role, status: "failed", failureKind: "invalid_response" };
@@ -123,19 +129,36 @@ export async function runSpecialistReview(
           (budget.snapshot().modelRequestsRemaining === 0 || budget.snapshot().toolActionsRemaining === 0)
           ? "budget-exhausted"
           : "failed",
-        failureKind: error instanceof ModelProviderError ? error.kind
+        failureKind: runtimeSignal.aborted ? "unavailable" : error instanceof ModelProviderError ? error.kind
           : error instanceof AgentBudgetError ? workerTools.length === 0 ? "unsupported_tool" : "quota"
             : "unavailable",
       };
     }
   }));
 
+  // Promise.all would reject as soon as an aborted worker settles, while another
+  // provider request could still be in flight. Wait for every worker to settle
+  // before surfacing cancellation so the parent can safely clean up the run.
+  if (isSignalAborted(signal)) throw new ModelProviderError("cancelled");
+  const workers = settledWorkers.map((settled, index): SpecialistResult => {
+    if (settled.status === "fulfilled") return settled.value;
+    const role = tasks[index]?.role ?? "reviewer";
+    return {
+      role,
+      status: "failed",
+      failureKind: settled.reason instanceof ModelProviderError ? settled.reason.kind : "unavailable",
+    };
+  });
+
   const successful = workers.filter((worker) => worker.status === "complete" && worker.findings !== undefined);
   let parentReview: string | null = null;
   let parentReviewStatus: SpecialistReviewResult["parentReviewStatus"] = "not-run";
   let parentFailureKind: ProviderErrorKind | undefined;
   if (successful.length > 0) {
-    if (!budget.consumeModelRequest()) {
+    if (runtimeSignal.aborted) {
+      parentReviewStatus = "failed";
+      parentFailureKind = "unavailable";
+    } else if (!budget.consumeModelRequest()) {
       parentReviewStatus = "budget-exhausted";
     } else {
       const reviews = successful.map((worker) => `ROLE ${worker.role}\n${worker.findings ?? ""}`).join("\n\n");
@@ -150,9 +173,7 @@ export async function runSpecialistReview(
         },
       ];
       try {
-        const completion = signal === undefined
-          ? await provider.complete({ model, messages: reviewMessages, tools: [] })
-          : await provider.complete({ model, messages: reviewMessages, tools: [] }, signal);
+        const completion = await provider.complete({ model, messages: reviewMessages, tools: [] }, operationSignal);
         if (completion.toolCalls.length === 0 && boundedText(completion.content, MAX_PARENT_OUTPUT_CHARACTERS)) {
           parentReview = escapeTerminalControls(completion.content);
           parentReviewStatus = "complete";
@@ -163,7 +184,7 @@ export async function runSpecialistReview(
       } catch (error: unknown) {
         if (isSignalAborted(signal)) throw new ModelProviderError("cancelled");
         parentReviewStatus = "failed";
-        parentFailureKind = error instanceof ModelProviderError ? error.kind : "unavailable";
+        parentFailureKind = runtimeSignal.aborted ? "unavailable" : error instanceof ModelProviderError ? error.kind : "unavailable";
       }
     }
   }

@@ -1,7 +1,7 @@
 # TaskForge - Product Requirements
 
 ## Document status
-Planning baseline v0.1, 8 October 2026. Owner: Nnam Daniel Chidozie. No implementation or model evaluation has been completed. Confirmed owner choices are requirements; recommendations below are labelled provisional. Target: a verified first release before 25 October 2026, meaning 24 October or earlier. This is a target, not a completion promise.
+Planning baseline v0.1, 8 October 2026. Owner: Nnam Daniel Chidozie. This paragraph records the original planning snapshot; implementation and verification progress is tracked in `task.md`. Confirmed owner choices are requirements; recommendations below are labelled provisional unless subsequently approved and recorded. Target: a verified first release before 25 October 2026, meaning 24 October or earlier. This is a target, not a completion promise.
 
 ## Purpose
 TaskForge helps developers complete repeatable, multi-step workflows from the terminal using their chosen AI model, real tools, and verifiable outputs. It is an open-source general-purpose agent with an expanding task collection. It uses existing models; training a new foundation model is not part of this project.
@@ -22,6 +22,10 @@ The owner requests broad testing including network, security and design-system s
 
 ## Deferred actions
 Sending email/messages, publishing content, purchases and deployment are deferred by the owner. Reading GitHub and preparing drafts can exist without write access. Community marketplace and arbitrary third-party executable extensions are deferred; reviewed contributions and local task definitions are supported. Linux support follows Windows acceptance.
+
+## Scope decision update — 14 October 2026
+
+The owner approved an approval-controlled browser specialist for explicitly approved read-only website journeys and a data specialist for approved CSV, XLSX, PDF, and DOCX analysis. Public site acceptance still requires the owner to supply and approve the exact target URL, journey, and any additional resource origins. Specialist data transfer requires separate disclosure and explicit approval. Existing one-time/recurring scheduling and approval/revalidation behavior is accepted. MongoDB remains the approved persistence choice. Optional local storage, guided setup, architecture analysis, and read-only GitHub/Vercel deployment tracing remain proposals pending a separate decision; deployment actions remain deferred.
 
 ## Outputs and supported formats
 Owner requests all outputs. Recommendation: terminal summary plus Markdown report, structured JSON evidence, relevant CSV exports, screenshots and PDF reports. Input-format recommendation: TXT, Markdown, CSV, text-based PDF, DOCX and XLSX, with documented size limits. Scanned PDF OCR, legacy DOC/XLS, macros and encrypted documents require separate adapters and are not assumed supported. Output adapters are phased; unsupported formats fail clearly. These format boundaries remain provisional.

@@ -2,7 +2,7 @@
 
 An open-source terminal AI agent for repeatable developer workflows and extensible tasks.
 
-**Status:** TaskForge is in early development. Bounded file/data, software, local browser fixture, research, GitHub-read, local-draft, schedule, and specialist-review workflows are implemented. Owner-supplied real-site journeys, broader design inference, additional specialist integrations, and the independent developer trial remain pending; see `task.md`.
+**Status:** TaskForge is in early development. Bounded file/data, software, local browser fixture, research, GitHub-read, local-draft, schedule, and specialist-review workflows are implemented. Live owner-approved site acceptance and the independent developer trial remain pending; see `task.md`.
 
 Repository: https://github.com/shazzark/taskforge
 
@@ -13,6 +13,10 @@ Repository: https://github.com/shazzark/taskforge
 Contributor setup and review expectations are in [CONTRIBUTING.md](CONTRIBUTING.md).
 
 The `run browser-audit --url <loopback-url>` slice is available for explicitly approved local HTTP fixtures. It uses isolated Chromium, blocks cross-origin and unsafe-method requests, and reports HTTP/request/link errors, console/page errors, basic accessibility heuristics, mobile/desktop overflow and selected passive response headers as aggregate findings. It also displays bounded CSS custom-property names and semantic component counts locally; these observations are not persisted. Mixed-content checks are skipped for HTTP fixtures, and real-site journeys remain pending owner-supplied scope. `run research --query <question>` uses Groq browser search after interactive consent and persists nothing.
+
+Public browser journeys use `run browser-audit --url <https-url> --journey '<json-array>' [--origin <https-origin>]...`. The CLI displays and asks to approve the exact target, journey, and additional origins before navigation. Supported journey steps are `expect-text` and ordinary `click-link`; forms and state-changing actions are not supported. The unauthenticated browser blocks private/internal egress, non-GET/HEAD methods, WebSockets, unapproved origins, and over-budget traffic. It reports observed findings and coverage limitations; it is not a comprehensive security or accessibility audit. Live owner acceptance requires an owner-supplied target and journey.
+
+`run data-specialist --input <file> --goal <question>` parses supported CSV, XLSX, PDF, DOCX, text, or Markdown locally, previews bounded heuristically redacted evidence, and requires explicit provider disclosure and transfer approval. The browser command's optional `--specialist` transfers aggregate audit evidence only. Both use the configured provider (Groq remains default), bounded shared specialist budgets and parent review; outputs are unverified and not persisted. Online transfer requires separate approval. Do not supply sensitive content unless its transfer is approved.
 
 `resume <run-id> --input <path>` supports uncertain CSV and document analysis runs. It asks for approval to read the exact file again and resumes only when its bytes and workflow version match the persisted checkpoint.
 

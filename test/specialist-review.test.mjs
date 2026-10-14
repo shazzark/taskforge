@@ -131,6 +131,118 @@ test("specialists can use only explicitly supplied read tools and charge the sha
   assert.deepEqual(result.budget, { modelRequests: 3, toolActions: 1, modelRequestsRemaining: 1, toolActionsRemaining: 0 });
 });
 
+test("browser and data specialist contracts receive only the approved evidence supplied to the engine", async () => {
+  const evidence = JSON.stringify({
+    browserAudit: { consoleErrors: 2, blockedResourceCount: 1, coverage: "same-origin only" },
+    dataSample: { format: "csv", rows: 3, summary: "approved synthetic sample" },
+  });
+  const requests = [];
+  const provider = {
+    async complete(request) {
+      requests.push(request);
+      if (request.messages[0].content.includes("parent reviewer")) {
+        return { content: "Combined findings are limited to the approved evidence.", toolCalls: [], finishReason: "stop" };
+      }
+      return { content: "Finding grounded in the supplied evidence.", toolCalls: [], finishReason: "stop" };
+    },
+  };
+
+  const result = await runSpecialistReview(provider, "fixture", "Review supplied evidence", evidence, [
+    { role: "browser-specialist", goal: "Interpret browser findings and coverage." },
+    { role: "data-specialist", goal: "Summarize the approved data sample." },
+  ], new AgentBudgetLedger(3, 0));
+
+  assert.deepEqual(result.workers.map((worker) => worker.role), ["browser-specialist", "data-specialist"]);
+  const browserRequest = requests.find((request) => request.messages[0].content.includes("browser-specialist"));
+  const dataRequest = requests.find((request) => request.messages[0].content.includes("data-specialist"));
+  assert.ok(browserRequest);
+  assert.ok(dataRequest);
+  assert.match(browserRequest.messages[0].content, /coverage limitations/u);
+  assert.match(dataRequest.messages[0].content, /approved data excerpts/u);
+  for (const request of [browserRequest, dataRequest]) {
+    const payload = JSON.parse(request.messages[1].content);
+    assert.equal(payload.source, evidence);
+    assert.deepEqual(request.tools, []);
+  }
+  assert.equal(result.parentReviewStatus, "complete");
+  assert.equal(result.budget.modelRequests, 3);
+});
+
+test("browser/data specialist failures remain isolated while the parent reviews successful evidence", async () => {
+  const ledger = new AgentBudgetLedger(3, 0);
+  let parentReceived;
+  const provider = {
+    async complete(request) {
+      const system = request.messages[0].content;
+      if (system.includes("parent reviewer")) {
+        parentReceived = request.messages[1].content;
+        return { content: "Reviewed the available data evidence.", toolCalls: [], finishReason: "stop" };
+      }
+      if (system.includes("browser-specialist")) throw new Error("private provider detail");
+      return { content: "Three approved rows contain the observed pattern.", toolCalls: [], finishReason: "stop" };
+    },
+  };
+
+  const result = await runSpecialistReview(provider, "fixture", "Analyze the evidence", "approved sample", [
+    { role: "browser-specialist", goal: "Interpret audit evidence." },
+    { role: "data-specialist", goal: "Summarize the sample." },
+  ], ledger);
+
+  assert.deepEqual(result.workers.map((worker) => worker.status), ["failed", "complete"]);
+  assert.equal(result.workers[0].failureKind, "unavailable");
+  assert.equal(JSON.stringify(result).includes("private provider detail"), false);
+  assert.match(parentReceived, /data-specialist/u);
+  assert.doesNotMatch(parentReceived, /ROLE browser-specialist/u);
+  assert.equal(result.parentReviewStatus, "complete");
+  assert.deepEqual(result.budget, { modelRequests: 3, toolActions: 0, modelRequestsRemaining: 0, toolActionsRemaining: 0 });
+});
+
+test("cancellation waits for every specialist provider request to settle", async () => {
+  const controller = new AbortController();
+  const ledger = new AgentBudgetLedger(3, 0);
+  let startedWorkers = 0;
+  let markBothStarted;
+  const bothStarted = new Promise((resolve) => { markBothStarted = resolve; });
+  let settleDataWorker;
+  let requestSettled = 0;
+  const provider = {
+    complete(request, signal) {
+      const isBrowser = request.messages[0].content.includes("browser-specialist");
+      startedWorkers += 1;
+      if (startedWorkers === 2) markBothStarted();
+      if (isBrowser) {
+        return new Promise((_resolve, reject) => {
+          signal.addEventListener("abort", () => {
+            requestSettled += 1;
+            reject(new Error("cancelled browser request"));
+          }, { once: true });
+        });
+      }
+      return new Promise((resolve) => {
+        settleDataWorker = () => {
+          requestSettled += 1;
+          resolve({ content: "Settled after cancellation.", toolCalls: [], finishReason: "stop" });
+        };
+      });
+    },
+  };
+
+  let operationSettled = false;
+  const operation = runSpecialistReview(provider, "fixture", "Review", "approved evidence", [
+    { role: "browser-specialist", goal: "Review browser evidence." },
+    { role: "data-specialist", goal: "Review data evidence." },
+  ], ledger, controller.signal).finally(() => { operationSettled = true; });
+  await bothStarted;
+  controller.abort();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(requestSettled, 1);
+  assert.equal(operationSettled, false);
+  settleDataWorker();
+  await assert.rejects(operation, /cancelled/u);
+  assert.equal(requestSettled, 2);
+  assert.equal(ledger.snapshot().modelRequests, 2);
+});
+
 test("provider failures are preserved as sanitized status and parent-review failure is visible", async () => {
   let requestCount = 0;
   const provider = {

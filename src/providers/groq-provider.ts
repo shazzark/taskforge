@@ -87,7 +87,9 @@ export class GroqProvider implements ModelProvider {
       this.transport = transport;
       return;
     }
-    const client = new Groq({ apiKey: configuration.apiKey });
+    // Tool workers share the CLI request budget; disable SDK-internal retries so
+    // each outbound attempt is accounted for by that same ledger.
+    const client = new Groq({ apiKey: configuration.apiKey, maxRetries: 0 });
     this.transport = async (request: GroqCreateParams, signal?: AbortSignal): Promise<unknown> => {
       return signal === undefined
         ? client.chat.completions.create(request)

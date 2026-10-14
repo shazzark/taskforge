@@ -23,6 +23,15 @@ export interface CsvAnalysisResult {
   readonly numericTotals: Readonly<Record<string, string>>;
 }
 
+export interface CsvSample {
+  readonly headers: readonly string[];
+  readonly rows: readonly (readonly string[])[];
+  readonly rowCount: number;
+  readonly columnCount: number;
+  readonly omittedRows: number;
+  readonly omittedColumns: number;
+}
+
 interface DecimalValue {
   readonly coefficient: bigint;
   readonly scale: number;
@@ -111,6 +120,39 @@ function parseCsvRecords(input: string): string[][] {
     throw new CsvAnalysisError("CSV exceeds the supported record limit.");
   }
   return records;
+}
+
+/** Validates the full bounded CSV while returning only the requested leading rows. */
+export function sampleCsv(input: unknown, maximumRows: number, maximumColumns: number): CsvSample {
+  if (typeof input !== "string" || !Number.isSafeInteger(maximumRows) || maximumRows < 0 ||
+      !Number.isSafeInteger(maximumColumns) || maximumColumns < 1) {
+    throw new CsvAnalysisError("CSV sample limits or input are invalid.");
+  }
+  if (Buffer.byteLength(input, "utf8") > MAX_CSV_BYTES) {
+    throw new CsvAnalysisError("CSV exceeds the supported input size.");
+  }
+  const records = parseCsvRecords(input.charCodeAt(0) === 0xfeff ? input.slice(1) : input);
+  const sourceHeaders = records[0];
+  if (sourceHeaders === undefined || sourceHeaders.length > MAX_CSV_COLUMNS) {
+    throw new CsvAnalysisError("CSV header is missing or exceeds the supported column limit.");
+  }
+  const headers = sourceHeaders.map((header) => header.trim());
+  if (headers.some((header) => header.length === 0) ||
+      new Set(headers.map((header) => header.toLocaleLowerCase("en-US"))).size !== headers.length) {
+    throw new CsvAnalysisError("CSV headers must be non-empty and unique, ignoring case.");
+  }
+  const dataRows = records.slice(1);
+  if (dataRows.some((row) => row.length !== headers.length)) {
+    throw new CsvAnalysisError("CSV contains a row with a different number of fields than its header.");
+  }
+  return {
+    headers: headers.slice(0, maximumColumns),
+    rows: dataRows.slice(0, maximumRows).map((row) => row.slice(0, maximumColumns)),
+    rowCount: dataRows.length,
+    columnCount: headers.length,
+    omittedRows: Math.max(0, dataRows.length - maximumRows),
+    omittedColumns: Math.max(0, headers.length - maximumColumns),
+  };
 }
 
 function parseDecimal(value: string): DecimalValue | undefined {

@@ -37,13 +37,18 @@ import { documentAnalysisExportFormat, DocumentAnalysisExportError, renderDocume
 import { convertDocumentToPlainText, DocumentConversionError } from "./documents/plain-text-conversion.js";
 import { escapeTerminalControls } from "./security/terminal-text.js";
 import { BrowserSearchError, GroqBrowserResearch } from "./integrations/groq-browser-search.js";
-import { BrowserAuditError, browserAuditExitCode, runBrowserAudit, validateLoopbackBrowserTarget } from "./workflows/browser-audit-workflow.js";
+import {
+  BrowserAuditError, browserAuditExitCode, runBrowserAudit, runPublicBrowserAudit,
+  validateApprovedBrowserOrigin, validateBrowserJourney, validateLoopbackBrowserTarget, validatePublicBrowserTarget,
+  type BrowserJourneyStep,
+} from "./workflows/browser-audit-workflow.js";
+import { DataSpecialistEvidenceError, prepareDataSpecialistEvidence } from "./workflows/data-specialist-evidence.js";
 import { runSchedulerTick, runScheduler } from "./scheduling/scheduler.js";
 import type { ScheduleRecord, ScheduleWorkflowId } from "./mongo-store.js";
 
 const helpText = `TaskForge ${packageJson.version} (early development)
 
-Usage: taskforge [--help | --version | config | doctor | model-check | chat | permissions approve/list/revoke | run csv-analyze --input <path> [--numeric-column <header>]... [--output <new.json|csv|md>] | run document-analyze --input <path> [--output <new.json|csv|md>] | run document-convert --input <path> --output <new.txt> | run file-move --source <file> --target <new-file> | run ... | resume <run-id> --input <path> [--numeric-column <header>]... | history list | schedule ...]
+Usage: taskforge [--help | --version | config | doctor | model-check | chat | permissions approve/list/revoke | run csv-analyze --input <path> [--numeric-column <header>]... [--output <new.json|csv|md>] | run document-analyze --input <path> [--output <new.json|csv|md>] | run data-specialist --input <path> --goal <question> | run browser-audit --url <url> [--journey <json-array>] [--origin <https-origin>]... [--specialist] | run document-convert --input <path> --output <new.txt> | run file-move --source <file> --target <new-file> | run ... | resume <run-id> --input <path> [--numeric-column <header>]... | history list | schedule ...]
 
 The config command validates local settings and prints a redacted summary.
 The doctor command checks configured MongoDB connectivity and reports available setup areas.
@@ -58,9 +63,9 @@ The git-diff workflow displays a bounded, locally redacted staged diff after exa
 The model-investigate workflow sends selected, heuristically redacted source to the configured model only after an additional explicit transfer confirmation; it runs no tools and persists no source or findings.
 The github-issues workflow reads at most 20 open issue titles from one public repository without a token; it excludes pull requests and writes nothing.
 The draft workflow creates a new local Markdown GitHub issue or email draft from an explicitly approved JSON input; it never contacts GitHub or an email service.
-The specialist-review workflow sends approved, heuristically redacted source excerpts to up to two read-only specialists and asks the same configured model to review their findings; workers can use only literal search over those excerpts, share one run-wide request/action budget, and cannot spawn workers.
+The specialist-review workflow sends approved, heuristically redacted source excerpts to bounded read-only workers and asks the same configured model to review their findings; repository workers can use only literal search over those excerpts, the browser-specialist receives aggregate audit evidence, and the data-specialist receives a locally redacted sample from one approved file. Every local-content transfer requires a separate disclosure and confirmation.
 The research workflow sends an approved query to Groq browser search, then displays bounded source metadata and an unverified answer; --compare <question> --against <question> runs two searches and shows source excerpts and exact shared URLs side by side without inferring source agreement.
-The browser-audit workflow visits one explicitly approved loopback HTTP URL in isolated Chromium, blocks cross-origin and non-GET/HEAD requests, checks same-origin links, HTTP/network/console/page errors, basic image/control accessibility, mobile/desktop overflow, and selected passive response headers. It reports aggregate findings only; mixed-content checks are explicitly skipped for HTTP-only fixtures.
+The browser-audit workflow preserves approved loopback HTTP fixtures and supports public HTTPS audits only after exact target, read-only journey, and resource-origin approval. Public audits use fresh unauthenticated Chromium behind DNS-pinned egress controls; they block private/internal addresses, non-GET/HEAD methods, WebSockets, forms, unapproved origins, and over-budget requests. They report aggregate findings and coverage limitations, not comprehensive security or accessibility certification. --specialist optionally sends only aggregate evidence to the configured specialist after a separate provider disclosure and confirmation.
 The document-analyze workflow parses one approved TXT, Markdown, text PDF, DOCX, or XLSX file and stores counts only; optional JSON, CSV, or Markdown exports contain counts only and require separate output approval.
 The document-convert workflow extracts one approved document to a new bounded plain-text artifact after preview and hash confirmation.
 The schedule command stores one-time or recurring CSV/document workflows; execution occurs only while its foreground scheduler is running and every occurrence requires fresh interactive approval.
@@ -1542,30 +1547,195 @@ async function runResearchCommand(commandArgs: readonly string[]): Promise<void>
   }
 }
 
-async function runBrowserAuditCommand(commandArgs: readonly string[]): Promise<void> {
-  if (commandArgs.length !== 2 || commandArgs[0] !== "--url" || commandArgs[1] === undefined) {
-    process.stderr.write("Expected --url <loopback-http-url>.\n");
-    process.exitCode = 1;
-    return;
+async function runEvidenceSpecialistReview(
+  role: "browser-specialist" | "data-specialist",
+  goal: string,
+  evidence: string,
+  providerConfiguration: ReturnType<typeof loadProviderConfiguration>,
+  signal: AbortSignal,
+): Promise<boolean> {
+  if (Buffer.byteLength(goal, "utf8") > 2_000 || Buffer.byteLength(evidence, "utf8") > 24 * 1024) {
+    throw new SpecialistReviewError("Specialist goal or evidence exceeds its bounded transfer limit.");
   }
-  let target: URL;
+  const selected = createModelProvider(providerConfiguration);
+  const isOnline = providerConfiguration.kind !== "ollama";
+  const transferKind = isOnline
+    ? `send this exact evidence and goal to the configured online ${providerConfiguration.kind} model (${selected.model})`
+    : `send this exact evidence and goal to the configured local Ollama model (${selected.model}); the content stays on this device`;
+  process.stdout.write(`\nExact goal proposed for transfer:\n${escapeTerminalControls(goal)}\nExact evidence proposed for transfer (${Buffer.byteLength(evidence, "utf8")} bytes; no filesystem path or website URL is included):\n${escapeTerminalControls(evidence)}\n`);
+  const consent = createInterface({ input: process.stdin, output: process.stdout });
+  let answer: string;
   try {
-    target = validateLoopbackBrowserTarget(commandArgs[1]);
-  } catch (error: unknown) {
-    process.stderr.write(`${error instanceof BrowserAuditError ? error.message : "Browser audit target was rejected."}\n`);
+    answer = await consent.question(
+      `Approve ${transferKind} for one ${role} and one parent review? The specialist has no tools; both share at most 40 model requests, 30 tool actions, a 120-second runtime, and zero automatic retries. Redaction and evidence are bounded but may still contain sensitive page or file values. Results are unverified and are not persisted. [y/N] `,
+    );
+  } finally {
+    consent.close();
+  }
+  if (answer.trim().toLowerCase() !== "y") {
+    process.stdout.write("Specialist review cancelled before provider transfer.\n");
+    return false;
+  }
+  const ledger = new AgentBudgetLedger(40, 30);
+  const result = await runSpecialistReview(selected.provider, selected.model, goal, evidence,
+    [{ role, goal: role === "browser-specialist" ? "Review the supplied audit findings and coverage limitations." : "Analyze the supplied bounded sample and state its limitations." }],
+    ledger, signal);
+  const worker = result.workers[0];
+  process.stdout.write(`\nSpecialist ${role}: ${worker?.status ?? "failed"}${worker?.failureKind === undefined ? "" : ` (${worker.failureKind})`}\n${worker?.findings ?? "No finding available."}\n`);
+  process.stdout.write(`\nParent review (${result.parentReviewStatus}${result.parentFailureKind === undefined ? "" : `, ${result.parentFailureKind}`}; unverified):\n${result.parentReview ?? "Not completed; inspect the supplied evidence and specialist result manually."}\n`);
+  process.stdout.write(`Budget used: ${result.budget.modelRequests} model requests, ${result.budget.toolActions} tool actions. No tools were available and no files or browser pages were reread.\n`);
+  return worker?.status === "complete" && result.parentReviewStatus === "complete";
+}
+
+async function runDataSpecialistCommand(commandArgs: readonly string[]): Promise<void> {
+  let inputPath: string | undefined;
+  let goal: string | undefined;
+  for (let index = 0; index < commandArgs.length; index += 2) {
+    const option = commandArgs[index];
+    const value = commandArgs[index + 1];
+    if (value === undefined || value.trim().length === 0) {
+      process.stderr.write("Expected --input <file> --goal <analysis-question>.\n");
+      process.exitCode = 1;
+      return;
+    }
+    if (option === "--input" && inputPath === undefined) inputPath = value;
+    else if (option === "--goal" && goal === undefined && Buffer.byteLength(value, "utf8") <= 2_000) goal = value;
+    else {
+      process.stderr.write("Expected one --input and one --goal within 2,000 UTF-8 bytes.\n");
+      process.exitCode = 1;
+      return;
+    }
+  }
+  if (inputPath === undefined || goal === undefined) {
+    process.stderr.write("Expected --input <file> --goal <analysis-question>.\n");
     process.exitCode = 1;
     return;
   }
   if (!process.stdin.isTTY || !process.stdout.isTTY) {
-    process.stderr.write("Browser audit requires interactive approval before opening a loopback page.\n");
+    process.stderr.write("Data specialist analysis requires interactive exact-file and provider-transfer approval.\n");
+    process.exitCode = 2;
+    return;
+  }
+  let providerConfiguration: ReturnType<typeof loadProviderConfiguration>;
+  try { providerConfiguration = loadProviderConfiguration(); } catch (error: unknown) {
+    process.stderr.write(`Data specialist setup error: ${error instanceof ConfigurationError ? error.message : "the selected model provider is not configured"}\n`);
+    process.exitCode = 2;
+    return;
+  }
+  const controller = new AbortController();
+  const interrupt = (): void => controller.abort();
+  process.once("SIGINT", interrupt);
+  try {
+    const input = await readApprovedInputFile(inputPath);
+    if (input === undefined) return;
+    const evidence = await prepareDataSpecialistEvidence(extname(inputPath).toLowerCase(), input);
+    const evidenceText = JSON.stringify(evidence);
+    const complete = await runEvidenceSpecialistReview("data-specialist", goal, evidenceText, providerConfiguration, controller.signal);
+    if (!complete) process.exitCode = 3;
+  } catch (error: unknown) {
+    const message = error instanceof DataSpecialistEvidenceError || error instanceof PersistentFolderApprovalError ||
+      error instanceof ConfigurationError || error instanceof ModelProviderError || error instanceof SpecialistReviewError
+      ? error.message
+      : "Data specialist analysis failed safely; file content and findings were not persisted.";
+    process.stderr.write(`Data specialist analysis failed: ${message}\n`);
+    process.exitCode = controller.signal.aborted ? 130 : 3;
+  } finally {
+    process.removeListener("SIGINT", interrupt);
+  }
+}
+
+async function runBrowserAuditCommand(commandArgs: readonly string[]): Promise<void> {
+  let targetValue: string | undefined;
+  let journeyValue: string | undefined;
+  const rawOrigins: string[] = [];
+  let withSpecialist = false;
+  for (let index = 0; index < commandArgs.length;) {
+    const option = commandArgs[index];
+    if (option === "--specialist" && !withSpecialist) {
+      withSpecialist = true;
+      index += 1;
+      continue;
+    }
+    const value = commandArgs[index + 1];
+    if (value === undefined || value.trim().length === 0) {
+      process.stderr.write("Browser audit option values must be supplied.\n");
+      process.exitCode = 1;
+      return;
+    }
+    if (option === "--url" && targetValue === undefined) targetValue = value;
+    else if (option === "--journey" && journeyValue === undefined) journeyValue = value;
+    else if (option === "--origin" && rawOrigins.length < 7) rawOrigins.push(value);
+    else {
+      process.stderr.write("Expected --url <url> [--journey <json-array>] [--origin <https-origin>]... [--specialist].\n");
+      process.exitCode = 1;
+      return;
+    }
+    index += 2;
+  }
+  if (targetValue === undefined) {
+    process.stderr.write("Expected --url <loopback-http-url> or --url <public-https-url> --journey <json-array>.\n");
+    process.exitCode = 1;
+    return;
+  }
+  let target: URL;
+  let isPublic = false;
+  try {
+    target = validateLoopbackBrowserTarget(targetValue);
+  } catch (error: unknown) {
+    try {
+      target = validatePublicBrowserTarget(targetValue);
+      isPublic = true;
+    } catch (publicError: unknown) {
+      process.stderr.write(`${publicError instanceof BrowserAuditError ? publicError.message : error instanceof BrowserAuditError ? error.message : "Browser audit target was rejected."}\n`);
+      process.exitCode = 1;
+      return;
+    }
+  }
+  let approvedOrigins: readonly string[] = [];
+  let journey: readonly BrowserJourneyStep[] | undefined;
+  if (isPublic) {
+    if (journeyValue === undefined) {
+      process.stderr.write("Public-site browser audits require an explicit --journey JSON array.\n");
+      process.exitCode = 1;
+      return;
+    }
+    let rawJourney: unknown;
+    try { rawJourney = JSON.parse(journeyValue); } catch {
+      process.stderr.write("The browser journey must be valid JSON.\n");
+      process.exitCode = 1;
+      return;
+    }
+    try {
+      journey = validateBrowserJourney(rawJourney);
+      approvedOrigins = [...new Set(rawOrigins.map(validateApprovedBrowserOrigin))];
+      if (approvedOrigins.includes(target.origin)) {
+        process.stderr.write("The target origin is approved automatically; pass only additional resource origins.\n");
+        process.exitCode = 1;
+        return;
+      }
+    } catch (error: unknown) {
+      process.stderr.write(`${error instanceof BrowserAuditError ? error.message : "Browser journey or origins were rejected."}\n`);
+      process.exitCode = 1;
+      return;
+    }
+  } else if (journeyValue !== undefined || rawOrigins.length > 0) {
+    process.stderr.write("Journey and additional-origin options are only valid for public HTTPS audits.\n");
+    process.exitCode = 1;
+    return;
+  }
+  if (!process.stdin.isTTY || !process.stdout.isTTY) {
+    process.stderr.write("Browser audit requires interactive approval of the exact target, journey, and origins before navigation.\n");
     process.exitCode = 2;
     return;
   }
   const consent = createInterface({ input: process.stdin, output: process.stdout });
   let answer: string;
   try {
+    const approvalDetails = isPublic
+      ? `Target URL: ${escapeTerminalControls(target.toString())}\nJourney: ${escapeTerminalControls(JSON.stringify(journey))}\nAdditional resource origins: ${approvedOrigins.length === 0 ? "none" : approvedOrigins.map(escapeTerminalControls).join(", ")}\n`
+      : `Target URL: ${escapeTerminalControls(target.toString())}\n`;
     answer = await consent.question(
-      `Open this exact loopback page in an isolated, unauthenticated Chromium context?\n${escapeTerminalControls(target.toString())}\nOnly same-origin GET/HEAD navigation is allowed; cross-origin and unsafe methods are blocked. Aggregate counts only are stored. Bounded design observations are displayed locally and are not persisted. [y/N] `,
+      `${approvalDetails}Open this exact target in a fresh unauthenticated Chromium context? Only the named exact-text checks and ordinary anchor clicks are used. Forms, button actions, and submissions are blocked or not invoked; non-GET/HEAD methods, WebSockets, unapproved origins, and private-address DNS answers are blocked. The browser is limited to 100 requests, 20 MiB network traffic, 8 tunnels, and 45 seconds. No personal browser session or stored credentials are used. Aggregate findings only are persisted; blocked resources and unsupported checks remain coverage limitations. [y/N] `,
     );
   } finally {
     consent.close();
@@ -1578,24 +1748,43 @@ async function runBrowserAuditCommand(commandArgs: readonly string[]): Promise<v
   const interrupt = (): void => controller.abort();
   process.once("SIGINT", interrupt);
   try {
-    const result = await withMongoStore((store) => runBrowserAudit(store, target.toString(), controller.signal));
+    const result = await withMongoStore((store) => isPublic
+      ? runPublicBrowserAudit(store, target.toString(), { approvedOrigins, journey }, controller.signal)
+      : runBrowserAudit(store, target.toString(), controller.signal));
     if (result !== undefined) {
       const metrics = result.metrics;
       process.stdout.write(
-        `Run ${result.run.runId} ${metrics.navigationFailed || metrics.pageInspectionFailed ? "incomplete" : "completed"}: navigation failed=${metrics.navigationFailed}, page inspection failed=${metrics.pageInspectionFailed}, ` +
-        `${metrics.httpErrorCount} HTTP errors, ${metrics.networkFailureCount} failed same-origin requests excluding policy blocks, ${metrics.brokenLinkCount}/${metrics.linksChecked} broken local links, ` +
+        `Run ${result.run.runId} ${metrics.navigationFailed || metrics.pageInspectionFailed || metrics.designInspectionFailed || metrics.journeyStepsFailed > 0 || metrics.runtimeLimitReached ? "incomplete" : "completed"}: navigation failed=${metrics.navigationFailed}, page inspection failed=${metrics.pageInspectionFailed}, design inspection failed=${metrics.designInspectionFailed}, journey=${metrics.journeyStepsCompleted}/${metrics.journeyStepsCompleted + metrics.journeyStepsFailed}, ` +
+        `${metrics.httpErrorCount} HTTP errors, ${metrics.networkFailureCount} failed approved-origin requests excluding policy blocks, ${metrics.brokenLinkCount}/${metrics.linksChecked} same-origin links broken, ` +
         `${metrics.consoleErrorCount} console errors, ${metrics.pageErrorCount} page errors, ${metrics.missingAltCount} images without alt text, ` +
         `${metrics.unnamedControlCount} unnamed controls, mobile overflow=${metrics.mobileHorizontalOverflow}, desktop overflow=${metrics.desktopHorizontalOverflow}, ` +
-        `${metrics.missingSecurityHeaderCount}/${metrics.securityHeadersChecked} passive headers missing, mixed-content=${metrics.mixedContentCheck}, ` +
-        `${metrics.blockedExternalRequestCount} external requests blocked, ${metrics.blockedUnsafeMethodCount} unsafe methods blocked, ` +
-        `${metrics.blockedRequestLimitCount} requests blocked at the limit.\n`,
+        `${metrics.missingSecurityHeaderCount}/${metrics.securityHeadersChecked} passive headers missing, mixed-content=${metrics.mixedContentCheck} (${metrics.mixedContentRequestCount} requests), ` +
+        `${metrics.blockedExternalRequestCount} unapproved resources blocked, ${metrics.blockedUnsafeMethodCount} unsafe methods blocked, ${metrics.blockedWebSocketCount} WebSockets blocked, ` +
+        `${metrics.blockedPrivateAddressRequestCount} private DNS answers blocked, ${metrics.blockedRequestLimitCount} requests blocked at the limit, runtime-limit=${metrics.runtimeLimitReached}.\n`,
       );
-      process.stdout.write("Design observations (inferred from this fixture; not original design tokens):\n");
+      process.stdout.write("Implemented checks: approved-origin HTTP/request failures, console/page errors, bounded same-origin link checks, missing image alt text, visible accessible-name heuristics, 360px/1280px horizontal overflow, selected passive response headers, sampled visual-style consistency heuristics, and bounded CSS/semantic observations.\n");
+      process.stdout.write("Coverage limitations: this is not a comprehensive security audit or WCAG assessment; visual consistency is inferred from sampled controls, without screenshots or cross-page comparison. Only same-origin links on the final page are probed. Approved cross-origin resources are permitted but not separately link-tested. Authentication, form submissions, button workflows, dynamic content coverage, and blocked resources are not verified.\n");
+      process.stdout.write("Design observations (inferred; not original design tokens):\n");
       for (const observation of metrics.designObservations) process.stdout.write(`- ${escapeTerminalControls(observation)}\n`);
       process.exitCode = browserAuditExitCode(result.run.state);
+      if (withSpecialist && !controller.signal.aborted) {
+        const providerConfiguration = loadProviderConfiguration();
+        const evidence = JSON.stringify({
+          findings: metrics,
+          coverageLimitations: [
+            "No page text, target URL, origin list, credentials, or session data is included.",
+            "Browser observations are aggregate and heuristic; comprehensive security and WCAG checks were not performed.",
+          ],
+        });
+        const complete = await runEvidenceSpecialistReview("browser-specialist", "Review these measured browser findings and explicitly reported coverage limitations.", evidence, providerConfiguration, controller.signal);
+        if (!complete) process.exitCode = 3;
+      }
     }
   } catch (error: unknown) {
-    process.stderr.write(`${error instanceof BrowserAuditError ? error.message : "Browser audit failed safely; no page content was persisted."}\n`);
+    const message = error instanceof BrowserAuditError || error instanceof ConfigurationError || error instanceof ModelProviderError || error instanceof SpecialistReviewError
+      ? error.message
+      : "Browser audit failed safely; no page content was persisted.";
+    process.stderr.write(`${message}\n`);
     process.exitCode = controller.signal.aborted ? 130 : 3;
   } finally {
     process.removeListener("SIGINT", interrupt);
@@ -1686,13 +1875,13 @@ async function runDoctor(): Promise<void> {
       process.stdout.write("MongoDB: check failed with an unexpected error.\n");
     }
     process.stdout.write(`Model provider: ${providerStatus}.\n`);
-    process.stdout.write("Browser tooling: local loopback audit is available; broader real-site checks remain pending.\n");
+    process.stdout.write("Browser tooling: loopback fixtures and approval-controlled public HTTPS audits are available; live owner-approved acceptance remains pending.\n");
     process.exitCode = 2;
     return;
   }
 
   process.stdout.write(`Model provider: ${providerStatus}.\n`);
-  process.stdout.write("Browser tooling: local loopback audit is available; broader real-site checks remain pending.\n");
+  process.stdout.write("Browser tooling: loopback fixtures and approval-controlled public HTTPS audits are available; live owner-approved acceptance remains pending.\n");
 }
 
 async function runModelCheck(): Promise<void> {
@@ -1896,6 +2085,8 @@ if (args.length === 0 || (args.length === 1 && (args[0] === "--help" || args[0] 
   await runDraftCommand(args.slice(2));
 } else if (args.length >= 2 && args[0] === "run" && args[1] === "specialist-review") {
   await runSpecialistReviewCommand(args.slice(2));
+} else if (args.length >= 2 && args[0] === "run" && args[1] === "data-specialist") {
+  await runDataSpecialistCommand(args.slice(2));
 } else if (args.length >= 2 && args[0] === "run" && args[1] === "research") {
   await runResearchCommand(args.slice(2));
 } else if (args.length >= 2 && args[0] === "run" && args[1] === "browser-audit") {
