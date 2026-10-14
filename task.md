@@ -438,9 +438,9 @@ Added browser/data specialist roles under the existing read-only specialist engi
 
 MongoDB remains the approved persistence choice. Optional local storage, guided setup, architecture analysis, and read-only GitHub/Vercel deployment tracing remain unapproved proposals and are not implemented requirements. Deployment actions remain deferred. Phase 8 remains IN PROGRESS: Phase 8.5 release checks are recorded above, but another developer must complete `DEVELOPER_TRIAL.md`; Codex/subagent review does not satisfy that trial.
 
-**Recovery state:** Last verified base commit was `dc58ff7` (`Phase 8.5: record configured MongoDB check`); its initial tree was clean. Integrated Phase 6.6/7.6 work and Phase 8.6 verification have now passed and are ready for local commit. MongoDB and Ollama were already live; configured provider checks exposed no credentials, no unrelated process was stopped, and no model was downloaded. No public site was visited, and no push, publish, deploy, or message was performed.
+**Recovery state:** Last verified base commit was `dc58ff7` (`Phase 8.5: record configured MongoDB check`); its initial tree was clean. Integrated Phase 6.6/7.6 work and Phase 8.6 verification passed and were committed locally as `fc137e4` (`Phase 6.6-8.6: add approved audits and specialist integrations`). MongoDB and Ollama were already live; configured provider checks exposed no credentials, no unrelated process was stopped, and no model was downloaded. No public site was visited, and no push, publish, deploy, or message was performed.
 
-**Next checkpoint:** Commit the verified Phase 6/7 and release-preparation work locally. Live Phase 6 acceptance still needs the owner URL/journey; Phase 8 completion still needs another developer's independent trial.
+**Remaining acceptance:** Live Phase 6 acceptance still needs the owner URL/journey and any additional origins; Phase 8 completion still needs another developer's independent trial.
 
 ### Phase 8.6 - Integrated release verification - VERIFIED (independent trial pending)
 
