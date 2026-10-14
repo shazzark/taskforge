@@ -9,12 +9,20 @@ const WORKFLOW_ID = "browser-fixture-audit";
 const STEP_ID = "audit-local-page";
 const MAX_PAGE_TIMEOUT_MS = 8_000;
 const MAX_RENDER_WAIT_MS = 2_500;
+const MAX_NETWORK_QUIET_WAIT_MS = 1_500;
 const MAX_LINKS_TO_CHECK = 10;
 const MAX_LINK_TIMEOUT_MS = 1_500;
 const MAX_PAGE_REQUESTS = 100;
 const MAX_AUDIT_RUNTIME_MS = 45_000;
 const MAX_JOURNEY_STEPS = 8;
 const MAX_APPROVED_ORIGINS = 8;
+const MAX_DIAGNOSTIC_SCREENSHOTS = 2;
+const MAX_DIAGNOSTIC_SCREENSHOT_BYTES = 4 * 1024 * 1024;
+const MAX_DIAGNOSTIC_FAILURES = 20;
+const MAX_DIAGNOSTIC_DOM_ELEMENTS = 2_000;
+const MAX_AUTH_SCAN_ELEMENTS = 2_000;
+const MAX_PASSWORD_FIELDS_TO_INSPECT = 20;
+const HTTP_REDIRECT_STATUSES = new Set([301, 302, 303, 305, 307, 308]);
 
 export type BrowserJourneyStep =
   | { readonly type: "click-link"; readonly text: string }
@@ -52,6 +60,8 @@ export interface BrowserAuditResult {
     readonly securityHeadersChecked: number;
     readonly mixedContentCheck: "skipped_http_target" | "observed_https_target";
     readonly blockedExternalRequestCount: number;
+    readonly blockedMutatingRouteCount: number;
+    readonly blockedNavigationCount: number;
     readonly blockedUnsafeMethodCount: number;
     readonly blockedRequestLimitCount: number;
     readonly blockedWebSocketCount: number;
@@ -70,13 +80,44 @@ export interface BrowserAuditResult {
     readonly navigationHttpStatus: number | null;
     readonly finalPath: string | null;
     readonly renderWaitMs: number;
+    readonly networkSettleWaitMs: number;
     readonly navigationRedirectCount: number;
     readonly authenticationGateDetected: boolean;
     readonly authenticationGateDetectionIncomplete: boolean;
+    readonly pageDiagnostics: BrowserPageDiagnostics;
     readonly pageInspectionFailed: boolean;
     readonly designInspectionFailed: boolean;
     readonly durationMs: number;
   };
+}
+
+export interface BrowserPageSnapshot {
+  readonly stage: "initial" | "final";
+  readonly state: "rendered" | "empty" | "incomplete" | "authentication-gated" | "navigation-failed";
+  readonly path: string | null;
+  readonly status: number | null;
+  readonly title: string;
+  readonly bodyTextLength: number;
+  readonly bodyTextSample: string;
+  readonly headings: number;
+  readonly mainLandmarks: number;
+  readonly forms: number;
+  readonly searchControls: number;
+  readonly visibleInputs: number;
+  readonly visibleButtons: number;
+  readonly visibleLinks: number;
+  readonly cardLikeElements: number;
+  readonly domScanTruncated: boolean;
+  readonly textScanTruncated: boolean;
+}
+
+export interface BrowserPageDiagnostics {
+  readonly snapshots: readonly BrowserPageSnapshot[];
+  readonly screenshots: readonly { readonly stage: "initial" | "final"; readonly png: Uint8Array }[];
+  readonly observedFailures: readonly string[];
+  readonly suspectedCauses: readonly string[];
+  readonly blockedDataResourceOrigins: readonly string[];
+  readonly screenshotLimitReached: boolean;
 }
 
 type Persistence = Pick<MongoStore, "saveRunSummary" | "updateRunState" | "appendRunEvent" | "updateRunSummary">;
@@ -141,6 +182,7 @@ export function validatePublicBrowserTarget(value: unknown): URL {
     throw new BrowserAuditError("Public browser audit accepts HTTPS URLs on port 443 without credentials, query, or fragment.");
   }
   validatePublicHost(url.hostname);
+  if (containsMutatingRouteTerms(url)) throw new BrowserAuditError("Public browser audit refuses a target URL with a mutating route or action parameter.");
   return url;
 }
 
@@ -193,6 +235,48 @@ function isAborted(signal: AbortSignal | undefined): boolean {
   return signal?.aborted === true;
 }
 
+function escapeAuditEvidence(value: string): string {
+  return escapeTerminalControls(value).replace(/\p{Cf}/gu, (character) => {
+    const codePoint = character.codePointAt(0);
+    return codePoint === undefined ? "" : `\\u{${codePoint.toString(16)}}`;
+  });
+}
+
+function safeRequestPath(value: string): string {
+  try { return escapeAuditEvidence(new URL(value).pathname.slice(0, 160)); }
+  catch { return "[unavailable]"; }
+}
+
+const READ_ONLY_ROUTE_ROOTS = new Set(["about", "auth", "book", "books", "contact", "detail", "details", "discover", "forgot-password", "home", "login", "privacy", "product", "products", "register", "reset-password", "result", "results", "search", "signup", "terms", "title", "titles"]);
+const MUTATING_ROUTE_WORDS = new Set(["add", "buy", "cart", "checkout", "create", "delete", "destroy", "edit", "favorite", "favourite", "follow", "logout", "order", "payment", "post", "publish", "purchase", "remove", "save", "subscribe", "unsubscribe", "update", "write"]);
+
+function hasMutatingRouteWord(value: string): boolean {
+  return value.replace(/([a-z0-9])([A-Z])/gu, "$1 $2").toLowerCase().split(/[^a-z0-9]+/u)
+    .some((word) => MUTATING_ROUTE_WORDS.has(word));
+}
+
+function containsMutatingRouteTerms(destination: URL): boolean {
+  let decodedPath: string;
+  try { decodedPath = decodeURIComponent(destination.pathname); }
+  catch { return true; }
+  if (hasMutatingRouteWord(decodedPath)) return true;
+  for (const [key, value] of destination.searchParams) {
+    if (hasMutatingRouteWord(key) || hasMutatingRouteWord(value)) return true;
+  }
+  return false;
+}
+
+/** Fail closed for page-provided links outside recognizable read-only content routes. */
+function isClassifiedReadOnlyBrowserDestination(destination: URL): boolean {
+  let decodedPath: string;
+  try { decodedPath = decodeURIComponent(destination.pathname); }
+  catch { return false; }
+  if (containsMutatingRouteTerms(destination)) return false;
+  const firstPathSegment = decodedPath.split("/").filter(Boolean)[0]?.toLowerCase();
+  if (firstPathSegment !== undefined && !READ_ONLY_ROUTE_ROOTS.has(firstPathSegment)) return false;
+  return true;
+}
+
 export async function auditLoopbackPage(
   target: URL,
   signal?: AbortSignal,
@@ -232,6 +316,8 @@ async function auditPage(
     securityHeadersChecked: 0,
     mixedContentCheck: publicOptions === undefined ? "skipped_http_target" as const : "observed_https_target" as const,
     blockedExternalRequestCount: 0,
+    blockedMutatingRouteCount: 0,
+    blockedNavigationCount: 0,
     blockedUnsafeMethodCount: 0,
     blockedRequestLimitCount: 0,
     blockedWebSocketCount: 0,
@@ -250,9 +336,18 @@ async function auditPage(
     navigationHttpStatus: null as number | null,
     finalPath: null as string | null,
     renderWaitMs: 0,
+    networkSettleWaitMs: 0,
     navigationRedirectCount: 0,
     authenticationGateDetected: false,
     authenticationGateDetectionIncomplete: false,
+    pageDiagnostics: {
+      snapshots: [] as BrowserPageSnapshot[],
+      screenshots: [] as { stage: "initial" | "final"; png: Uint8Array }[],
+      observedFailures: [] as string[],
+      suspectedCauses: [] as string[],
+      blockedDataResourceOrigins: [] as string[],
+      screenshotLimitReached: false,
+    },
     pageInspectionFailed: false,
     designInspectionFailed: false,
     durationMs: 0,
@@ -305,11 +400,28 @@ async function auditPage(
       page.setDefaultNavigationTimeout(MAX_PAGE_TIMEOUT_MS);
       let pageRequestCount = 0;
       const approvedNavigationUrls = new Set<string>();
+      const diagnosticRouteProbeUrls = new Set<string>();
       const blockedOriginSet = new Set<string>();
-      const recordBlockedOrigin = (url: URL | undefined): void => {
+      const recordBlockedOrigin = (url: URL | undefined, dataRequest = false): void => {
         if (url === undefined || url.origin === target.origin || blockedOriginSet.size >= MAX_APPROVED_ORIGINS) return;
         blockedOriginSet.add(url.origin);
         metrics.blockedResourceOrigins = [...blockedOriginSet];
+        // Only a valid public HTTPS origin can be a candidate for explicit
+        // approval on a later run. Other blocked resources remain coverage evidence.
+        if (!dataRequest || url.protocol !== "https:") return;
+        try {
+          const candidate = validateApprovedBrowserOrigin(url.origin);
+          if (metrics.pageDiagnostics.blockedDataResourceOrigins.length < MAX_APPROVED_ORIGINS &&
+              !metrics.pageDiagnostics.blockedDataResourceOrigins.includes(candidate)) {
+            metrics.pageDiagnostics.blockedDataResourceOrigins.push(candidate);
+          }
+        } catch {
+          // Private, reserved, or invalid origins cannot be approval candidates.
+        }
+      };
+      const recordObservedFailure = (failure: string): void => {
+        if (metrics.pageDiagnostics.observedFailures.length >= MAX_DIAGNOSTIC_FAILURES || Buffer.byteLength(failure, "utf8") > 300) return;
+        metrics.pageDiagnostics.observedFailures.push(failure);
       };
       const recordJourneyEvidence = (evidence: string): void => {
         if (metrics.journeyEvidence.length >= MAX_JOURNEY_STEPS || Buffer.byteLength(evidence, "utf8") > 300) return;
@@ -326,6 +438,15 @@ async function auditPage(
       const policyAbortedRequests = new WeakSet<import("playwright").Request>();
       page.on("response", (response) => {
         incrementOnHttpError(response.status(), metrics);
+        if (response.status() >= 400) {
+          try {
+            const responseUrl = new URL(response.url());
+            if (approvedOrigins.has(responseUrl.origin)) {
+              const resourceType = response.request().resourceType();
+              recordObservedFailure(`Observed HTTP ${response.status()} ${resourceType} response at ${safeRequestPath(response.url())}.`);
+            }
+          } catch { /* Malformed response URLs are counted only in aggregate metrics. */ }
+        }
         if (response.request().isNavigationRequest()) {
           try {
             if (approvedOrigins.has(new URL(response.url()).origin)) metrics.navigationHttpStatus = response.status();
@@ -339,7 +460,13 @@ async function auditPage(
         fixtureDependencies?.onBrowserRequestFailure?.(request.url(), request.failure()?.errorText);
         if (policyAbortedRequests.has(request)) return;
         try {
-          if (approvedOrigins.has(new URL(request.url()).origin)) metrics.networkFailureCount += 1;
+          const requestUrl = new URL(request.url());
+          const isDiagnosticRouteProbe = request.method() === "HEAD" && diagnosticRouteProbeUrls.has(requestUrl.toString());
+          if (approvedOrigins.has(requestUrl.origin) && !isDiagnosticRouteProbe) {
+            metrics.networkFailureCount += 1;
+            const resourceType = request.resourceType();
+            recordObservedFailure(`Observed failed ${resourceType} request at ${safeRequestPath(request.url())}.`);
+          }
         } catch { /* Ignore malformed request URLs; they are outside counted coverage. */ }
       });
       page.on("console", (message) => {
@@ -369,7 +496,7 @@ async function auditPage(
           value: () => { throw new Error("Form submission is blocked during a read-only audit."); },
         });
       });
-      await page.route("**/*", async (route) => {
+      await context.route("**/*", async (route) => {
         const request = route.request();
         pageRequestCount += 1;
         if (pageRequestCount > MAX_PAGE_REQUESTS) {
@@ -387,12 +514,31 @@ async function auditPage(
         const isMixedContent = publicOptions !== undefined && requestUrl?.protocol === "http:";
         if (isMixedContent) metrics.mixedContentRequestCount += 1;
         const allowedProtocol = publicOptions === undefined ? requestUrl?.protocol === "http:" : requestUrl?.protocol === "https:";
-        const unapprovedNavigation = publicOptions !== undefined && request.isNavigationRequest() &&
-          (requestUrl === undefined || (requestUrl.search.length > 0 && !approvedNavigationUrls.has(requestUrl.toString())));
+        const documentNavigation = request.isNavigationRequest() || request.resourceType() === "document";
+        const unapprovedNavigation = publicOptions !== undefined && documentNavigation &&
+          (requestUrl === undefined || (!approvedNavigationUrls.has(requestUrl.toString()) &&
+            !(request.redirectedFrom() !== null && requestUrl.origin === target.origin &&
+              isClassifiedReadOnlyBrowserDestination(requestUrl))));
+        const mutatingRouteRequest = publicOptions !== undefined && requestUrl !== undefined && containsMutatingRouteTerms(requestUrl);
         if (requestUrl === undefined || !allowedProtocol || !approvedOrigins.has(requestUrl.origin) ||
-            requestUrl.username.length > 0 || requestUrl.password.length > 0 || unapprovedNavigation) {
-          metrics.blockedExternalRequestCount += 1;
-          recordBlockedOrigin(requestUrl);
+            requestUrl.username.length > 0 || requestUrl.password.length > 0 || unapprovedNavigation || mutatingRouteRequest) {
+          if (mutatingRouteRequest && requestUrl !== undefined && approvedOrigins.has(requestUrl.origin)) metrics.blockedMutatingRouteCount += 1;
+          else if (unapprovedNavigation) metrics.blockedNavigationCount += 1;
+          else metrics.blockedExternalRequestCount += 1;
+          if (!documentNavigation) recordBlockedOrigin(requestUrl, request.resourceType() === "fetch" || request.resourceType() === "xhr");
+          if (unapprovedNavigation && requestUrl !== undefined) {
+            recordObservedFailure(`Blocked document navigation outside the approved target journey at ${safeRequestPath(requestUrl.toString())}; it was not accessed.`);
+          }
+          if (mutatingRouteRequest && requestUrl !== undefined) {
+            recordObservedFailure(`Blocked a page request with mutating route terms at ${safeRequestPath(requestUrl.toString())}; it was not accessed.`);
+          }
+          if (requestUrl !== undefined && requestUrl.origin !== target.origin && !approvedOrigins.has(requestUrl.origin)) {
+            recordObservedFailure(`Observed blocked unapproved ${request.resourceType()} resource from ${requestUrl.origin}; it was not accessed.`);
+          }
+          if (requestUrl !== undefined && requestUrl.protocol === "https:" && requestUrl.origin !== target.origin && !approvedOrigins.has(requestUrl.origin) &&
+              (request.resourceType() === "fetch" || request.resourceType() === "xhr")) {
+            recordObservedFailure(`Observed blocked unapproved ${request.resourceType()} request to ${requestUrl.origin}; it was not accessed.`);
+          }
           policyAbortedRequests.add(request);
           await route.abort();
           return;
@@ -403,21 +549,59 @@ async function auditPage(
           await route.abort();
           return;
         }
+        if (publicOptions !== undefined && request.isNavigationRequest() && request.frame() === page.mainFrame()) {
+          try {
+            // Playwright route.continue() delegates redirect following to Chromium;
+            // Chromium does not route each redirect hop back through this handler.
+            // Fetch one bounded redirect hop explicitly so a Location is never
+            // followed under a resource-only origin approval.
+            const response = await route.fetch({ maxRedirects: 0, timeout: MAX_PAGE_TIMEOUT_MS });
+            const responseHeaders = response.headers();
+            const isRedirectResponse = HTTP_REDIRECT_STATUSES.has(response.status()) ||
+              (response.status() === 300 && Object.hasOwn(responseHeaders, "location"));
+            if (isRedirectResponse) {
+              metrics.blockedNavigationCount += 1;
+              metrics.navigationHttpStatus = response.status();
+              metrics.navigationRedirectCount += 1;
+              recordObservedFailure(`Observed HTTP ${response.status()} document redirect at ${safeRequestPath(request.url())}; it was blocked before following the destination.`);
+              policyAbortedRequests.add(request);
+              await route.abort();
+              return;
+            }
+            await route.fulfill({ response });
+          } catch {
+            metrics.networkFailureCount += 1;
+            recordObservedFailure(`Failed to retrieve an approved document within the bounded redirect check at ${safeRequestPath(request.url())}.`);
+            policyAbortedRequests.add(request);
+            await route.abort();
+          }
+          return;
+        }
         await route.continue();
       });
       const waitForRenderedContent = async (): Promise<void> => {
         const startedAt = Date.now();
         try {
-          await page.waitForFunction(() => {
-            const body = document.body;
-            if (body === null) return false;
-            if (body.innerText.trim().length >= 40) return true;
-            return Array.from(body.querySelectorAll("main, [role=main], h1, h2, form, input, button, a[href], [role=searchbox]"))
-              .some((element) => {
-                const style = window.getComputedStyle(element);
-                return style.display !== "none" && style.visibility !== "hidden" && element.getClientRects().length > 0;
-              });
-          }, undefined, { timeout: MAX_RENDER_WAIT_MS, polling: 100 });
+          await page.waitForFunction(({ maxElements }) => {
+            const isVisible = (element: Element): boolean => {
+              if (element.closest("[aria-hidden='true'], [hidden]")) return false;
+              const style = window.getComputedStyle(element);
+              return style.display !== "none" && style.visibility !== "hidden" && element.getClientRects().length > 0;
+            };
+            const walker = document.createTreeWalker(document.body ?? document.documentElement, NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_TEXT);
+            let inspectedNodes = 0;
+            let visibleTextLength = 0;
+            while (inspectedNodes < maxElements && walker.nextNode() !== null) {
+              inspectedNodes += 1;
+              const node = walker.currentNode;
+              if (node instanceof Element && node.matches("main, [role=main], h1, h2, form, input, button, a[href], [role=searchbox]") && isVisible(node)) return true;
+              if (node instanceof Text && node.parentElement !== null && isVisible(node.parentElement)) {
+                visibleTextLength += node.nodeValue?.slice(0, 40).trim().length ?? 0;
+                if (visibleTextLength >= 40) return true;
+              }
+            }
+            return false;
+          }, { maxElements: MAX_DIAGNOSTIC_DOM_ELEMENTS }, { timeout: MAX_RENDER_WAIT_MS, polling: 100 });
         } catch { /* Keep the empty-page observation after the bounded render window. */ }
         metrics.renderWaitMs += Math.min(MAX_RENDER_WAIT_MS, Math.max(0, Date.now() - startedAt));
       };
@@ -427,15 +611,130 @@ async function auditPage(
         catch { /* The step records a bounded unsupported/missing-target reason below. */ }
         metrics.renderWaitMs += Math.min(MAX_RENDER_WAIT_MS, Math.max(0, Date.now() - startedAt));
       };
-      const inspectPasswordFields = async (): Promise<"none" | "visible" | "limit"> => page.locator('input[type="password"]').evaluateAll((elements) => {
-        if (elements.length > 20) return "limit";
-        return elements.some((element) => {
-          if (!(element instanceof HTMLInputElement) || element.closest("[aria-hidden='true'], [hidden]")) return false;
+      const settleNetwork = async (): Promise<void> => {
+        const startedAt = Date.now();
+        try { await page.waitForLoadState("networkidle", { timeout: MAX_NETWORK_QUIET_WAIT_MS }); }
+        catch {
+          recordObservedFailure(`Observed network activity did not settle within the ${MAX_NETWORK_QUIET_WAIT_MS} ms diagnostic window.`);
+        }
+        metrics.networkSettleWaitMs += Math.min(MAX_NETWORK_QUIET_WAIT_MS, Math.max(0, Date.now() - startedAt));
+      };
+      const inspectPasswordFields = async (): Promise<"none" | "visible" | "limit"> => page.evaluate(({ maxElements, maxPasswordFields }) => {
+        const walker = document.createTreeWalker(document.body ?? document.documentElement, NodeFilter.SHOW_ELEMENT);
+        let inspectedElements = 0;
+        let passwordFields = 0;
+        while (inspectedElements < maxElements && walker.nextNode() !== null) {
+          const element = walker.currentNode;
+          if (!(element instanceof Element)) continue;
+          inspectedElements += 1;
+          if (!(element instanceof HTMLInputElement) || element.type !== "password") continue;
+          passwordFields += 1;
+          if (passwordFields > maxPasswordFields) return "limit" as const;
+          if (element.closest("[aria-hidden='true'], [hidden]")) continue;
           const style = window.getComputedStyle(element);
-          return style.display !== "none" && style.visibility !== "hidden" && element.getClientRects().length > 0;
-        }) ? "visible" : "none";
-      });
+          if (style.display !== "none" && style.visibility !== "hidden" && element.getClientRects().length > 0) return "visible" as const;
+        }
+        return inspectedElements >= maxElements && walker.nextNode() !== null ? "limit" as const : "none" as const;
+      }, { maxElements: MAX_AUTH_SCAN_ELEMENTS, maxPasswordFields: MAX_PASSWORD_FIELDS_TO_INSPECT });
+      const captureSnapshot = async (stage: "initial" | "final"): Promise<BrowserPageSnapshot> => {
+        const passwordState = await inspectPasswordFields();
+        if (passwordState === "visible") metrics.authenticationGateDetected = true;
+        if (passwordState === "limit") metrics.authenticationGateDetectionIncomplete = true;
+        const snapshot = await page.evaluate(({ snapshotStage, navigationStatus, isNavigationFailed, isAuthGate, isInspectionIncomplete, maxElements }) => {
+          const visible = (element: Element): boolean => {
+            if (element.closest("[aria-hidden='true'], [hidden]")) return false;
+            const style = window.getComputedStyle(element);
+            return style.display !== "none" && style.visibility !== "hidden" && element.getClientRects().length > 0;
+          };
+          const counts = { headings: 0, mainLandmarks: 0, forms: 0, searchControls: 0, visibleInputs: 0, visibleButtons: 0, visibleLinks: 0, cardLikeElements: 0 };
+          const walker = document.createTreeWalker(document.body ?? document.documentElement, NodeFilter.SHOW_ELEMENT);
+          let inspected = 0;
+          while (inspected < maxElements && walker.nextNode() !== null) {
+            const element = walker.currentNode;
+            if (!(element instanceof Element)) continue;
+            inspected += 1;
+            if (element.matches("h1, h2, h3, h4, h5, h6")) counts.headings += 1;
+            if (element.matches("main, [role=main]")) counts.mainLandmarks += 1;
+            if (element.matches("form")) counts.forms += 1;
+            if (element.matches('input[type="search"], [role=searchbox]')) counts.searchControls += 1;
+            if (element.matches('input:not([type="hidden"]), select, textarea') && visible(element)) counts.visibleInputs += 1;
+            if (element.matches("button, [role=button]") && visible(element)) counts.visibleButtons += 1;
+            if (element.matches("a[href]") && visible(element)) counts.visibleLinks += 1;
+            if (element.matches("article, [role=article], [class*=card i]")) counts.cardLikeElements += 1;
+          }
+          const domScanTruncated = inspected >= maxElements && walker.nextNode() !== null;
+          const textWalker = document.createTreeWalker(document.body ?? document.documentElement, NodeFilter.SHOW_TEXT);
+          const textParts: string[] = [];
+          let sampledTextLength = 0;
+          let sampledNodes = 0;
+          let textScanTruncated = false;
+          while (sampledNodes < maxElements && sampledTextLength < 100_000 && textWalker.nextNode() !== null) {
+            sampledNodes += 1;
+            const fullNodeText = textWalker.currentNode.textContent ?? "";
+            const nodeText = fullNodeText.slice(0, 1_000);
+            if (fullNodeText.length > nodeText.length) textScanTruncated = true;
+            sampledTextLength += nodeText.length;
+            if (textParts.join(" ").length < 240 && nodeText.trim().length > 0) textParts.push(nodeText.trim().slice(0, 240));
+          }
+          if (sampledNodes >= maxElements && textWalker.nextNode() !== null) textScanTruncated = true;
+          if (sampledTextLength >= 100_000 && textWalker.nextNode() !== null) textScanTruncated = true;
+          const bodyTextSample = textParts.join(" ").replace(/\\s+/gu, " ").slice(0, 240);
+          const state: BrowserPageSnapshot["state"] = isNavigationFailed ? "navigation-failed" : isAuthGate ? "authentication-gated" :
+            isInspectionIncomplete || domScanTruncated || textScanTruncated ? "incomplete" :
+            sampledTextLength === 0 && counts.headings === 0 && counts.mainLandmarks === 0 && counts.forms === 0 &&
+              counts.searchControls === 0 && counts.visibleInputs === 0 && counts.visibleButtons === 0 && counts.visibleLinks === 0
+              ? "empty" : "rendered";
+          return {
+            stage: snapshotStage,
+            state,
+            path: window.location.pathname.slice(0, 512),
+            status: navigationStatus,
+            title: document.title.slice(0, 160),
+            bodyTextLength: sampledTextLength,
+            bodyTextSample,
+            ...counts,
+            domScanTruncated,
+            textScanTruncated,
+          };
+        }, {
+          snapshotStage: stage,
+          navigationStatus: metrics.navigationHttpStatus,
+          isNavigationFailed: metrics.navigationFailed,
+          isAuthGate: passwordState === "visible",
+          isInspectionIncomplete: passwordState === "limit",
+          maxElements: MAX_DIAGNOSTIC_DOM_ELEMENTS,
+        });
+        if (snapshot.state === "empty") {
+          metrics.pageInspectionFailed = true;
+          recordObservedFailure(`Observed an empty ${stage} page after bounded rendering: no sampled text, headings, main landmarks, forms, search controls, or visible controls.`);
+        } else if (snapshot.state === "authentication-gated") {
+          recordObservedFailure(`Observed a visible password field in the ${stage} page; journey execution is stopped at the authentication gate.`);
+        } else if (snapshot.state === "incomplete") {
+          metrics.pageInspectionFailed = true;
+          recordObservedFailure(`The ${stage} page inspection reached a bounded DOM, text, or authentication-scan limit; empty-page and missing-result conclusions are withheld.`);
+        }
+        metrics.pageDiagnostics.snapshots.push(snapshot);
+        return snapshot;
+      };
+      const captureScreenshot = async (stage: "initial" | "final"): Promise<void> => {
+        if (metrics.pageDiagnostics.screenshots.length >= MAX_DIAGNOSTIC_SCREENSHOTS) {
+          metrics.pageDiagnostics.screenshotLimitReached = true;
+          return;
+        }
+        try {
+          const png = await page.screenshot({ type: "png", animations: "disabled", timeout: 3_000 });
+          if (png.byteLength > MAX_DIAGNOSTIC_SCREENSHOT_BYTES) {
+            metrics.pageDiagnostics.screenshotLimitReached = true;
+            recordObservedFailure(`The ${stage} screenshot exceeded the 4 MiB evidence limit and was not retained.`);
+            return;
+          }
+          metrics.pageDiagnostics.screenshots.push({ stage, png });
+        } catch {
+          recordObservedFailure(`The bounded ${stage} screenshot could not be captured.`);
+        }
+      };
       try {
+        if (publicOptions !== undefined) approvedNavigationUrls.add(target.toString());
         const navigation = await page.goto(target.toString(), { waitUntil: "domcontentloaded", timeout: MAX_PAGE_TIMEOUT_MS });
         if (navigation !== null) {
           const headers = await navigation.allHeaders();
@@ -448,7 +747,10 @@ async function auditPage(
         metrics.navigationFailed = true;
       }
       await waitForRenderedContent();
+      await settleNetwork();
       if (isAborted(signal)) throw new BrowserAuditError("Browser audit was cancelled.");
+      const initialSnapshot = await captureSnapshot("initial");
+      await captureScreenshot("initial");
       try {
         const finalUrl = new URL(page.url());
         if (publicOptions === undefined || finalUrl.origin === target.origin) metrics.finalPath = finalUrl.pathname.slice(0, 512);
@@ -470,7 +772,7 @@ async function auditPage(
               metrics.authenticationGateDetected = passwordInspection === "visible";
               metrics.authenticationGateDetectionIncomplete = passwordInspection === "limit";
               const remainingSteps = publicOptions.journey.length - metrics.journeyStepsCompleted - metrics.journeyStepsFailed;
-              const reason = passwordInspection === "visible" ? "authentication-gate-detected" : "password-field-scan-limit-reached";
+              const reason = passwordInspection === "visible" ? "authentication-gate-detected" : "authentication-scan-limit-reached";
               for (let remaining = 0; remaining < remainingSteps; remaining += 1) recordJourneyFailure(reason);
               break;
             }
@@ -488,7 +790,7 @@ async function auditPage(
               metrics.authenticationGateDetected = postWaitPasswordInspection === "visible";
               metrics.authenticationGateDetectionIncomplete = postWaitPasswordInspection === "limit";
               const remainingSteps = publicOptions.journey.length - metrics.journeyStepsCompleted - metrics.journeyStepsFailed;
-              const reason = postWaitPasswordInspection === "visible" ? "authentication-gate-detected" : "password-field-scan-limit-reached";
+              const reason = postWaitPasswordInspection === "visible" ? "authentication-gate-detected" : "authentication-scan-limit-reached";
               for (let remaining = 0; remaining < remainingSteps; remaining += 1) recordJourneyFailure(reason);
               break;
             }
@@ -497,6 +799,7 @@ async function auditPage(
               if (previous === null) recordJourneyFailure("browser-history-unavailable");
               else {
                 await waitForRenderedContent();
+                await settleNetwork();
                 metrics.journeyStepsCompleted += 1;
                 recordJourneyEvidence(`Returned to ${new URL(page.url()).pathname} with browser history.`);
               }
@@ -543,6 +846,7 @@ async function auditPage(
               approvedNavigationUrls.add(searchUrl.toString());
               const response = await page.goto(searchUrl.toString(), { waitUntil: "domcontentloaded", timeout: MAX_PAGE_TIMEOUT_MS });
               await waitForRenderedContent();
+              await settleNetwork();
               if (response === null || response.status() >= 400) recordJourneyFailure("search-get-did-not-return-success");
               else {
                 metrics.journeyStepsCompleted += 1;
@@ -584,10 +888,25 @@ async function auditPage(
               recordJourneyFailure("link-destination-not-approved-same-origin-https");
               continue;
             }
+            if (!isClassifiedReadOnlyBrowserDestination(destination)) {
+              recordJourneyFailure("link-destination-not-classified-as-read-only");
+              continue;
+            }
             approvedNavigationUrls.add(destination.toString());
-            const linkLabel = (await link.innerText()).trim().replace(/\s+/gu, " ").slice(0, 200);
+            const linkLabel = await link.evaluate((element, bounds) => {
+              const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT);
+              let label = "";
+              let inspectedNodes = 0;
+              while (inspectedNodes < bounds.maxNodes && label.length < bounds.maxLength && walker.nextNode() !== null) {
+                inspectedNodes += 1;
+                const text = walker.currentNode.textContent?.slice(0, bounds.maxLength - label.length) ?? "";
+                if (text.trim().length > 0) label += `${label.length === 0 ? "" : " "}${text.trim()}`;
+              }
+              return label.replace(/\s+/gu, " ").slice(0, bounds.maxLength);
+            }, { maxNodes: 20, maxLength: 200 });
             await link.click({ timeout: MAX_PAGE_TIMEOUT_MS });
             await waitForRenderedContent();
+            await settleNetwork();
             metrics.journeyStepsCompleted += 1;
             recordJourneyEvidence(`Opened same-origin link: ${linkLabel}`);
           } catch {
@@ -596,31 +915,51 @@ async function auditPage(
         }
       }
 
+      const finalSnapshot = await captureSnapshot("final");
+      if (JSON.stringify({ ...initialSnapshot, stage: "final" }) !== JSON.stringify(finalSnapshot)) {
+        await captureScreenshot("final");
+      }
+
       try {
         const finalUrl = new URL(page.url());
         if (finalUrl.origin === target.origin) metrics.finalPath = finalUrl.pathname.slice(0, 512);
       } catch { /* Final path remains unavailable for a failed navigation. */ }
 
       try {
-        const desktop = await page.evaluate(() => ({
-          width: document.documentElement.scrollWidth,
-          viewport: window.innerWidth,
-          missingAlt: document.querySelectorAll("img:not([alt])").length,
-          unnamedControls: [...document.querySelectorAll("button, a[href], input:not([type=hidden]), select, textarea, [role=button]")]
-            .filter((element) => {
-              if (element.closest("[aria-hidden='true'], [hidden]")) return false;
-              const style = window.getComputedStyle(element);
-              if (style.display === "none" || style.visibility === "hidden" || element.getClientRects().length === 0) return false;
-              const labelledBy = element.getAttribute("aria-labelledby")?.split(/\s+/u)
-                .map((id) => document.getElementById(id)?.textContent?.trim() ?? "").join("").trim();
-              const named = element.getAttribute("aria-label")?.trim() || element.getAttribute("title")?.trim() ||
-                labelledBy || element.textContent?.trim() || (element instanceof HTMLInputElement ? element.labels?.item(0)?.textContent?.trim() : "");
-              return !named;
-            }).length,
-        }));
+        const desktop = await page.evaluate(({ maxElements, maxLabelNodes }) => {
+          const isVisible = (element: Element): boolean => {
+            if (element.closest("[aria-hidden='true'], [hidden]")) return false;
+            const style = window.getComputedStyle(element);
+            return style.display !== "none" && style.visibility !== "hidden" && element.getClientRects().length > 0;
+          };
+          const result = { width: document.documentElement.scrollWidth, viewport: window.innerWidth, missingAlt: 0, unnamedControls: 0 };
+          const walker = document.createTreeWalker(document.body ?? document.documentElement, NodeFilter.SHOW_ELEMENT);
+          let inspected = 0;
+          while (inspected < maxElements && walker.nextNode() !== null) {
+            const element = walker.currentNode;
+            if (!(element instanceof Element)) continue;
+            inspected += 1;
+            if (element.matches("img:not([alt])")) result.missingAlt += 1;
+            if (!element.matches("button, a[href], input:not([type=hidden]), select, textarea, [role=button]") || !isVisible(element)) continue;
+            const namedByAttribute = ["aria-label", "aria-labelledby", "title"].some((name) => (element.getAttribute(name)?.trim().length ?? 0) > 0);
+            const associatedLabel = element instanceof HTMLInputElement && (element.labels?.length ?? 0) > 0;
+            let hasText = false;
+            if (!namedByAttribute && !associatedLabel) {
+              const textWalker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT);
+              let inspectedLabelNodes = 0;
+              while (inspectedLabelNodes < maxLabelNodes && textWalker.nextNode() !== null) {
+                inspectedLabelNodes += 1;
+                if ((textWalker.currentNode.textContent?.slice(0, 128).trim().length ?? 0) > 0) { hasText = true; break; }
+              }
+            }
+            if (!namedByAttribute && !associatedLabel && !hasText) result.unnamedControls += 1;
+          }
+          return { ...result, scanTruncated: inspected >= maxElements && walker.nextNode() !== null };
+        }, { maxElements: MAX_DIAGNOSTIC_DOM_ELEMENTS, maxLabelNodes: 20 });
         metrics.desktopHorizontalOverflow = desktop.width > desktop.viewport;
         metrics.missingAltCount = desktop.missingAlt;
         metrics.unnamedControlCount = desktop.unnamedControls;
+        if (desktop.scanTruncated) metrics.pageInspectionFailed = true;
         await page.setViewportSize({ width: 360, height: 800 });
         metrics.mobileHorizontalOverflow = await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth);
         await page.setViewportSize({ width: 1280, height: 800 });
@@ -629,7 +968,7 @@ async function auditPage(
       }
 
       try {
-        metrics.designObservations = await page.evaluate(() => {
+        metrics.designObservations = await page.evaluate(({ maxElements }) => {
           const observations: string[] = [];
           const customProperties = new Set<string>();
           let inspectedRules = 0;
@@ -660,9 +999,11 @@ async function auditPage(
           const componentSelectors = [["navigation", "nav"], ["header", "header"], ["main", "main"], ["footer", "footer"], ["form", "form"], ["button", "button"], ["card-like class", "[class*=card i]"]] as const;
           const componentCounts = componentSelectors.map(() => 0);
           const structureCounts = { headings: 0, mainLandmarks: 0, forms: 0, searchControls: 0, links: 0 };
+          const visibleButtons: HTMLElement[] = [];
+          const visibleLinks: HTMLElement[] = [];
           const componentWalker = document.createTreeWalker(document.documentElement, NodeFilter.SHOW_ELEMENT);
           let inspectedElements = 0;
-          while (inspectedElements < 2_000 && componentWalker.nextNode() !== null) {
+          while (inspectedElements < maxElements && componentWalker.nextNode() !== null) {
             const element = componentWalker.currentNode;
             if (!(element instanceof Element)) continue;
             inspectedElements += 1;
@@ -675,6 +1016,13 @@ async function auditPage(
               const selector = componentSelectors[selectorIndex]?.[1];
               if (selector !== undefined && element.matches(selector)) componentCounts[selectorIndex] = (componentCounts[selectorIndex] ?? 0) + 1;
             }
+            if (element instanceof HTMLElement && (element.matches("button, [role=button]") || element.matches("a[href]"))) {
+              const style = window.getComputedStyle(element);
+              if (style.display !== "none" && style.visibility !== "hidden" && element.getClientRects().length > 0) {
+                if (element.matches("button, [role=button]") && visibleButtons.length < 50) visibleButtons.push(element);
+                if (element.matches("a[href]") && visibleLinks.length < 50) visibleLinks.push(element);
+              }
+            }
           }
           for (let selectorIndex = 0; selectorIndex < componentSelectors.length; selectorIndex += 1) {
             const label = componentSelectors[selectorIndex]?.[0];
@@ -682,14 +1030,10 @@ async function auditPage(
             if (label !== undefined && count !== undefined && count > 0) observations.push(`observed component ${label}: ${count}`);
             if (observations.length >= 31) break;
           }
-          const structureSample = inspectedElements === 2_000 ? " (sampled first 2000 elements)" : "";
+          const structureSample = inspectedElements === maxElements ? ` (sampled first ${maxElements} elements)` : "";
           observations.push(`observed page structure${structureSample}: ${structureCounts.headings} headings, ${structureCounts.mainLandmarks} main landmarks, ${structureCounts.forms} forms, ${structureCounts.searchControls} search controls, ${structureCounts.links} links`);
-          if (inspectedElements === 2_000 && observations.length < 32) observations.push("component counts sampled from first 2000 elements");
-          for (const [label, selector] of [["buttons", "button"], ["links", "a[href]"]] as const) {
-            const visible = [...document.querySelectorAll<HTMLElement>(selector)].filter((element) => {
-              const style = window.getComputedStyle(element);
-              return style.display !== "none" && style.visibility !== "hidden" && element.getClientRects().length > 0;
-            }).slice(0, 50);
+          if (inspectedElements === maxElements && observations.length < 32) observations.push(`component counts sampled from first ${maxElements} elements`);
+          for (const [label, visible] of [["buttons", visibleButtons], ["links", visibleLinks]] as const) {
             if (visible.length < 2) continue;
             const styleCounts = new Map<string, number>();
             for (const element of visible) {
@@ -702,17 +1046,27 @@ async function auditPage(
             observations.push(`observed ${label} visual-style consistency heuristic: ${dominantStyleCount}/${visible.length} share the dominant sampled style signature`);
           }
           return observations.slice(0, 32);
-        });
+        }, { maxElements: MAX_DIAGNOSTIC_DOM_ELEMENTS });
       } catch {
         metrics.designInspectionFailed = true;
       }
 
       let hrefValues: unknown;
       try {
-        hrefValues = await page.locator("a").evaluateAll(
-          (anchors, limit) => anchors.slice(0, limit).map((anchor) => anchor.getAttribute("href")),
-          MAX_LINKS_TO_CHECK,
-        );
+        hrefValues = await page.evaluate(({ maxElements, maxLinks }) => {
+          const hrefs: string[] = [];
+          const walker = document.createTreeWalker(document.body ?? document.documentElement, NodeFilter.SHOW_ELEMENT);
+          let inspected = 0;
+          while (inspected < maxElements && hrefs.length < maxLinks && walker.nextNode() !== null) {
+            const element = walker.currentNode;
+            if (!(element instanceof Element)) continue;
+            inspected += 1;
+            if (!element.matches("a[href]")) continue;
+            const href = element.getAttribute("href");
+            if (href !== null) hrefs.push(href.slice(0, 2_048));
+          }
+          return hrefs;
+        }, { maxElements: MAX_DIAGNOSTIC_DOM_ELEMENTS, maxLinks: MAX_LINKS_TO_CHECK });
       } catch {
         hrefValues = [];
       }
@@ -732,14 +1086,19 @@ async function auditPage(
             }
             continue;
           }
+          if (!isClassifiedReadOnlyBrowserDestination(link)) {
+            recordObservedFailure(`Skipped same-origin route probe because the path is not classified as read-only: ${safeRequestPath(link.toString())}.`);
+            continue;
+          }
           metrics.linksChecked += 1;
           try {
+            diagnosticRouteProbeUrls.add(link.toString());
             const status = await page.evaluate(async ({ href: hrefValue, timeoutMs }) => {
               const controller = new AbortController();
               const timer = setTimeout(() => controller.abort(), timeoutMs);
               try {
                 const response = await fetch(hrefValue, {
-                  method: "GET", credentials: "omit", redirect: "manual", cache: "no-store", signal: controller.signal,
+                  method: "HEAD", credentials: "omit", redirect: "manual", cache: "no-store", signal: controller.signal,
                 });
                 const statusCode = response.status;
                 await response.body?.cancel();
@@ -747,12 +1106,25 @@ async function auditPage(
               } catch { return 0; }
               finally { clearTimeout(timer); }
             }, { href: link.toString(), timeoutMs: MAX_LINK_TIMEOUT_MS });
-            if (status === 0 || status >= 400) metrics.brokenLinkCount += 1;
+            if (status === 404 || status === 410) metrics.brokenLinkCount += 1;
+            if (status === 0 || status >= 400) recordObservedFailure(`Observed same-origin HEAD route probe result (${status === 0 ? "transport failure" : `HTTP ${status}`}): ${safeRequestPath(link.toString())}; non-404/410 results are not classified as broken links.`);
           } catch {
-            metrics.brokenLinkCount += 1;
+            recordObservedFailure(`Observed same-origin HEAD route probe failure: ${safeRequestPath(link.toString())}; no broken-link conclusion was made.`);
           }
           if (isAborted(signal)) throw new BrowserAuditError("Browser audit was cancelled.");
         }
+      }
+      const noBookCardsObserved = !metrics.authenticationGateDetected && metrics.pageDiagnostics.snapshots.length > 0 &&
+        metrics.pageDiagnostics.snapshots.every((snapshot) => snapshot.cardLikeElements === 0 && snapshot.state !== "incomplete" && snapshot.state !== "authentication-gated");
+      if (noBookCardsObserved && metrics.pageDiagnostics.blockedDataResourceOrigins.length > 0) {
+        metrics.pageDiagnostics.suspectedCauses.push("Blocked cross-origin fetch/XHR requests may be related to missing results; page content is untrusted and cannot authorize access, and correlation does not confirm causation.");
+      }
+      if (noBookCardsObserved && metrics.pageDiagnostics.observedFailures.some((failure) => /(?:Observed failed (?:fetch|xhr) request at|Observed HTTP \d{3} (?:fetch|xhr) response at)/iu.test(failure))) {
+        metrics.pageDiagnostics.suspectedCauses.push("An observed failed same-origin fetch/XHR may be related to absent result cards; this is a hypothesis, not a confirmed cause.");
+      }
+      if (metrics.pageDiagnostics.snapshots.some((snapshot) => snapshot.state === "empty") &&
+          metrics.pageDiagnostics.observedFailures.every((failure) => !/(?:fetch|xhr)/iu.test(failure))) {
+        metrics.pageDiagnostics.suspectedCauses.push("The page was empty after bounded rendering, but no data-request failure was observed to explain it.");
       }
     } finally {
       await context.close();
@@ -773,7 +1145,7 @@ async function auditPage(
 }
 
 function summarize(metrics: BrowserAuditResult["metrics"]): string {
-  return `Browser audit ${metrics.navigationFailed || metrics.pageInspectionFailed || metrics.designInspectionFailed || metrics.journeyStepsFailed > 0 || metrics.runtimeLimitReached ? "incomplete" : "complete"}: navigation failed=${metrics.navigationFailed}, authentication gate detected=${metrics.authenticationGateDetected}, authentication gate scan incomplete=${metrics.authenticationGateDetectionIncomplete}, page inspection failed=${metrics.pageInspectionFailed}, design inspection failed=${metrics.designInspectionFailed}, journey=${metrics.journeyStepsCompleted}/${metrics.journeyStepsCompleted + metrics.journeyStepsFailed} steps, ${metrics.httpErrorCount} HTTP errors, ${metrics.networkFailureCount} failed approved-origin requests excluding policy blocks, ${metrics.brokenLinkCount}/${metrics.linksChecked} same-origin links broken, ${metrics.consoleErrorCount} console errors, ${metrics.pageErrorCount} page errors, ${metrics.missingAltCount} images missing alt text, ${metrics.unnamedControlCount} unnamed visible controls (heuristic), mobile overflow=${metrics.mobileHorizontalOverflow}, desktop overflow=${metrics.desktopHorizontalOverflow}, ${metrics.missingSecurityHeaderCount}/${metrics.securityHeadersChecked} checked passive security headers missing, mixed-content check=${metrics.mixedContentCheck} (${metrics.mixedContentRequestCount} requests), ${metrics.blockedExternalRequestCount} unapproved resources blocked, ${metrics.blockedUnsafeMethodCount} unsafe methods blocked, ${metrics.blockedWebSocketCount} WebSockets blocked, ${metrics.blockedPrivateAddressRequestCount} private-address DNS attempts blocked, ${metrics.blockedRequestLimitCount} requests blocked at the limit, total runtime limit reached=${metrics.runtimeLimitReached}.`;
+  return `Browser audit ${metrics.navigationFailed || metrics.pageInspectionFailed || metrics.designInspectionFailed || metrics.journeyStepsFailed > 0 || metrics.runtimeLimitReached ? "incomplete" : "complete"}: navigation failed=${metrics.navigationFailed}, authentication gate detected=${metrics.authenticationGateDetected}, authentication gate scan incomplete=${metrics.authenticationGateDetectionIncomplete}, page inspection failed=${metrics.pageInspectionFailed}, design inspection failed=${metrics.designInspectionFailed}, journey=${metrics.journeyStepsCompleted}/${metrics.journeyStepsCompleted + metrics.journeyStepsFailed} steps, ${metrics.httpErrorCount} HTTP errors, ${metrics.networkFailureCount} failed approved-origin requests excluding policy blocks, ${metrics.brokenLinkCount}/${metrics.linksChecked} same-origin links broken, ${metrics.consoleErrorCount} console errors, ${metrics.pageErrorCount} page errors, ${metrics.missingAltCount} images missing alt text, ${metrics.unnamedControlCount} unnamed visible controls (heuristic), mobile overflow=${metrics.mobileHorizontalOverflow}, desktop overflow=${metrics.desktopHorizontalOverflow}, ${metrics.missingSecurityHeaderCount}/${metrics.securityHeadersChecked} checked passive security headers missing, mixed-content check=${metrics.mixedContentCheck} (${metrics.mixedContentRequestCount} requests), ${metrics.blockedExternalRequestCount} unapproved resources blocked, ${metrics.blockedNavigationCount} out-of-scope document navigations or HTTP redirects blocked, ${metrics.blockedMutatingRouteCount} suspected mutating-route requests blocked, ${metrics.blockedUnsafeMethodCount} unsafe methods blocked, ${metrics.blockedWebSocketCount} WebSockets blocked, ${metrics.blockedPrivateAddressRequestCount} private-address DNS attempts blocked, ${metrics.blockedRequestLimitCount} requests blocked at the limit, total runtime limit reached=${metrics.runtimeLimitReached}.`;
 }
 
 async function persistBrowserAudit(

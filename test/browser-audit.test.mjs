@@ -40,15 +40,35 @@ function createPersistenceRecorder() {
 async function startFixture() {
   const requests = [];
   const server = createServer((request, response) => {
-    requests.push({ method: request.method, url: request.url });
+    requests.push({ method: request.method, url: request.url, host: request.headers.host });
     if (request.url === "/network-failure") {
       request.socket.destroy();
+      return;
+    }
+    if (request.url === "/empty") {
+      response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+      response.end();
+      return;
+    }
+    if (request.url === "/large-dom") {
+      response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+      response.end(`<main>${"<span> </span>".repeat(2_100)}<p>Late UI content</p></main>`);
+      return;
+    }
+    if (request.url === "/failed-data") {
+      response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+      response.end('<!doctype html><main><h1>Harry Potter</h1><p>Loading books...</p></main><script>fetch("/api/books").catch(() => {});</script>');
+      return;
+    }
+    if (request.url === "/api/books") {
+      response.writeHead(503, { "content-type": "application/json" });
+      response.end('{"error":"unavailable"}');
       return;
     }
     if (request.url === "/") {
       response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
       response.end(`<!doctype html><html><head><title>Private fixture title</title><meta name="viewport" content="width=device-width, initial-scale=1"><style>:root { --brand-accent: #123456; --bad\u202Ename: red; } body { font-family: Arial, sans-serif; }</style></head><body>
-        <p>Private page text must not be persisted.</p><a href="/missing">Missing local page</a><img src="/image.png"><img alt="Not found" src="/status-error"><button></button><button aria-labelledby="accessible-name"></button><span id="accessible-name">Accessible name</span><button aria-hidden="true"></button><button hidden></button><button style="display:none"></button><button style="visibility:hidden"></button><form id="getForm" method="get" action="/mutate-get"><input type="hidden" name="action" value="delete"></form><div style="width:1600px">wide fixture</div>
+        <p>Private page text must not be persisted.</p><a href="/book/missing">Missing local page</a><img src="/image.png"><img alt="Not found" src="/status-error"><button></button><button aria-labelledby="accessible-name"></button><span id="accessible-name">Accessible name</span><button aria-hidden="true"></button><button hidden></button><button style="display:none"></button><button style="visibility:hidden"></button><form id="getForm" method="get" action="/mutate-get"><input type="hidden" name="action" value="delete"></form><div style="width:1600px">wide fixture</div>
         <script>
           console.error("fixture console problem");
           fetch("https://example.invalid/telemetry").catch(() => {});
@@ -59,7 +79,7 @@ async function startFixture() {
       </body></html>`);
       return;
     }
-    response.writeHead(request.url === "/missing" || request.url === "/status-error" ? 404 : 200, { "content-type": "text/plain" });
+    response.writeHead(request.url === "/book/missing" || request.url === "/status-error" ? 404 : 200, { "content-type": "text/plain" });
     response.end("fixture response");
   });
   await new Promise((resolve, reject) => {
@@ -85,6 +105,10 @@ test("browser fixture audit blocks external/unsafe requests and persists aggrega
     assert.deepEqual(result.metrics.blockedResourceOrigins, ["https://example.invalid"]);
     assert.equal(result.metrics.blockedUnsafeMethodCount, 1);
     assert.equal(result.metrics.navigationFailed, false);
+    assert.equal(result.metrics.pageDiagnostics.snapshots[0]?.state, "rendered");
+    assert.ok(result.metrics.pageDiagnostics.screenshots[0]?.png.byteLength > 0);
+    assert.deepEqual([...result.metrics.pageDiagnostics.screenshots[0].png.slice(0, 8)], [137, 80, 78, 71, 13, 10, 26, 10]);
+    assert.ok(fixture.requests.some(({ method, url }) => method === "HEAD" && url === "/book/missing"));
     assert.equal(result.metrics.missingAltCount, 1);
     assert.equal(result.metrics.unnamedControlCount, 1);
     assert.equal(result.metrics.mobileHorizontalOverflow, true);
@@ -99,8 +123,8 @@ test("browser fixture audit blocks external/unsafe requests and persists aggrega
     assert.ok(result.metrics.designObservations.every((observation) => observation.length <= 250));
     assert.equal(fixture.requests.some((request) => request.url === "/mutate"), false);
     assert.equal(fixture.requests.some((request) => request.url.startsWith("/mutate-get")), false);
-    assert.equal(fixture.requests.some((request) => request.url === "/missing"), true);
-    assert.equal(persistence.state.status, "completed");
+    assert.equal(fixture.requests.some((request) => request.url === "/book/missing"), true);
+    assert.equal(persistence.state.status, "completed", JSON.stringify(result.metrics));
     assert.deepEqual(persistence.state.events.map((event) => event.type), ["run_started", "step_started", "step_finished", "run_finished"]);
     const stored = JSON.stringify(persistence.state);
     assert.equal(stored.includes(fixture.url), false);
@@ -111,14 +135,16 @@ test("browser fixture audit blocks external/unsafe requests and persists aggrega
     assert.equal(stored.includes("brand-accent"), false);
     assert.equal(stored.includes("#123456"), false);
     assert.equal(stored.includes("Arial"), false);
+    assert.equal(stored.includes("pageDiagnostics"), false);
 
     const specialistRequests = [];
+    const { pageDiagnostics: _pageDiagnostics, ...specialistMetrics } = result.metrics;
     const specialist = await runSpecialistReview({
       async complete(request) {
         specialistRequests.push(request);
         return { content: request.messages[0].content.includes("parent reviewer") ? "Parent verified the aggregate evidence." : "One missing alt attribute is supported by the audit counts.", toolCalls: [], finishReason: "stop" };
       },
-    }, "fixture", "Review this local fixture report.", JSON.stringify({ findings: result.metrics, coverageLimitations: ["Aggregate fixture observations only."] }), [
+    }, "fixture", "Review this local fixture report.", JSON.stringify({ findings: specialistMetrics, coverageLimitations: ["Aggregate fixture observations only."] }), [
       { role: "browser-specialist", goal: "Analyze observed browser findings and coverage." },
     ], new AgentBudgetLedger(4, 2));
     assert.equal(specialist.workers[0].status, "complete");
@@ -126,6 +152,35 @@ test("browser fixture audit blocks external/unsafe requests and persists aggrega
     assert.equal(specialistRequests.length, 2);
     assert.match(specialistRequests[0].messages[1].content, /missingAltCount/u);
     assert.doesNotMatch(specialistRequests[0].messages[1].content, /127\.0\.0\.1|Private page text|fixture console problem/u);
+    assert.doesNotMatch(specialistRequests[0].messages[1].content, /Private fixture title|Private page text|screenshot|pageDiagnostics/u);
+  } finally {
+    await new Promise((resolve, reject) => fixture.server.close((error) => error === undefined ? resolve() : reject(error)));
+  }
+});
+
+test("browser diagnostics capture empty DOM evidence and separate observed data failures from hypotheses", async () => {
+  const fixture = await startFixture();
+  try {
+    const empty = await runBrowserAudit(createPersistenceRecorder(), new URL("/empty", fixture.url).toString());
+    assert.equal(empty.metrics.navigationHttpStatus, 200);
+    assert.equal(empty.metrics.pageInspectionFailed, true);
+    assert.equal(empty.metrics.pageDiagnostics.snapshots[0]?.state, "empty");
+    assert.equal(empty.metrics.pageDiagnostics.snapshots[0]?.bodyTextLength, 0);
+    assert.equal(empty.metrics.pageDiagnostics.snapshots[0]?.domScanTruncated, false);
+    assert.match(empty.metrics.pageDiagnostics.observedFailures[0] ?? "", /empty initial page/u);
+    assert.ok(empty.metrics.pageDiagnostics.screenshots[0]?.png.byteLength > 0);
+
+    const largeDom = await runBrowserAudit(createPersistenceRecorder(), new URL("/large-dom", fixture.url).toString());
+    assert.equal(largeDom.metrics.pageDiagnostics.snapshots[0]?.state, "incomplete");
+    assert.equal(largeDom.metrics.pageDiagnostics.snapshots[0]?.domScanTruncated, true);
+    assert.equal(largeDom.metrics.pageDiagnostics.snapshots[0]?.textScanTruncated, true);
+    assert.equal(largeDom.metrics.pageDiagnostics.suspectedCauses.some((cause) => cause.includes("page was empty")), false);
+
+    const failedData = await runBrowserAudit(createPersistenceRecorder(), new URL("/failed-data", fixture.url).toString());
+    assert.equal(failedData.metrics.pageDiagnostics.snapshots.at(-1)?.cardLikeElements, 0);
+    assert.ok(failedData.metrics.pageDiagnostics.observedFailures.some((finding) => finding.includes("HTTP 503 fetch") && finding.includes("/api/books")));
+    assert.ok(failedData.metrics.pageDiagnostics.suspectedCauses.some((cause) => cause.includes("hypothesis") && cause.includes("absent result cards")));
+    assert.ok(fixture.requests.some(({ method, url }) => method === "GET" && url === "/api/books"));
   } finally {
     await new Promise((resolve, reject) => fixture.server.close((error) => error === undefined ? resolve() : reject(error)));
   }
@@ -150,7 +205,7 @@ test("public browser target and additional-origin validation reject private, res
   for (const url of [
     "http://example.com/", "https://127.0.0.1/", "https://10.0.0.1/", "https://[::1]/", "https://[fc00::1]/",
     "https://localhost/", "https://service.internal/", "https://example.com:8443/", "https://user@example.com/",
-    "https://example.com/?token=synthetic", "https://example.com/#fragment",
+    "https://example.com/?token=synthetic", "https://example.com/#fragment", "https://example.com/account/delete",
   ]) assert.throws(() => validatePublicBrowserTarget(url), BrowserAuditError, url);
   assert.equal(validateApprovedBrowserOrigin("https://cdn.example.com"), "https://cdn.example.com");
   for (const origin of ["http://cdn.example.com", "https://10.1.2.3", "https://cdn.example.com/path", "https://user@cdn.example.com"]) {
@@ -188,13 +243,22 @@ test("Chromium traverses the actual egress proxy for an explicitly bounded GET s
   ]);
   const requests = [];
   const server = createHttpsServer({ key, cert }, (request, response) => {
-    requests.push({ method: request.method, url: request.url });
-    const knownRoute = request.url === "/" || request.url === "/auth-discover" || request.url === "/many-passwords" || request.url === "/search?q=Harry+Potter" || request.url === "/book/azkaban?edition=1";
-    response.writeHead(knownRoute ? 200 : 404, { "content-type": "text/html; charset=utf-8" });
+    requests.push({ method: request.method, url: request.url, host: request.headers.host });
+    const knownRoute = request.url === "/" || request.url === "/auth-discover" || request.url === "/many-passwords" || request.url === "/blocked-data" || request.url === "/blocked-private-data" || request.url === "/mutating-link" || request.url === "/resource-redirect" || request.url === "/search?q=Harry+Potter" || request.url === "/book/azkaban?edition=1";
+    if (request.url === "/resource-redirect") response.writeHead(302, { location: "https://api-fixture.example.net/books/details" });
+    else response.writeHead(knownRoute ? 200 : 404, { "content-type": "text/html; charset=utf-8" });
     if (request.url === "/auth-discover") {
       response.end('<!doctype html><body><p>Loading session</p><script>history.replaceState(null, "", "/login"); setTimeout(() => { document.body.innerHTML = "<form><label>Search<input type=search name=q></label><label>Email<input type=email></label><label>Password<input type=password></label></form>"; }, 200);</script></body>');
     } else if (request.url === "/many-passwords") {
       response.end(`<!doctype html><body><form><input type=search aria-label=Search>${"<input type=password hidden>".repeat(21)}<input type=password></form></body>`);
+    } else if (request.url === "/blocked-data") {
+      response.end('<!doctype html><main><h1>Loading results</h1></main><script>fetch("https://api-fixture.example.net/books").catch(() => {});</script>');
+    } else if (request.url === "/blocked-private-data") {
+      response.end('<!doctype html><main><h1>Loading results</h1></main><script>fetch("https://10.0.0.2/books").catch(() => {});</script>');
+    } else if (request.url === "/mutating-link") {
+      response.end('<!doctype html><main><h1>Results</h1><a href="/book/delete?confirm=true">Harry Potter Delete</a></main><script>fetch("/api/delete-user").catch(() => {});fetch("/search?action=changeFavorite").catch(() => {});</script>');
+    } else if (request.url === "/resource-redirect") {
+      response.end();
     } else if (request.url === "/") {
       const delayedShell = '<main><h1>BookFinder fixture</h1><img src="https://telemetry-fixture.example.net/pixel"><form action="/search" method="get"><label for="q">Search books</label><input id="q" name="q" type="search"><button>Search</button></form></main>';
       response.end(`<!doctype html><body><p>Loading...</p><script>setTimeout(() => { document.body.innerHTML = ${JSON.stringify(delayedShell)}; }, 200);</script></body>`);
@@ -294,7 +358,10 @@ test("Chromium traverses the actual egress proxy for an explicitly bounded GET s
     assert.equal(authMetrics.finalPath, "/login");
     assert.equal(authMetrics.journeyStepsCompleted, 0);
     assert.equal(authMetrics.journeyStepsFailed, 5);
+    assert.equal(authMetrics.pageDiagnostics.snapshots.at(-1)?.state, "authentication-gated");
+    assert.ok(authMetrics.pageDiagnostics.screenshots.length >= 1);
     assert.ok(authMetrics.journeyFailureReasons.every((reason) => reason === "authentication-gate-detected"));
+    assert.equal(authMetrics.pageDiagnostics.suspectedCauses.some((cause) => cause.includes("failed same-origin fetch/XHR")), false);
     assert.equal(requests.slice(beforeAuthRequests).some(({ url }) => url?.startsWith("/search?")), false);
 
     const beforeLimitRequests = requests.length;
@@ -317,8 +384,96 @@ test("Chromium traverses the actual egress proxy for an explicitly bounded GET s
     assert.equal(limitMetrics.authenticationGateDetectionIncomplete, true);
     assert.equal(limitMetrics.journeyStepsCompleted, 0);
     assert.equal(limitMetrics.journeyStepsFailed, 1);
-    assert.deepEqual(limitMetrics.journeyFailureReasons, ["password-field-scan-limit-reached"]);
+    assert.deepEqual(limitMetrics.journeyFailureReasons, ["authentication-scan-limit-reached"]);
     assert.equal(requests.slice(beforeLimitRequests).some(({ url }) => url?.startsWith("/search?")), false);
+
+    const blockedDataMetrics = await auditPublicBrowserPage(new URL(`${origin}/blocked-data`), {
+      approvedOrigins: [origin],
+      journey: [{ type: "expect-text", text: "Results for Harry Potter" }],
+    }, undefined, {
+      lookupAddresses: async (requestedHost) => {
+        assert.equal(requestedHost, hostname);
+        return ["93.184.216.34"];
+      },
+      connectAddress: async (_ip, _port) => new Promise((resolve, reject) => {
+        const socket = connect(address.port, "127.0.0.1");
+        socket.once("error", reject);
+        socket.once("connect", () => { socket.removeListener("error", reject); resolve(socket); });
+      }),
+      ignoreHTTPSErrors: true,
+    });
+    assert.deepEqual(blockedDataMetrics.pageDiagnostics.blockedDataResourceOrigins, ["https://api-fixture.example.net"]);
+    assert.deepEqual(blockedDataMetrics.blockedResourceOrigins, ["https://api-fixture.example.net"]);
+    assert.ok(blockedDataMetrics.pageDiagnostics.suspectedCauses.some((cause) => cause.includes("Blocked cross-origin fetch/XHR") && cause.includes("correlation")));
+    assert.equal(blockedDataMetrics.journeyStepsCompleted, 0);
+    assert.ok(blockedDataMetrics.pageDiagnostics.screenshots.length >= 1);
+    assert.equal(requests.some(({ url }) => url?.includes("api-fixture.example.net")), false);
+
+    const blockedPrivateDataMetrics = await auditPublicBrowserPage(new URL(`${origin}/blocked-private-data`), {
+      approvedOrigins: [origin],
+      journey: [{ type: "expect-text", text: "Results for Harry Potter" }],
+    }, undefined, {
+      lookupAddresses: async (requestedHost) => {
+        assert.equal(requestedHost, hostname);
+        return ["93.184.216.34"];
+      },
+      connectAddress: async (_ip, _port) => new Promise((resolve, reject) => {
+        const socket = connect(address.port, "127.0.0.1");
+        socket.once("error", reject);
+        socket.once("connect", () => { socket.removeListener("error", reject); resolve(socket); });
+      }),
+      ignoreHTTPSErrors: true,
+    });
+    assert.deepEqual(blockedPrivateDataMetrics.pageDiagnostics.blockedDataResourceOrigins, []);
+    assert.ok(blockedPrivateDataMetrics.pageDiagnostics.observedFailures.some((failure) => failure.includes("https://10.0.0.2")));
+    assert.equal(blockedPrivateDataMetrics.pageDiagnostics.suspectedCauses.some((cause) => cause.includes("Blocked cross-origin fetch/XHR")), false);
+
+    const beforeMutatingRouteRequests = requests.length;
+    const mutatingRouteMetrics = await auditPublicBrowserPage(new URL(`${origin}/mutating-link`), {
+      approvedOrigins: [origin],
+      journey: [{ type: "open-first-book" }],
+    }, undefined, {
+      lookupAddresses: async (requestedHost) => {
+        assert.equal(requestedHost, hostname);
+        return ["93.184.216.34"];
+      },
+      connectAddress: async (_ip, _port) => new Promise((resolve, reject) => {
+        const socket = connect(address.port, "127.0.0.1");
+        socket.once("error", reject);
+        socket.once("connect", () => { socket.removeListener("error", reject); resolve(socket); });
+      }),
+      ignoreHTTPSErrors: true,
+    });
+    assert.deepEqual(mutatingRouteMetrics.journeyFailureReasons, ["link-destination-not-classified-as-read-only"]);
+    assert.equal(mutatingRouteMetrics.blockedMutatingRouteCount, 2);
+    assert.equal(requests.slice(beforeMutatingRouteRequests).some(({ url }) => url === "/book/delete?confirm=true"), false);
+    assert.equal(requests.slice(beforeMutatingRouteRequests).some(({ url }) => url === "/api/delete-user"), false);
+    assert.equal(requests.slice(beforeMutatingRouteRequests).some(({ url }) => url === "/search?action=changeFavorite"), false);
+
+    const beforeResourceRedirectRequests = requests.length;
+    const resourceRedirectMetrics = await auditPublicBrowserPage(new URL(`${origin}/resource-redirect`), {
+      approvedOrigins: [origin, "https://api-fixture.example.net"],
+      journey: [{ type: "expect-text", text: "API details" }],
+    }, undefined, {
+      lookupAddresses: async (requestedHost) => {
+        assert.ok(requestedHost === hostname || requestedHost === "api-fixture.example.net");
+        return ["93.184.216.34"];
+      },
+      connectAddress: async (_ip, _port) => new Promise((resolve, reject) => {
+        const socket = connect(address.port, "127.0.0.1");
+        socket.once("error", reject);
+        socket.once("connect", () => { socket.removeListener("error", reject); resolve(socket); });
+      }),
+      ignoreHTTPSErrors: true,
+    });
+    assert.equal(requests.slice(beforeResourceRedirectRequests).some(({ host }) => host?.includes("api-fixture.example.net")), false);
+    assert.ok(resourceRedirectMetrics.journeyStepsFailed >= 1);
+    assert.equal(resourceRedirectMetrics.blockedNavigationCount, 1);
+    assert.equal(resourceRedirectMetrics.navigationHttpStatus, 302);
+    assert.equal(resourceRedirectMetrics.navigationRedirectCount, 1);
+    assert.equal(resourceRedirectMetrics.blockedResourceOrigins.includes("https://api-fixture.example.net"), false);
+    assert.equal(resourceRedirectMetrics.networkFailureCount, 0);
+
   } finally {
     await new Promise((resolve, reject) => server.close((error) => error === undefined ? resolve() : reject(error)));
   }

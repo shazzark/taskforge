@@ -23,7 +23,7 @@
   "scripts": {
     "typecheck": "tsc --noEmit",
     "build": "tsc",
-    "test": "npm run build && node --test"
+    "test": "npm run build && node --test --test-concurrency=1"
   },
   "devDependencies": {
     "@types/node": "22.13.10",

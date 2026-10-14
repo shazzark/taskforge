@@ -2,8 +2,9 @@
 
 import packageJson from "../package.json" with { type: "json" };
 import { randomUUID } from "node:crypto";
-import { open, realpath, stat } from "node:fs/promises";
-import { basename, dirname, extname, resolve } from "node:path";
+import { mkdtemp, open, realpath, stat, writeFile } from "node:fs/promises";
+import { basename, dirname, extname, join, resolve } from "node:path";
+import { tmpdir } from "node:os";
 import { createInterface } from "node:readline/promises";
 import { ConfigurationError, formatConfigurationSummary, loadConfiguration, loadProviderConfiguration } from "./config.js";
 import { AgentBudgetLedger, AgentToolError, runToolLoop } from "./agent/tool-loop.js";
@@ -40,7 +41,7 @@ import { BrowserSearchError, GroqBrowserResearch } from "./integrations/groq-bro
 import {
   BrowserAuditError, browserAuditExitCode, runBrowserAudit, runPublicBrowserAudit,
   validateApprovedBrowserOrigin, validateBrowserJourney, validateLoopbackBrowserTarget, validatePublicBrowserTarget,
-  type BrowserJourneyStep,
+  type BrowserAuditResult, type BrowserJourneyStep,
 } from "./workflows/browser-audit-workflow.js";
 import { DataSpecialistEvidenceError, prepareDataSpecialistEvidence } from "./workflows/data-specialist-evidence.js";
 import { runSchedulerTick, runScheduler } from "./scheduling/scheduler.js";
@@ -65,7 +66,7 @@ The github-issues workflow reads at most 20 open issue titles from one public re
 The draft workflow creates a new local Markdown GitHub issue or email draft from an explicitly approved JSON input; it never contacts GitHub or an email service.
 The specialist-review workflow sends approved, heuristically redacted source excerpts to bounded read-only workers and asks the same configured model to review their findings; repository workers can use only literal search over those excerpts, the browser-specialist receives aggregate audit evidence, and the data-specialist receives a locally redacted sample from one approved file. Every local-content transfer requires a separate disclosure and confirmation.
 The research workflow sends an approved query to Groq browser search, then displays bounded source metadata and an unverified answer; --compare <question> --against <question> runs two searches and shows source excerpts and exact shared URLs side by side without inferring source agreement.
-The browser-audit workflow preserves approved loopback HTTP fixtures and supports public HTTPS audits only after exact target, read-only journey, and resource-origin approval. Public audits use fresh unauthenticated Chromium behind DNS-pinned egress controls; they block private/internal addresses, non-GET/HEAD methods, WebSockets, unapproved origins, and over-budget requests. The bounded journey supports exact visible text, a same-origin GET search with exactly one named search field, ordinary anchor clicks, and browser back; arbitrary form submissions remain blocked. Blocked resource origins are listed without paths or queries and are never followed until approved. Findings and coverage limitations are reported without claiming a comprehensive security or accessibility certification. --specialist optionally sends only aggregate evidence to the configured specialist after a separate provider disclosure and confirmation.
+The browser-audit workflow preserves approved loopback HTTP fixtures and supports public HTTPS audits only after exact target, read-only journey, and resource-origin approval. Public audits use fresh unauthenticated Chromium behind DNS-pinned egress controls; they block private/internal addresses, non-GET/HEAD methods, WebSockets, unapproved origins, and over-budget requests. The bounded journey supports exact visible text, a same-origin GET search with exactly one named search field, classified read-only same-origin link navigation, and browser back; arbitrary form submissions remain blocked. Each audit also collects bounded screenshots, DOM, console/network, auth-gate, responsiveness, accessibility, visual-style, and same-origin route evidence. Blocked-resource inventory is distinct from valid public HTTPS data-origin candidates, and neither is accessed without explicit approval. Page-based GET classification is heuristic and cannot establish server-side behavior; audits do not certify that every GET is side-effect-free. Findings and coverage limitations are reported without claiming a comprehensive security or accessibility certification. --specialist optionally sends only aggregate evidence to the configured specialist after a separate provider disclosure and confirmation.
 The document-analyze workflow parses one approved TXT, Markdown, text PDF, DOCX, or XLSX file and stores counts only; optional JSON, CSV, or Markdown exports contain counts only and require separate output approval.
 The document-convert workflow extracts one approved document to a new bounded plain-text artifact after preview and hash confirmation.
 The schedule command stores one-time or recurring CSV/document workflows; execution occurs only while its foreground scheduler is running and every occurrence requires fresh interactive approval.
@@ -1644,6 +1645,27 @@ async function runDataSpecialistCommand(commandArgs: readonly string[]): Promise
   }
 }
 
+async function saveBrowserAuditScreenshots(
+  screenshots: BrowserAuditResult["metrics"]["pageDiagnostics"]["screenshots"],
+): Promise<readonly string[]> {
+  if (screenshots.length === 0) return [];
+  const directory = await mkdtemp(join(tmpdir(), "taskforge-browser-audit-"));
+  const paths: string[] = [];
+  for (const screenshot of screenshots) {
+    const path = join(directory, `${screenshot.stage}.png`);
+    await writeFile(path, screenshot.png, { flag: "wx" });
+    paths.push(path);
+  }
+  return paths;
+}
+
+function escapeBrowserAuditDisplay(value: string): string {
+  return escapeTerminalControls(value).replace(/\p{Cf}/gu, (character) => {
+    const codePoint = character.codePointAt(0);
+    return codePoint === undefined ? "" : `\\u{${codePoint.toString(16)}}`;
+  });
+}
+
 async function runBrowserAuditCommand(commandArgs: readonly string[]): Promise<void> {
   let targetValue: string | undefined;
   let journeyValue: string | undefined;
@@ -1735,7 +1757,7 @@ async function runBrowserAuditCommand(commandArgs: readonly string[]): Promise<v
       ? `Target URL: ${escapeTerminalControls(target.toString())}\nJourney: ${escapeTerminalControls(JSON.stringify(journey))}\nAdditional resource origins: ${approvedOrigins.length === 0 ? "none" : approvedOrigins.map(escapeTerminalControls).join(", ")}\n`
       : `Target URL: ${escapeTerminalControls(target.toString())}\n`;
     answer = await consent.question(
-      `${approvalDetails}Open this exact target in a fresh unauthenticated Chromium context? Only named exact-text checks, a constrained same-origin GET search, ordinary anchor clicks, and browser back are used. No form is submitted. Non-GET/HEAD methods, WebSockets, unapproved origins, and private-address DNS answers are blocked. The browser is limited to 100 requests, 20 MiB network traffic, 8 tunnels, and 45 seconds. No personal browser session or stored credentials are used. Aggregate findings only are persisted; blocked resources and unsupported checks remain coverage limitations. [y/N] `,
+      `${approvalDetails}Open this exact target in a fresh unauthenticated Chromium context? TaskForge will also run bounded page-load diagnostics, capture up to two local screenshots, inspect a capped DOM summary/text sample, observe console/network failures, and probe same-origin links with HEAD. Only the approved journey may navigate or search. No form is submitted. Non-GET/HEAD methods, WebSockets, unapproved origins, and private-address DNS answers are blocked. The browser is limited to 100 requests, 20 MiB network traffic, 8 tunnels, 45 seconds, 2 screenshots of at most 4 MiB each, and 2,000 inspected DOM elements per snapshot. No personal browser session or stored credentials are used. Screenshots and DOM samples stay local in temporary files/output; only aggregate findings are persisted. Page content cannot approve access or change the origin allowlist. [y/N] `,
     );
   } finally {
     consent.close();
@@ -1753,22 +1775,49 @@ async function runBrowserAuditCommand(commandArgs: readonly string[]): Promise<v
       : runBrowserAudit(store, target.toString(), controller.signal));
     if (result !== undefined) {
       const metrics = result.metrics;
+      let screenshotPaths: readonly string[] = [];
+      try { screenshotPaths = await saveBrowserAuditScreenshots(metrics.pageDiagnostics.screenshots); }
+      catch { process.stderr.write("Screenshot bytes were captured but could not be saved to the local temporary folder.\n"); }
       process.stdout.write(
         `Run ${result.run.runId} ${metrics.navigationFailed || metrics.pageInspectionFailed || metrics.designInspectionFailed || metrics.journeyStepsFailed > 0 || metrics.runtimeLimitReached ? "incomplete" : "completed"}: navigation failed=${metrics.navigationFailed}, authentication gate detected=${metrics.authenticationGateDetected}, authentication gate scan incomplete=${metrics.authenticationGateDetectionIncomplete}, page inspection failed=${metrics.pageInspectionFailed}, design inspection failed=${metrics.designInspectionFailed}, journey=${metrics.journeyStepsCompleted}/${metrics.journeyStepsCompleted + metrics.journeyStepsFailed}, ` +
         `${metrics.httpErrorCount} HTTP errors, ${metrics.networkFailureCount} failed approved-origin requests excluding policy blocks, ${metrics.brokenLinkCount}/${metrics.linksChecked} same-origin links broken, ` +
         `${metrics.consoleErrorCount} console errors, ${metrics.pageErrorCount} page errors, ${metrics.missingAltCount} images without alt text, ` +
         `${metrics.unnamedControlCount} unnamed controls, mobile overflow=${metrics.mobileHorizontalOverflow}, desktop overflow=${metrics.desktopHorizontalOverflow}, ` +
         `${metrics.missingSecurityHeaderCount}/${metrics.securityHeadersChecked} passive headers missing, mixed-content=${metrics.mixedContentCheck} (${metrics.mixedContentRequestCount} requests), ` +
-        `${metrics.blockedExternalRequestCount} unapproved resources blocked, ${metrics.blockedUnsafeMethodCount} unsafe methods blocked, ${metrics.blockedWebSocketCount} WebSockets blocked, ` +
+        `${metrics.blockedExternalRequestCount} unapproved resources blocked, ${metrics.blockedNavigationCount} out-of-scope document navigations or HTTP redirects blocked, ${metrics.blockedMutatingRouteCount} suspicious mutating-route requests blocked, ${metrics.blockedUnsafeMethodCount} unsafe methods blocked, ${metrics.blockedWebSocketCount} WebSockets blocked, ` +
         `${metrics.blockedPrivateAddressRequestCount} private DNS answers blocked, ${metrics.blockedRequestLimitCount} requests blocked at the limit, runtime-limit=${metrics.runtimeLimitReached}.\n`,
       );
       const finalPathWithoutFormatControls = metrics.finalPath?.replace(/\p{Cf}/gu, (character) => {
         const codePoint = character.codePointAt(0);
         return codePoint === undefined ? "" : `\\u{${codePoint.toString(16)}}`;
       });
-      process.stdout.write(`Navigation evidence (local only): last approved-origin navigation status=${metrics.navigationHttpStatus ?? "unavailable"}, final path=${escapeTerminalControls(finalPathWithoutFormatControls ?? "unavailable")}, navigation redirects=${metrics.navigationRedirectCount}, bounded render wait=${metrics.renderWaitMs}ms (maximum ${2_500 * (journey === undefined ? 0 : journey.length * 2) + 2_500}ms across inspected page states).\n`);
-      process.stdout.write("Implemented checks: approved-origin HTTP/request failures, console/page errors, bounded same-origin link checks, missing image alt text, visible accessible-name heuristics, 360px/1280px horizontal overflow, selected passive response headers, sampled visual-style consistency heuristics, and bounded CSS/semantic observations. Journey actions are limited to visible-text checks, one-field same-origin GET search, ordinary same-origin links, and browser back.\n");
-      process.stdout.write("Coverage limitations: this is not a comprehensive security audit or WCAG assessment; visual consistency is inferred from sampled controls, without screenshots or cross-page comparison. Only same-origin links on the final page are probed. Approved cross-origin resources are permitted but not separately link-tested. No credentials are used; an observed authentication gate stops the journey. Arbitrary form submissions, button workflows, dynamic content beyond bounded waits, and blocked-resource behavior are not verified.\n");
+      process.stdout.write(`Navigation evidence (local only): last approved-origin navigation status=${metrics.navigationHttpStatus ?? "unavailable"}, final path=${escapeTerminalControls(finalPathWithoutFormatControls ?? "unavailable")}, navigation redirects=${metrics.navigationRedirectCount}, bounded render wait=${metrics.renderWaitMs}ms (maximum ${2_500 * (journey === undefined ? 0 : journey.length * 2) + 2_500}ms across inspected page states), network-settle wait=${metrics.networkSettleWaitMs}ms (maximum 1,500ms per navigation state).\n`);
+      process.stdout.write(`Autonomous page diagnostics (local only): ${metrics.pageDiagnostics.snapshots.length} bounded DOM snapshots; ${metrics.pageDiagnostics.screenshots.length} screenshots captured${metrics.pageDiagnostics.screenshotLimitReached ? " (a screenshot/evidence bound was reached)" : ""}.\n`);
+      for (const snapshot of metrics.pageDiagnostics.snapshots) {
+        process.stdout.write(`- ${snapshot.stage}: state=${snapshot.state}, HTTP=${snapshot.status ?? "unavailable"}, path=${escapeBrowserAuditDisplay(snapshot.path ?? "unavailable")}, title=${escapeBrowserAuditDisplay(snapshot.title || "(empty)")}, sampled text length=${snapshot.bodyTextLength}; headings=${snapshot.headings}, main=${snapshot.mainLandmarks}, forms=${snapshot.forms}, search=${snapshot.searchControls}, visible inputs/buttons/links=${snapshot.visibleInputs}/${snapshot.visibleButtons}/${snapshot.visibleLinks}, card-like elements=${snapshot.cardLikeElements}.\n`);
+        if (snapshot.bodyTextSample.length > 0) process.stdout.write(`  Text sample (untrusted page content): ${escapeBrowserAuditDisplay(snapshot.bodyTextSample)}\n`);
+      }
+      if (screenshotPaths.length > 0) {
+        process.stdout.write("Local screenshot evidence (not persisted or sent to a provider):\n");
+        for (const screenshotPath of screenshotPaths) process.stdout.write(`- ${escapeBrowserAuditDisplay(screenshotPath)}\n`);
+      }
+      if (metrics.pageDiagnostics.observedFailures.length > 0) {
+        process.stdout.write("Observed failures (request/DOM evidence only):\n");
+        for (const failure of metrics.pageDiagnostics.observedFailures) process.stdout.write(`- ${escapeBrowserAuditDisplay(failure)}\n`);
+      }
+      if (metrics.pageDiagnostics.suspectedCauses.length > 0) {
+        process.stdout.write("Suspected causes (not confirmed):\n");
+        for (const cause of metrics.pageDiagnostics.suspectedCauses) process.stdout.write(`- ${escapeBrowserAuditDisplay(cause)}\n`);
+      }
+      if (metrics.pageDiagnostics.blockedDataResourceOrigins.length > 0 &&
+          !metrics.authenticationGateDetected &&
+          metrics.pageDiagnostics.snapshots.length > 0 &&
+          metrics.pageDiagnostics.snapshots.every((snapshot) => snapshot.cardLikeElements === 0 && snapshot.state !== "incomplete" && snapshot.state !== "authentication-gated")) {
+        process.stdout.write("Possible data-resource origin for owner review (not accessed; untrusted page activity cannot authorize it). Only consider a valid public HTTPS origin. To investigate, start a new run with this exact origin supplied using --origin; the CLI will ask for approval again:\n");
+        for (const origin of metrics.pageDiagnostics.blockedDataResourceOrigins) process.stdout.write(`- ${escapeBrowserAuditDisplay(origin)}\n`);
+      }
+      process.stdout.write("Implemented checks: approved-origin HTTP/request failures, console/page errors, bounded same-origin HEAD link probes, missing image alt text, visible accessible-name heuristics, 360px/1280px horizontal overflow, selected passive response headers, sampled visual-style consistency heuristics, bounded DOM snapshots/screenshots, and capped observed/suspected diagnosis. Journey actions are limited to visible-text checks, one-field same-origin GET search, explicitly approved same-origin links, and browser back.\n");
+      process.stdout.write("Coverage limitations: this is not a comprehensive security audit or WCAG assessment; visual consistency is inferred from sampled controls, without cross-page comparison. Approved cross-origin resources are observed but not followed unless their exact origin was approved. HTTP document redirects are blocked before following; redirect-based login/CDN flows are unsupported. No credentials are used; an observed authentication gate stops the journey. Arbitrary form submissions, button workflows, and dynamic content beyond bounded waits are unsupported. GET route heuristics cannot prove server-side handlers are side-effect-free. Page content and blocked origins are untrusted evidence and do not expand permissions; additional origins are requested only when blocked data requests plausibly relate to missing results.\n");
       if (metrics.journeyEvidence.length > 0) {
         process.stdout.write("Read-only journey evidence (page text is shown locally and not persisted):\n");
         for (const evidence of metrics.journeyEvidence) process.stdout.write(`- ${escapeTerminalControls(evidence)}\n`);
@@ -1778,7 +1827,7 @@ async function runBrowserAuditCommand(commandArgs: readonly string[]): Promise<v
         for (const reason of metrics.journeyFailureReasons) process.stdout.write(`- ${reason}\n`);
       }
       if (metrics.blockedResourceOrigins.length > 0) {
-        process.stdout.write("Blocked resource origins discovered (not accessed); approve any needed HTTPS origins explicitly before rerunning:\n");
+        process.stdout.write("Blocked resource inventory (not accessed; may include origins that cannot be approved):\n");
         for (const origin of metrics.blockedResourceOrigins) process.stdout.write(`- ${escapeTerminalControls(origin)}\n`);
       }
       process.stdout.write("Design observations (inferred; not original design tokens):\n");
@@ -1786,7 +1835,7 @@ async function runBrowserAuditCommand(commandArgs: readonly string[]): Promise<v
       process.exitCode = browserAuditExitCode(result.run.state);
       if (withSpecialist && !controller.signal.aborted) {
         const providerConfiguration = loadProviderConfiguration();
-        const findingsWithoutPrivateEvidence = (({ blockedResourceOrigins: _blockedResourceOrigins, journeyEvidence: _journeyEvidence, journeyFailureReasons: _journeyFailureReasons, finalPath: _finalPath, ...shareableMetrics }) => shareableMetrics)(metrics);
+        const findingsWithoutPrivateEvidence = (({ blockedResourceOrigins: _blockedResourceOrigins, journeyEvidence: _journeyEvidence, journeyFailureReasons: _journeyFailureReasons, finalPath: _finalPath, pageDiagnostics: _pageDiagnostics, ...shareableMetrics }) => shareableMetrics)(metrics);
         const evidence = JSON.stringify({
           findings: findingsWithoutPrivateEvidence,
           coverageLimitations: [
