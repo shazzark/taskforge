@@ -8,6 +8,7 @@ import { tmpdir } from "node:os";
 import { createInterface } from "node:readline/promises";
 import { ConfigurationError, formatStoreConfigurationSummary, loadProviderConfiguration, loadStoreConfiguration } from "./config.js";
 import { AgentBudgetLedger, AgentToolError, runToolLoop } from "./agent/tool-loop.js";
+import { BUILT_IN_TASKS, getBuiltInTask, TaskRegistryError, validateTaskInputs } from "./agent/task-registry.js";
 import { runSpecialistReview, type SpecialistTask, SpecialistReviewError } from "./agent/specialist-review.js";
 import {
   DatabasePersistenceError,
@@ -49,12 +50,13 @@ import type { ScheduleRecord, ScheduleWorkflowId } from "./mongo-store.js";
 
 const helpText = `TaskForge ${packageJson.version} (early development)
 
-Usage: taskforge [--help | --version | config | doctor | model-check | chat | permissions approve/list/revoke | run csv-analyze --input <path> [--numeric-column <header>]... [--output <new.json|csv|md>] | run document-analyze --input <path> [--output <new.json|csv|md>] | run data-specialist --input <path> --goal <question> | run browser-audit --url <url> [--journey <json-array>] [--origin <https-origin>]... [--specialist] | run document-convert --input <path> --output <new.txt> | run file-move --source <file> --target <new-file> | run ... | resume <run-id> --input <path> [--numeric-column <header>]... | history list | schedule ...]
+Usage: taskforge [--help | --version | config | doctor | model-check | chat | tasks list | tasks inspect <task-id> | tasks validate <task-id> --inputs-json <object> | permissions approve/list/revoke | run csv-analyze --input <path> [--numeric-column <header>]... [--output <new.json|csv|md>] | run document-analyze --input <path> [--output <new.json|csv|md>] | run data-specialist --input <path> --goal <question> | run browser-audit --url <url> [--journey <json-array>] [--origin <https-origin>]... [--specialist] | run document-convert --input <path> --output <new.txt> | run file-move --source <file> --target <new-file> | run ... | resume <run-id> --input <path> [--numeric-column <header>]... | history list | schedule ...]
 
 The config command validates local settings and prints a redacted summary.
 The doctor command checks the selected local SQLite or MongoDB storage and reports available setup areas.
 The model-check command makes a synthetic read-only tool call through the selected model provider.
 The chat command opens a bounded interactive conversation with the selected provider.
+The tasks command lists or inspects built-in validated declarative task definitions; validate checks one definition's JSON inputs. These definitions cannot grant permissions or execute code, and tasks are not yet executable.
 The csv-analyze workflow reads one explicitly approved CSV file, stores redacted run metadata, and can calculate exact selected-column decimal totals with --numeric-column.
 The repo-inspect workflow inventories one explicitly approved repository root without reading file contents or running commands.
 The source-review workflow reads only explicitly selected source files and displays bounded, locally redacted content; it does not send or persist source.
@@ -2004,6 +2006,52 @@ async function runDoctor(): Promise<void> {
   process.stdout.write("Browser tooling: loopback fixtures and approval-controlled public HTTPS audits are available; live owner-approved acceptance remains pending.\n");
 }
 
+function runTasksCommand(commandArgs: readonly string[]): void {
+  const action = commandArgs[0];
+  if (action === "list" && commandArgs.length === 1) {
+    for (const task of BUILT_IN_TASKS) {
+      process.stdout.write(`${task.id}\t${task.name}\ttools=${task.requiredTools.join(",") || "none"}\n`);
+    }
+    process.stdout.write("These local built-in definitions are validated data only; they cannot execute tasks or grant permissions.\n");
+    return;
+  }
+  const taskId = commandArgs[1];
+  const task = typeof taskId === "string" ? getBuiltInTask(taskId) : undefined;
+  if (action === "inspect" && commandArgs.length === 2) {
+    if (!task) {
+      process.stderr.write("Unknown built-in task id.\n");
+      process.exitCode = 2;
+      return;
+    }
+    process.stdout.write(`${task.name} (${task.id}, definition v${task.version})\n${task.description}\nInputs:\n`);
+    for (const input of task.inputs) {
+      process.stdout.write(`- ${input.name}: ${input.type}${input.required ? " (required)" : " (optional)"} — ${input.description}\n`);
+    }
+    process.stdout.write("Outputs:\n");
+    for (const output of task.outputs) process.stdout.write(`- ${output.name}: ${output.type} — ${output.description}\n`);
+    process.stdout.write(`Required tool capabilities: ${task.requiredTools.join(", ") || "none"}\nExamples: ${task.examples.length}; conformance cases: ${task.tests.length}\n`);
+    return;
+  }
+  if (action === "validate" && commandArgs.length === 4 && commandArgs[2] === "--inputs-json") {
+    if (!task) {
+      process.stderr.write("Unknown built-in task id.\n");
+      process.exitCode = 2;
+      return;
+    }
+    try {
+      const rawInputs: unknown = JSON.parse(commandArgs[3] ?? "");
+      const validated = validateTaskInputs(task.inputs, rawInputs);
+      process.stdout.write(`Inputs accepted for ${task.id}: ${validated.fieldNames.join(", ")}\n`);
+    } catch (error: unknown) {
+      process.stderr.write(`Task inputs rejected: ${error instanceof TaskRegistryError ? error.message : "invalid JSON"}\n`);
+      process.exitCode = 2;
+    }
+    return;
+  }
+  process.stderr.write("Usage: tasks list | tasks inspect <task-id> | tasks validate <task-id> --inputs-json <object>\n");
+  process.exitCode = 2;
+}
+
 async function runModelCheck(): Promise<void> {
   const controller = new AbortController();
   const handleInterrupt = (): void => controller.abort();
@@ -2175,6 +2223,8 @@ if (args.length === 0 || (args.length === 1 && (args[0] === "--help" || args[0] 
   await runModelCheck();
 } else if (args.length === 1 && args[0] === "chat") {
   await runChat();
+} else if (args.length >= 1 && args[0] === "tasks") {
+  runTasksCommand(args.slice(1));
 } else if (args.length >= 1 && args[0] === "permissions") {
   await runPermissionsCommand(args.slice(1));
 } else if (args.length >= 2 && args[0] === "run" && args[1] === "csv-analyze") {
