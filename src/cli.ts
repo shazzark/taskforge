@@ -1706,7 +1706,7 @@ async function runResearchCommand(commandArgs: readonly string[]): Promise<void>
     try {
       answer = await consent.question(
         comparison
-          ? `Send these exact queries as two separate searches to Groq browser search (${provider.model})? Results will show each answer and its retrieved excerpts side by side; shared source URLs are identified mechanically. This does not determine whether sources agree. No project files are sent and no results are persisted. [y/N]\nA: ${escapeTerminalControls(leftQuery)}\nB: ${escapeTerminalControls(rightQuery ?? "")}\n> `
+          ? `Send these exact queries as two separate searches to Groq browser search (${provider.model})? Results will show inline citations mapped to retrieved excerpts, flag uncited sentences, and identify exact shared source URLs. Citation mapping does not prove semantic support or whether sources agree. No project files are sent and no results are persisted. [y/N]\nA: ${escapeTerminalControls(leftQuery)}\nB: ${escapeTerminalControls(rightQuery ?? "")}\n> `
           : `Send this exact query to Groq browser search (${provider.model})? Groq reports search is powered by Exa. No project files are sent and no results are persisted. [y/N]\n${escapeTerminalControls(leftQuery)}\n> `,
       );
     } finally {
@@ -1728,6 +1728,7 @@ async function runResearchCommand(commandArgs: readonly string[]): Promise<void>
           for (const source of side.sources) {
             process.stdout.write(`- ${escapeTerminalControls(source.title)}\n  ${escapeTerminalControls(source.url)}\n  ${escapeTerminalControls(source.excerpt)}\n`);
           }
+          printResearchCitationStatus(label, side);
         };
         printSide("A", result.left);
         printSide("B", result.right);
@@ -1738,6 +1739,7 @@ async function runResearchCommand(commandArgs: readonly string[]): Promise<void>
         for (const source of result.sources) {
           process.stdout.write(`- ${escapeTerminalControls(source.title)}\n  ${escapeTerminalControls(source.url)}\n  ${escapeTerminalControls(source.excerpt)}\n`);
         }
+        printResearchCitationStatus("", result);
       }
     } finally {
       process.removeListener("SIGINT", interrupt);
@@ -1747,6 +1749,20 @@ async function runResearchCommand(commandArgs: readonly string[]): Promise<void>
       : error instanceof BrowserSearchError ? error.message : "Research failed safely.";
     process.stderr.write(`${message}\n`);
     process.exitCode = error instanceof BrowserSearchError && error.kind === "cancelled" ? 130 : 3;
+  }
+}
+
+function printResearchCitationStatus(label: string, result: Awaited<ReturnType<GroqBrowserResearch["search"]>>): void {
+  const prefix = label.length === 0 ? "" : `${label} `;
+  process.stdout.write(`\n${prefix}Citation mapping: ${result.citations.length} inline reference(s) mapped to validated retrieved URLs; this validates provenance only, not semantic support.\n`);
+  for (const citation of result.citations) {
+    process.stdout.write(`- ${citation.marker} -> ${escapeTerminalControls(citation.source.url)} (${escapeTerminalControls(citation.source.title)}): ${escapeTerminalControls(citation.source.excerpt)}\n`);
+  }
+  if (result.unmappedCitations.length > 0) {
+    process.stdout.write(`${prefix}Unmapped citation marker(s): ${result.unmappedCitations.map(escapeTerminalControls).join(", ")}\n`);
+  }
+  if (result.uncitedStatements.length > 0) {
+    process.stdout.write(`${prefix}Sentence(s) without an inline citation (heuristic): ${result.uncitedStatements.slice(0, 8).map(escapeTerminalControls).join(" | ")}\n`);
   }
 }
 

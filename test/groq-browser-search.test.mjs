@@ -5,7 +5,7 @@ import { BrowserSearchError, GroqBrowserResearch } from "../dist/integrations/gr
 const configuration = { kind: "groq", apiKey: "test-key", model: "openai/gpt-oss-20b" };
 const validResponse = {
   choices: [{ message: {
-    content: "A bounded answer.",
+    content: "A bounded answer. 〖1†L1-L2〗",
     executed_tools: [{
       type: "browser_search",
       search_results: { results: [
@@ -27,12 +27,33 @@ test("Groq browser research requests only browser search and returns validated b
   assert.equal(request.messages[0].content, "official browser search docs");
   assert.deepEqual(request.tools, [{ type: "browser_search" }]);
   assert.equal(request.tool_choice, "required");
+  assert.equal(request.citation_options, "enabled");
   assert.equal(request.model, "openai/gpt-oss-20b");
   assert.equal(result.sources.length, 1);
   assert.equal(result.sources[0].url, "https://example.com/doc");
   assert.equal(result.sources[0].excerpt, "Evidence excerpt.");
+  assert.equal(result.citations.length, 1);
+  assert.equal(result.citations[0].source.url, "https://example.com/doc");
+  assert.deepEqual(result.uncitedStatements, []);
   assert.equal(result.model, configuration.model);
   assert.match(result.retrievedAt, /^\d{4}-\d\d-\d\dT/u);
+});
+
+test("research maps only provider citation markers to validated results and flags uncited text", async () => {
+  const research = new GroqBrowserResearch(configuration, async () => ({
+    choices: [{ message: {
+      content: "Supported claim. 〖1†L3-L5〗 Uncited statement. Unsupported reference. 〖2†L1-L2〗",
+      executed_tools: [{ type: "browser_search", search_results: { results: [
+        { title: "Retrieved source", url: "https://example.com/source", content: "A bounded evidence excerpt." },
+      ] } }],
+    } }],
+  }));
+  const result = await research.search("synthetic citation query");
+  assert.equal(result.citations.length, 1);
+  assert.equal(result.citations[0].lineStart, 3);
+  assert.equal(result.citations[0].lineEnd, 5);
+  assert.deepEqual(result.unmappedCitations, ["〖2†L1-L2〗"]);
+  assert.deepEqual(result.uncitedStatements, ["Uncited statement.", "Unsupported reference."]);
 });
 
 test("browser research uses the selected model consistently when it is on the supported allowlist", async () => {
@@ -56,7 +77,7 @@ test("research comparison runs two bounded searches and reports exact shared sou
   assert.equal(requests[0].messages[0].content, "claim A");
   assert.equal(requests[1].messages[0].content, "claim B");
   assert.deepEqual(result.sharedSourceUrls, ["https://example.com/doc"]);
-  assert.equal(result.left.answer, "A bounded answer.");
+  assert.equal(result.left.answer, "A bounded answer. 〖1†L1-L2〗");
   assert.equal(result.right.sources[0].excerpt, "Evidence excerpt.");
 });
 

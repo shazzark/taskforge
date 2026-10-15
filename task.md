@@ -617,11 +617,13 @@ Depends on Phases 11–12 and path/command approvals. **Phase 13.1 — Single-fi
 
 **Acceptance:** Synthetic seeded bug has a reproducible failing check; model produces an exact hash-bound patch preview; refusal leaves bytes unchanged; approval applies only the preview; stale target is rejected; relevant fixed check is separately approved and reported truthfully; no Git publication. Also verify the TTY/provider path with the owner and retain accurate failure/cancellation outcomes.
 
-### Phase 14 — Evidence-cited web research — NOT STARTED
+### Phase 14 — Evidence-cited web research — IN PROGRESS
 
-Depends on Phase 12 and exact external-transfer consent.
+Depends on Phase 12 and exact external-transfer consent. **Phase 14.1 — Citation provenance and uncited-sentence reporting — IMPLEMENTED; ACCEPTANCE PENDING.** Groq `citation_options` is explicitly enabled. Inline `〖n†Lx-Ly〗` markers are mapped only to validated HTTPS sources returned in the same provider response. The CLI prints each marker's mapped URL and bounded excerpt, reports unmapped citation markers, and heuristically lists answer sentences without an inline citation. Comparison still runs separate searches and reports exact shared URLs; it makes no unsupported agreement/disagreement claim.
 
-**Acceptance:** Fixtures tie factual comparison claims to retrieved passages/URLs and surface unsupported claims, contradictions, retrieval failure, invalid URLs and escaping. Live synthetic retrieval is separately recorded and never inferred from fixtures.
+**Verification:** Strict typecheck/build and focused research provider-contract tests passed (6/6), covering request citation configuration, valid mapping, invalid source references, uncited statements, comparison source mapping, unsafe/missing sources, provider error redaction and cancellation. First full run passed 176/178 and timed out two existing 5-second CLI subprocesses; all four CLI guard/help checks then passed alone in 4.6 seconds. The clean serial rerun passed **178/178, 0 failed, 0 skipped** in 136.0 seconds with dedicated `TASKFORGE_TEST_MONGODB_URI=mongodb://127.0.0.1:27017/taskforge_phase14_research_retry`. No timeout or assertion changed. Groq is configured locally, but live synthetic retrieval/citation-format validation requires owner consent at the CLI's exact-query transfer prompt; owner review also remains pending.
+
+**Acceptance:** Fixtures tie comparison claims to mapped retrieved passages/URLs, surface unsupported/uncited claims, source disagreement, retrieval failure, invalid URLs and escaping. Actual citations must map to returned evidence; citation mapping does not establish semantic entailment. Live synthetic retrieval is separately recorded and never inferred from fixtures.
 
 ### Phase 15 — Cancellation, resume and history contract — NOT STARTED
 

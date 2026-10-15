@@ -24,8 +24,19 @@ export interface ResearchSource {
 export interface ResearchResult {
   readonly answer: string;
   readonly sources: readonly ResearchSource[];
+  readonly citations: readonly ResearchCitation[];
+  readonly uncitedStatements: readonly string[];
+  readonly unmappedCitations: readonly string[];
   readonly retrievedAt: string;
   readonly model: string;
+}
+
+export interface ResearchCitation {
+  readonly marker: string;
+  readonly sourceIndex: number;
+  readonly lineStart: number;
+  readonly lineEnd: number;
+  readonly source: ResearchSource;
 }
 
 export interface ResearchComparisonResult {
@@ -100,6 +111,49 @@ function parseSources(message: Record<string, unknown>): ResearchSource[] {
   return sources;
 }
 
+function parseCitations(answer: string, sources: readonly ResearchSource[]): {
+  readonly citations: readonly ResearchCitation[];
+  readonly uncitedStatements: readonly string[];
+  readonly unmappedCitations: readonly string[];
+} {
+  const markerPattern = /〖(\d+)†L(\d+)(?:-L?(\d+))?〗/gu;
+  const citations: ResearchCitation[] = [];
+  const unmappedCitations: string[] = [];
+  const cleanCitationOffsets: number[] = [];
+  let removedMarkerCharacters = 0;
+  let match: RegExpExecArray | null;
+  while ((match = markerPattern.exec(answer)) !== null) {
+    const sourceIndex = Number(match[1]);
+    const lineStart = Number(match[2]);
+    const lineEnd = Number(match[3] ?? match[2]);
+    const marker = match[0];
+    const source = Number.isSafeInteger(sourceIndex) && sourceIndex > 0 ? sources[sourceIndex - 1] : undefined;
+    if (source === undefined || !Number.isSafeInteger(lineStart) || lineStart < 1 ||
+        !Number.isSafeInteger(lineEnd) || lineEnd < lineStart || lineEnd > 100_000) {
+      unmappedCitations.push(marker);
+      continue;
+    }
+    citations.push({ marker, sourceIndex, lineStart, lineEnd, source });
+    cleanCitationOffsets.push(match.index - removedMarkerCharacters);
+    removedMarkerCharacters += marker.length;
+  }
+  const cleanAnswer = answer.replace(markerPattern, "");
+  const sentences = Array.from(cleanAnswer.matchAll(/[^.!?]+(?:[.!?]+|$)/gu), (sentence) => {
+    const raw = sentence[0] ?? "";
+    const leadingWhitespace = raw.length - raw.trimStart().length;
+    return { text: raw.trim(), start: (sentence.index ?? 0) + leadingWhitespace, end: (sentence.index ?? 0) + raw.length };
+  }).filter((sentence) => sentence.text.length > 0);
+  const uncitedStatements: string[] = [];
+  for (let index = 0; index < sentences.length; index += 1) {
+    const sentence = sentences[index];
+    if (sentence === undefined) continue;
+    const nextSentenceStart = sentences[index + 1]?.start ?? cleanAnswer.length;
+    const cited = cleanCitationOffsets.some((offset) => offset >= sentence.start && offset <= nextSentenceStart);
+    if (!cited) uncitedStatements.push(sentence.text);
+  }
+  return { citations, uncitedStatements, unmappedCitations };
+}
+
 function parseResearchResponse(value: unknown, model: string): ResearchResult {
   if (!isRecord(value)) throw new BrowserSearchError("invalid_response");
   const choices = value["choices"];
@@ -109,7 +163,8 @@ function parseResearchResponse(value: unknown, model: string): ResearchResult {
   if (message === undefined || answer === undefined) throw new BrowserSearchError("invalid_response");
   const sources = parseSources(message);
   if (sources.length === 0) throw new BrowserSearchError("invalid_response");
-  return { answer, sources, retrievedAt: new Date().toISOString(), model };
+  const citationEvidence = parseCitations(answer, sources);
+  return { answer, sources, ...citationEvidence, retrievedAt: new Date().toISOString(), model };
 }
 
 function classifyError(error: unknown): BrowserSearchError {
@@ -154,6 +209,7 @@ export class GroqBrowserResearch {
       const request: SearchRequest = {
         model: this.model,
         messages: [{ role: "user", content: normalizedQuery }],
+        citation_options: "enabled",
         tools: [{ type: "browser_search" }],
         tool_choice: "required",
         max_completion_tokens: 1_024,
