@@ -14,13 +14,13 @@ import { runGitHubIssuesCommand } from "./cli/commands/github-issues.js";
 import { runDeploymentTraceCommand } from "./cli/commands/deployment-trace.js";
 import { runArchitectureReportCommand, runRepositoryInspectionCommand, runSourceReviewCommand } from "./cli/commands/repository-inspection.js";
 import { runScheduleCommand } from "./cli/commands/scheduling.js";
+import { resumeWorkflowCommand, runCsvWorkflowCommand, runDocumentAnalysisCommand, runDocumentConversionCommand } from "./cli/commands/data-documents.js";
 import { PersistentFolderApprovalError } from "./cli/command-errors.js";
 import { runSpecialistReview, type SpecialistTask, SpecialistReviewError } from "./agent/specialist-review.js";
 import {
   DatabasePersistenceError,
   DatabaseShutdownError,
   PersistenceInputError,
-  type ArtifactType,
   type FolderApproval,
 } from "./storage/types.js";
 import type { TaskForgeStore } from "./storage/store.js";
@@ -28,8 +28,8 @@ import { connectTaskForgeStore } from "./storage/store-factory.js";
 import { createModelProvider } from "./providers/create-provider.js";
 import { ModelProviderError, type ProviderMessage } from "./providers/types.js";
 import { PathPolicyError, WorkspacePathPolicy } from "./security/path-policy.js";
-import { CsvWorkflowError, resumeCsvAnalysisWorkflow, runCsvAnalysisWorkflow, type CsvWorkflowResult } from "./workflows/csv-analysis-workflow.js";
-import { analyzeDocument, DocumentWorkflowError, resumeDocumentAnalysisWorkflow } from "./workflows/document-analysis-workflow.js";
+import { runCsvAnalysisWorkflow } from "./workflows/csv-analysis-workflow.js";
+import { analyzeDocument } from "./workflows/document-analysis-workflow.js";
 import { runReviewedCommand, validateSelectedNodeTestPath, type ReviewedCommandId, ReviewedCommandError } from "./tools/software/reviewed-command.js";
 import { redactSourceForDisplay, reviewSourceFiles, SourceReviewError } from "./workflows/source-review-workflow.js";
 import { ActionApprovalRegistry, ApprovalError } from "./security/approval-preview.js";
@@ -38,9 +38,6 @@ import { prepareFilePatch, prepareGeneratedFilePatch, applyPreparedFilePatch, Pa
 import { GitDiffReviewError, listGitDiffFiles, readGitDiff } from "./tools/software/git-diff-review.js";
 import { investigateSource, ModelInvestigationError } from "./tools/software/model-investigation.js";
 import { DraftArtifactError, parseLocalDraftInput, previewPlainTextArtifact, previewTextArtifact, writeApprovedTextArtifact } from "./tools/artifacts/drafts.js";
-import { csvAnalysisExportFormat, CsvAnalysisExportError, renderCsvAnalysisExport, type CsvAnalysisExportFormat } from "./tools/artifacts/csv-analysis-export.js";
-import { documentAnalysisExportFormat, DocumentAnalysisExportError, renderDocumentAnalysisExport, type DocumentAnalysisExportFormat } from "./tools/artifacts/document-analysis-export.js";
-import { convertDocumentToPlainText, DocumentConversionError } from "./tools/documents/plain-text-conversion.js";
 import { escapeTerminalControls } from "./security/terminal-text.js";
 import { BrowserSearchError, GroqBrowserResearch } from "./integrations/groq-browser-search.js";
 import {
@@ -93,29 +90,6 @@ function inputPathArgument(commandArgs: readonly string[]): string | undefined {
   }
   const value = commandArgs[1];
   return value === undefined || value.trim().length === 0 ? undefined : value;
-}
-
-interface ParsedCsvCommandArguments {
-  readonly inputPath: string;
-  readonly outputPath?: string;
-  readonly numericColumns: readonly string[];
-}
-
-function parseCsvCommandArguments(commandArgs: readonly string[]): ParsedCsvCommandArguments | undefined {
-  let inputPath: string | undefined;
-  let outputPath: string | undefined;
-  const numericColumns: string[] = [];
-  for (let index = 0; index < commandArgs.length; index += 2) {
-    const option = commandArgs[index];
-    const value = commandArgs[index + 1];
-    if (value === undefined || value.trim().length === 0) return undefined;
-    if (option === "--input" && inputPath === undefined) inputPath = value;
-    else if (option === "--output" && outputPath === undefined) outputPath = value;
-    else if (option === "--numeric-column" && value.length <= 256) numericColumns.push(value);
-    else return undefined;
-  }
-  if (inputPath === undefined || new Set(numericColumns).size !== numericColumns.length) return undefined;
-  return { inputPath, ...(outputPath === undefined ? {} : { outputPath }), numericColumns };
 }
 
 type ApprovalQuestion = (prompt: string, signal?: AbortSignal) => Promise<string>;
@@ -312,305 +286,6 @@ async function runPermissionsCommand(commandArgs: readonly string[]): Promise<vo
   }
   if (changed === true) process.stdout.write(action === "approve" ? `Persisted ${access} approval for ${escapeTerminalControls(canonicalRoot)}.\n` : `Revoked ${access} approval for ${escapeTerminalControls(canonicalRoot)}.\n`);
   else if (action === "revoke" && changed === false) process.stdout.write("No active matching folder approval was found.\n");
-}
-
-async function runCsvWorkflowCommand(commandArgs: readonly string[]): Promise<void> {
-  const parsed = parseCsvCommandArguments(commandArgs);
-  if (parsed === undefined) {
-    process.stderr.write("Expected --input <path> [--numeric-column <header>]... [--output <new.json|new.csv|new.md>].\n");
-    process.exitCode = 1;
-    return;
-  }
-  const { inputPath, outputPath, numericColumns } = parsed;
-  let exportFormat: CsvAnalysisExportFormat | undefined;
-  if (outputPath !== undefined) {
-    try {
-      exportFormat = csvAnalysisExportFormat(outputPath);
-    } catch (error: unknown) {
-      process.stderr.write(`${error instanceof CsvAnalysisExportError ? error.message : "CSV export path was rejected."}\n`);
-      process.exitCode = 1;
-      return;
-    }
-  }
-  const input = await readApprovedInputFile(inputPath);
-  if (input === undefined) {
-    return;
-  }
-  let result: CsvWorkflowResult | undefined;
-  try {
-    result = await withStore((store) => runCsvAnalysisWorkflow(store, input, undefined, numericColumns));
-  } catch (error: unknown) {
-    process.stderr.write(error instanceof CsvWorkflowError ? `CSV workflow failed: ${error.message}\n` : "CSV workflow failed; run state was preserved where possible.\n");
-    process.exitCode = 3;
-    return;
-  }
-  if (result === undefined) return;
-  const totals = Object.entries(result.analysis.numericTotals).map(([column, total]) => `${escapeTerminalControls(column)}=${total}`);
-  process.stdout.write(`Run ${result.run.runId} ${result.resumed ? "resumed" : "completed"}: ${result.analysis.rowCount} rows, ${result.analysis.duplicateRowCount} duplicate rows.\n`);
-  if (totals.length > 0) process.stdout.write(`Numeric totals: ${totals.join(", ")}\n`);
-  if (outputPath === undefined || exportFormat === undefined) return;
-  let createdArtifact: { readonly path: string; readonly byteCount: number; readonly sha256: string } | undefined;
-  try {
-    const requestedOutput = resolve(outputPath);
-    const policy = new WorkspacePathPolicy();
-    const outputRoot = await policy.approveRoot(dirname(requestedOutput));
-    await requirePersistentFolderApproval(outputRoot.path, "write");
-    const approvals = new ActionApprovalRegistry(policy);
-    const content = renderCsvAnalysisExport(result.analysis, exportFormat);
-    const pending = await previewPlainTextArtifact(content, requestedOutput, outputRoot, policy, approvals);
-    process.stdout.write(`\n--- CSV AGGREGATE EXPORT PREVIEW ---\n${escapeTerminalControls(pending.content)}\n`);
-    const consent = createInterface({ input: process.stdin, output: process.stdout });
-    let answer: string;
-    try {
-      answer = await consent.question(`Create this new ${exportFormat} aggregate report?\nPath: ${escapeTerminalControls(pending.preview.targetPath)}\nBytes: ${Buffer.byteLength(pending.content, "utf8")}\nSHA-256: ${pending.digest}\nUnselected headers and source cell values are excluded; selected column labels and totals are included. [y/N] `);
-    } finally {
-      consent.close();
-    }
-    if (answer.trim().toLowerCase() !== "y") {
-      approvals.discard(pending.preview.previewId);
-      process.stdout.write("CSV analysis completed; export cancelled before writing.\n");
-      return;
-    }
-    const written = await writeApprovedTextArtifact(pending, approvals.approve(pending.preview.previewId), outputRoot, policy, approvals);
-    createdArtifact = written;
-    const artifactType: ArtifactType = exportFormat === "json" ? "csv-analysis-json" : exportFormat === "csv" ? "csv-analysis-csv" : "csv-analysis-markdown";
-    const references = await withStore((store) => store.saveArtifactReference({
-      artifactId: randomUUID(),
-      runId: result.run.runId,
-      relativePath: basename(written.path),
-      type: artifactType,
-      sha256: written.sha256,
-      bytes: written.byteCount,
-    }));
-    if (references === undefined) {
-      process.stderr.write(`Aggregate report was created at ${escapeTerminalControls(written.path)}, but its database reference could not be saved.\n`);
-      process.exitCode = 3;
-      return;
-    }
-    process.stdout.write(`Aggregate report created: ${written.byteCount} bytes; SHA-256 ${written.sha256}.\n`);
-  } catch (error: unknown) {
-    if (createdArtifact !== undefined) {
-      process.stderr.write(`Aggregate report exists at ${escapeTerminalControls(createdArtifact.path)}, but its database reference could not be saved.\n`);
-      process.exitCode = 3;
-      return;
-    }
-    const detail = error instanceof CsvAnalysisExportError || error instanceof DraftArtifactError || error instanceof PersistentFolderApprovalError || error instanceof PersistenceInputError || error instanceof DatabasePersistenceError
-      ? error.message
-      : "the aggregate report could not be created safely";
-    process.stderr.write(`CSV export failed: ${detail}\n`);
-    process.exitCode = 3;
-  }
-}
-
-async function resumeWorkflowCommand(runId: string, commandArgs: readonly string[]): Promise<void> {
-  const inputPath = commandArgs.length >= 2 && commandArgs[0] === "--input" ? commandArgs[1] : undefined;
-  const numericColumns: string[] = [];
-  for (let index = 2; index < commandArgs.length; index += 2) {
-    if (commandArgs[index] !== "--numeric-column" || commandArgs[index + 1] === undefined || commandArgs[index + 1]?.trim().length === 0 || (commandArgs[index + 1]?.length ?? 257) > 256) {
-      process.stderr.write("Expected --input <path> [--numeric-column <header>]...\n");
-      process.exitCode = 1;
-      return;
-    }
-    numericColumns.push(commandArgs[index + 1] ?? "");
-  }
-  if (inputPath === undefined || inputPath.trim().length === 0 || new Set(numericColumns).size !== numericColumns.length) {
-    process.stderr.write("Expected --input <path> [--numeric-column <header>]...\n");
-    process.exitCode = 1;
-    return;
-  }
-  const input = await readApprovedInputFile(inputPath);
-  if (input === undefined) return;
-  try {
-    const result = await withStore(async (store) => {
-      const existing = await store.getRunSummary(runId);
-      if (existing?.workflowId === "csv-analyze") {
-        return { kind: "csv" as const, value: await resumeCsvAnalysisWorkflow(store, runId, input, numericColumns) };
-      }
-      if (existing?.workflowId === "document-analyze") {
-        if (numericColumns.length > 0) throw new Error("Numeric column options apply only to CSV runs.");
-        return {
-          kind: "document" as const,
-          value: await resumeDocumentAnalysisWorkflow(store, runId, extname(inputPath).toLowerCase(), input),
-        };
-      }
-      throw new Error("This run type cannot be resumed by the current CLI.");
-    });
-    if (result === undefined) return;
-    if (result.kind === "csv") {
-      const analysis = result.value.analysis;
-      const totals = Object.entries(analysis.numericTotals).map(([column, total]) => `${column}=${total}`);
-      process.stdout.write(`Run ${result.value.run.runId} resumed: ${analysis.rowCount} rows, ${analysis.duplicateRowCount} duplicate rows.\n`);
-      if (totals.length > 0) process.stdout.write(`Numeric totals: ${totals.join(", ")}\n`);
-    } else {
-      const analysis = result.value.analysis;
-      process.stdout.write(`Run ${result.value.run.runId} resumed: ${analysis.format}, ${analysis.byteCount} bytes, ${analysis.wordCount} words.\n`);
-    }
-  } catch (error: unknown) {
-    const message = error instanceof CsvWorkflowError || error instanceof DocumentWorkflowError
-      ? error.message
-      : "Resume failed; run state was preserved where possible.";
-    process.stderr.write(`Resume failed: ${message}\n`);
-    process.exitCode = 3;
-  }
-}
-
-async function runDocumentAnalysisCommand(commandArgs: readonly string[]): Promise<void> {
-  const parsed = parseCsvCommandArguments(commandArgs);
-  if (parsed === undefined || parsed.numericColumns.length > 0) {
-    process.stderr.write("Expected --input <path> [--output <new.json|new.csv|new.md>].\n");
-    process.exitCode = 1;
-    return;
-  }
-  const { inputPath, outputPath } = parsed;
-  let exportFormat: DocumentAnalysisExportFormat | undefined;
-  if (outputPath !== undefined) {
-    try {
-      exportFormat = documentAnalysisExportFormat(outputPath);
-    } catch (error: unknown) {
-      process.stderr.write(`${error instanceof DocumentAnalysisExportError ? error.message : "Document export path was rejected."}\n`);
-      process.exitCode = 1;
-      return;
-    }
-  }
-  const input = await readApprovedInputFile(inputPath);
-  if (input === undefined) return;
-  let createdArtifact: { readonly path: string; readonly byteCount: number; readonly sha256: string } | undefined;
-  let attemptedOutputPath: string | undefined;
-  try {
-    const extension = extname(inputPath).toLowerCase();
-    const result = await withStore((store) => analyzeDocument(store, extension, input));
-    if (result !== undefined) {
-      const analysis = result.analysis;
-      process.stdout.write(
-        `Run ${result.run.runId} completed: ${analysis.format}, ${analysis.byteCount} bytes, ` +
-        `${analysis.wordCount} words, ${analysis.lineCount} lines` +
-        (analysis.pageCount === undefined ? "" : `, ${analysis.pageCount} pages`) +
-        (analysis.sheetCount === undefined ? "" : `, ${analysis.sheetCount} sheets, ${analysis.rowCount ?? 0} rows, ${analysis.cellCount ?? 0} cells`) +
-        `.\n`,
-      );
-      if (outputPath !== undefined && exportFormat !== undefined) {
-        const content = renderDocumentAnalysisExport(analysis, exportFormat);
-        const requestedOutput = resolve(outputPath);
-        const policy = new WorkspacePathPolicy();
-        const outputRoot = await policy.approveRoot(dirname(requestedOutput));
-        await requirePersistentFolderApproval(outputRoot.path, "write");
-        const approvals = new ActionApprovalRegistry(policy);
-        const pending = await previewPlainTextArtifact(content, requestedOutput, outputRoot, policy, approvals);
-        process.stdout.write(`\n--- DOCUMENT AGGREGATE EXPORT PREVIEW ---\n${escapeTerminalControls(pending.content)}\n`);
-        const consent = createInterface({ input: process.stdin, output: process.stdout });
-        let answer: string;
-        try {
-          answer = await consent.question(`Create this new ${exportFormat} aggregate report?\nPath: ${escapeTerminalControls(pending.preview.targetPath)}\nBytes: ${Buffer.byteLength(content, "utf8")}\nSHA-256: ${pending.digest}\nDocument text, file paths, sheet names, and cell values are excluded. [y/N] `);
-        } finally { consent.close(); }
-        if (answer.trim().toLowerCase() !== "y") {
-          approvals.discard(pending.preview.previewId);
-          process.stdout.write("Document analysis completed; aggregate export cancelled before writing.\n");
-          return;
-        }
-        attemptedOutputPath = pending.preview.targetPath;
-        const written = await writeApprovedTextArtifact(pending, approvals.approve(pending.preview.previewId), outputRoot, policy, approvals);
-        createdArtifact = written;
-        const artifactType: ArtifactType = exportFormat === "json" ? "document-analysis-json" : exportFormat === "csv" ? "document-analysis-csv" : "document-analysis-markdown";
-        const reference = await withStore((store) => store.saveArtifactReference({
-          artifactId: randomUUID(), runId: result.run.runId, relativePath: basename(written.path), type: artifactType,
-          sha256: written.sha256, bytes: written.byteCount,
-        }));
-        if (reference === undefined) {
-          process.stderr.write(`Aggregate report was created at ${escapeTerminalControls(written.path)}, but its database reference could not be saved.\n`);
-          process.exitCode = 3;
-          return;
-        }
-        process.stdout.write(`Document aggregate report created: ${written.byteCount} bytes; SHA-256 ${written.sha256}.\n`);
-      }
-    }
-  } catch (error: unknown) {
-    if (createdArtifact !== undefined) {
-      process.stderr.write(`Aggregate report exists at ${escapeTerminalControls(createdArtifact.path)}, but its database reference could not be saved.\n`);
-      process.exitCode = 3;
-      return;
-    }
-    if (attemptedOutputPath !== undefined) {
-      process.stderr.write(`Document aggregate report writing or verification failed. Check whether a file exists at ${escapeTerminalControls(attemptedOutputPath)} before retrying; existing files are never replaced.\n`);
-      process.exitCode = 3;
-      return;
-    }
-    const message = error instanceof DocumentWorkflowError || error instanceof DocumentAnalysisExportError || error instanceof DraftArtifactError || error instanceof PersistentFolderApprovalError || error instanceof DatabasePersistenceError || error instanceof PersistenceInputError
-      ? error.message : "Document analysis failed safely.";
-    process.stderr.write(`Document analysis failed: ${message}\n`);
-    process.exitCode = 3;
-  }
-}
-
-async function runDocumentConversionCommand(commandArgs: readonly string[]): Promise<void> {
-  if (commandArgs.length !== 4 || commandArgs[0] !== "--input" || commandArgs[1] === undefined || commandArgs[2] !== "--output" || commandArgs[3] === undefined || extname(commandArgs[3]).toLowerCase() !== ".txt") {
-    process.stderr.write("Expected --input <path> --output <new.txt>.\n");
-    process.exitCode = 1;
-    return;
-  }
-  const inputPath = commandArgs[1];
-  const outputPath = commandArgs[3];
-  const input = await readApprovedInputFile(inputPath);
-  if (input === undefined) return;
-  let createdArtifact: { readonly path: string; readonly byteCount: number; readonly sha256: string } | undefined;
-  let attemptedOutputPath: string | undefined;
-  try {
-    const extension = extname(inputPath).toLowerCase();
-    const analysis = await withStore((store) => analyzeDocument(store, extension, input));
-    if (analysis === undefined) return;
-    const content = await convertDocumentToPlainText(extension, input);
-    const requestedOutput = resolve(outputPath);
-    const policy = new WorkspacePathPolicy();
-    const outputRoot = await policy.approveRoot(dirname(requestedOutput));
-    await requirePersistentFolderApproval(outputRoot.path, "write");
-    const approvals = new ActionApprovalRegistry(policy);
-    const pending = await previewPlainTextArtifact(content, requestedOutput, outputRoot, policy, approvals);
-    process.stdout.write(`\n--- DOCUMENT TEXT EXPORT PREVIEW ---\n${escapeTerminalControls(pending.content)}\n`);
-    const consent = createInterface({ input: process.stdin, output: process.stdout });
-    let answer: string;
-    try {
-      answer = await consent.question(`Create this new plain-text export?\nPath: ${escapeTerminalControls(pending.preview.targetPath)}\nBytes: ${Buffer.byteLength(pending.content, "utf8")}\nSHA-256: ${pending.digest}\nSource text will be copied into this local file. [y/N] `);
-    } finally {
-      consent.close();
-    }
-    if (answer.trim().toLowerCase() !== "y") {
-      approvals.discard(pending.preview.previewId);
-      process.stdout.write("Document analysis completed; text export cancelled before writing.\n");
-      return;
-    }
-    attemptedOutputPath = pending.preview.targetPath;
-    const written = await writeApprovedTextArtifact(pending, approvals.approve(pending.preview.previewId), outputRoot, policy, approvals);
-    createdArtifact = written;
-    const reference = await withStore((store) => store.saveArtifactReference({
-      artifactId: randomUUID(),
-      runId: analysis.run.runId,
-      relativePath: basename(written.path),
-      type: "document-plain-text",
-      sha256: written.sha256,
-      bytes: written.byteCount,
-    }));
-    if (reference === undefined) {
-      process.stderr.write(`Plain-text export was created at ${escapeTerminalControls(written.path)}, but its database reference could not be saved.\n`);
-      process.exitCode = 3;
-      return;
-    }
-    process.stdout.write(`Plain-text export created: ${written.byteCount} bytes; SHA-256 ${written.sha256}.\n`);
-  } catch (error: unknown) {
-    if (createdArtifact !== undefined) {
-      process.stderr.write(`Plain-text export exists at ${escapeTerminalControls(createdArtifact.path)}, but its database reference could not be saved.\n`);
-      process.exitCode = 3;
-      return;
-    }
-    if (attemptedOutputPath !== undefined) {
-      process.stderr.write(`Document export writing or verification failed. Check whether a file exists at ${escapeTerminalControls(attemptedOutputPath)} before retrying; existing files are never replaced.\n`);
-      process.exitCode = 3;
-      return;
-    }
-    const detail = error instanceof DocumentConversionError || error instanceof DocumentWorkflowError || error instanceof DraftArtifactError || error instanceof PersistentFolderApprovalError || error instanceof DatabasePersistenceError || error instanceof PersistenceInputError
-      ? error.message
-      : "document conversion failed safely";
-    process.stderr.write(`Document conversion failed: ${detail}\n`);
-    process.exitCode = 3;
-  }
 }
 
 async function listRunHistory(): Promise<void> {
@@ -2204,13 +1879,13 @@ if (args.length === 0 || (args.length === 1 && (args[0] === "--help" || args[0] 
 } else if (args.length >= 1 && args[0] === "permissions") {
   await runPermissionsCommand(args.slice(1));
 } else if (args.length >= 2 && args[0] === "run" && args[1] === "csv-analyze") {
-  await runCsvWorkflowCommand(args.slice(2));
+  await runCsvWorkflowCommand(args.slice(2), { withStore, readApprovedInputFile, requirePersistentFolderApproval });
 } else if (args.length >= 2 && args[0] === "run" && args[1] === "repo-inspect") {
   await runRepositoryInspectionCommand(args.slice(2), { withStore, requirePersistentFolderApproval });
 } else if (args.length >= 2 && args[0] === "run" && args[1] === "document-analyze") {
-  await runDocumentAnalysisCommand(args.slice(2));
+  await runDocumentAnalysisCommand(args.slice(2), { withStore, readApprovedInputFile, requirePersistentFolderApproval });
 } else if (args.length >= 2 && args[0] === "run" && args[1] === "document-convert") {
-  await runDocumentConversionCommand(args.slice(2));
+  await runDocumentConversionCommand(args.slice(2), { withStore, readApprovedInputFile, requirePersistentFolderApproval });
 } else if (args.length >= 2 && args[0] === "run" && args[1] === "software-check") {
   await runSoftwareCheckCommand(args.slice(2));
 } else if (args.length >= 2 && args[0] === "run" && args[1] === "source-review") {
@@ -2249,7 +1924,7 @@ if (args.length === 0 || (args.length === 1 && (args[0] === "--help" || args[0] 
     process.stderr.write("Expected resume <run-id> --input <path>.\n");
     process.exitCode = 1;
   } else {
-    await resumeWorkflowCommand(runId, args.slice(2));
+    await resumeWorkflowCommand(runId, args.slice(2), { withStore, readApprovedInputFile, requirePersistentFolderApproval });
   }
 } else if (args.length === 2 && args[0] === "history" && args[1] === "list") {
   await listRunHistory();

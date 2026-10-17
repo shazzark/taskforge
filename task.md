@@ -781,6 +781,12 @@ Moved schedule argument validation, creation/list/status/recovery commands, fore
 
 **Verification:** Strict typecheck and clean build passed. The scheduling CLI gate test plus scheduler fixtures passed (6/6). Independent review confirmed argument validation, approval ordering, per-occurrence read approval, uncertain-run resume, claim recovery, SIGINT cleanup, and store lifetime are unchanged. Interactive confirmation and SIGINT are source-reviewed but not newly driven end-to-end. `git diff --check` passed. The integrated suite remains required before the overall refactor is complete.
 
+### Refactor checkpoint 14 — Extract CSV and document CLI workflows — VERIFIED
+
+Moved CSV analysis/export, document analysis/export/conversion, and CSV/document resume handlers plus CSV argument parsing into `src/cli/commands/data-documents.ts`. The CLI entry point continues to own approved file reading, storage lifecycle, and persistent-folder grants and injects those same helpers. No workflow, data, approval, preview, artifact, or persistence behavior is intended to change.
+
+**Verification:** Strict typecheck and clean build passed. CSV/document CLI, workflow, export, and conversion tests passed (16/16). Independent review confirmed read/write grant ordering, preview/hash approval, artifact reference persistence, and resume routing are unchanged. Existing tests do not drive successful interactive approval or artifact-reference failure end-to-end; those remain covered in parts by workflow/export tests. The new command module is still substantial, so further responsibility separation remains in scope. `git diff --check` passed. The full integrated suite remains required before overall refactor completion.
+
 ### Phase 9 documentation checkpoint — COMPLETE
 
 Updated in this checkpoint: `prd.md`, `trd.md`, `architecture.md`, `backendschema.md`, `appflow.md`, `implementation-plan.md`, `CAPABILITY_AUDIT.md`, and README record the approved scope and distinguish target design from current behavior. Cross-document proposal/status scan and `git diff --check` passed. No code changed, so the Phase 8.8 full-suite evidence remains the latest full-suite result; no new test claim is made. Commit this verified documentation checkpoint locally before starting Phase 10.

@@ -77,6 +77,12 @@ Moved schedule argument parsing, schedule lifecycle output, recovery confirmatio
 
 **Verification:** Strict typecheck and clean build passed. Scheduling CLI gate coverage and scheduler fixtures passed (6/6). Independent review confirmed persistent and per-occurrence approval order, resume/recovery, SIGINT cleanup and store lifetime. The interactive path was source-reviewed, not driven end-to-end. `git diff --check` passed; the full integrated suite remains pending for overall refactor completion.
 
+### Checkpoint 14 — Extract CSV and document CLI workflows: VERIFIED
+
+Moved CSV analysis/export, document analysis/export/conversion, and CSV/document resume handlers and CSV argument parsing into `src/cli/commands/data-documents.ts`. The CLI entry point retains and injects the current file-read, storage, and persistent-folder approval helpers.
+
+**Verification:** Strict typecheck and clean build passed. CSV/document CLI, workflow, export, and conversion tests passed (16/16). Independent review found no behavior or approval-order changes. Successful interactive approval, artifact-reference failure, and resume CLI paths are not newly exercised end-to-end; existing tests cover related workflow portions. Further responsibility separation and full integration remain before the overall refactor is complete.
+
 ### Checkpoint 8 — Move document parsers and conversion under tools: VERIFIED
 
 Moved the five bounded parser/conversion modules from `src/documents/` to `src/tools/documents/` and their feature tests to `test/tools/documents/`. Updated orchestration/sampling/CLI imports and current docs; workflows remain responsible for approvals and persistence.
