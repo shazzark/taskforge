@@ -15,6 +15,7 @@ import { runDeploymentTraceCommand } from "./cli/commands/deployment-trace.js";
 import { runArchitectureReportCommand, runRepositoryInspectionCommand, runSourceReviewCommand } from "./cli/commands/repository-inspection.js";
 import { runScheduleCommand } from "./cli/commands/scheduling.js";
 import { resumeWorkflowCommand, runCsvWorkflowCommand, runDocumentAnalysisCommand, runDocumentConversionCommand } from "./cli/commands/data-documents.js";
+import { runDraftCommand, runPdfReportCommand } from "./cli/commands/artifacts.js";
 import { PersistentFolderApprovalError } from "./cli/command-errors.js";
 import { runSpecialistReview, type SpecialistTask, SpecialistReviewError } from "./agent/specialist-review.js";
 import {
@@ -33,11 +34,9 @@ import { analyzeDocument } from "./workflows/document-analysis-workflow.js";
 import { runReviewedCommand, validateSelectedNodeTestPath, type ReviewedCommandId, ReviewedCommandError } from "./tools/software/reviewed-command.js";
 import { redactSourceForDisplay, reviewSourceFiles, SourceReviewError } from "./workflows/source-review-workflow.js";
 import { ActionApprovalRegistry, ApprovalError } from "./security/approval-preview.js";
-import { previewPdfArtifact, PdfArtifactError, writeApprovedPdfArtifact } from "./tools/artifacts/approved-pdf-output.js";
 import { prepareFilePatch, prepareGeneratedFilePatch, applyPreparedFilePatch, PatchApplicationError } from "./tools/software/patch-application.js";
 import { GitDiffReviewError, listGitDiffFiles, readGitDiff } from "./tools/software/git-diff-review.js";
 import { investigateSource, ModelInvestigationError } from "./tools/software/model-investigation.js";
-import { DraftArtifactError, parseLocalDraftInput, previewPlainTextArtifact, previewTextArtifact, writeApprovedTextArtifact } from "./tools/artifacts/drafts.js";
 import { escapeTerminalControls } from "./security/terminal-text.js";
 import { BrowserSearchError, GroqBrowserResearch } from "./integrations/groq-browser-search.js";
 import {
@@ -394,61 +393,6 @@ async function runSoftwareCheckCommand(commandArgs: readonly string[]): Promise<
   } catch (error: unknown) {
     const message = error instanceof ReviewedCommandError || error instanceof PersistentFolderApprovalError ? error.message : "Software check failed safely.";
     process.stderr.write(`Software check failed: ${message}\n`);
-    process.exitCode = 3;
-  }
-}
-
-async function runPdfReportCommand(commandArgs: readonly string[]): Promise<void> {
-  if (
-    commandArgs.length !== 4 || commandArgs[0] !== "--input" || commandArgs[1] === undefined ||
-    commandArgs[2] !== "--output" || commandArgs[3] === undefined || commandArgs[3].trim().length === 0
-  ) {
-    process.stderr.write("Expected --input <report.json> --output <new.pdf>.\n");
-    process.exitCode = 1;
-    return;
-  }
-  const input = await readApprovedInputFile(commandArgs[1]);
-  if (input === undefined) return;
-  let report: unknown;
-  try {
-    report = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(input)) as unknown;
-  } catch {
-    process.stderr.write("PDF report input must be valid UTF-8 JSON.\n");
-    process.exitCode = 3;
-    return;
-  }
-  if (!process.stdin.isTTY || !process.stdout.isTTY) {
-    process.stderr.write("PDF artifact output requires an interactive terminal for target and content-bound approval.\n");
-    process.exitCode = 2;
-    return;
-  }
-  const requestedOutput = resolve(commandArgs[3]);
-  try {
-    const policy = new WorkspacePathPolicy();
-    const outputRoot = await policy.approveRoot(dirname(requestedOutput));
-    await requirePersistentFolderApproval(outputRoot.path, "write");
-    const approvals = new ActionApprovalRegistry(policy);
-    const pending = await previewPdfArtifact(report, requestedOutput, outputRoot, policy, approvals);
-    const consent = createInterface({ input: process.stdin, output: process.stdout });
-    let answer: string;
-    try {
-      answer = await consent.question(
-        `Create this new PDF artifact?\nPath: ${pending.preview.targetPath}\nBytes: ${pending.bytes.byteLength}\nSHA-256: ${pending.digest}\nExisting files will not be replaced. [y/N] `,
-      );
-    } finally {
-      consent.close();
-    }
-    if (answer.trim().toLowerCase() !== "y") {
-      approvals.discard(pending.preview.previewId);
-      process.stdout.write("PDF artifact creation cancelled before writing.\n");
-      return;
-    }
-    const approval = approvals.approve(pending.preview.previewId);
-    const written = await writeApprovedPdfArtifact(pending, approval, outputRoot, policy, approvals);
-    process.stdout.write(`PDF artifact created: ${written.byteCount} bytes; SHA-256 ${written.sha256}.\n`);
-  } catch (error: unknown) {
-    const message = error instanceof PdfArtifactError || error instanceof PersistentFolderApprovalError ? error.message : "PDF artifact creation failed safely.";
-    process.stderr.write(`PDF report failed: ${message}\n`);
     process.exitCode = 3;
   }
 }
@@ -1485,56 +1429,6 @@ async function runBrowserAuditCommand(commandArgs: readonly string[]): Promise<v
   }
 }
 
-async function runDraftCommand(commandArgs: readonly string[]): Promise<void> {
-  if (commandArgs.length !== 4 || commandArgs[0] !== "--input" || commandArgs[1] === undefined || commandArgs[2] !== "--output" || commandArgs[3] === undefined) {
-    process.stderr.write("Expected --input <draft.json> --output <new.md>.\n");
-    process.exitCode = 1;
-    return;
-  }
-  if (!process.stdin.isTTY || !process.stdout.isTTY) {
-    process.stderr.write("Draft creation requires an interactive terminal for input and create-only output approval.\n");
-    process.exitCode = 2;
-    return;
-  }
-  const inputBytes = await readApprovedInputFile(commandArgs[1]);
-  if (inputBytes === undefined) return;
-  let draft: unknown;
-  try {
-    draft = parseLocalDraftInput(JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(inputBytes)) as unknown);
-  } catch (error: unknown) {
-    process.stderr.write(`Draft input rejected: ${error instanceof DraftArtifactError ? error.message : "input must be valid UTF-8 JSON"}\n`);
-    process.exitCode = 3;
-    return;
-  }
-  const requestedOutput = resolve(commandArgs[3]);
-  try {
-    const policy = new WorkspacePathPolicy();
-    const outputRoot = await policy.approveRoot(dirname(requestedOutput));
-    await requirePersistentFolderApproval(outputRoot.path, "write");
-    const approvals = new ActionApprovalRegistry(policy);
-    const pending = await previewTextArtifact(draft, requestedOutput, outputRoot, policy, approvals);
-    process.stdout.write(`\n--- LOCAL DRAFT PREVIEW (heuristic redaction) ---\n${escapeTerminalControls(redactSourceForDisplay(pending.content))}\n`);
-    const consent = createInterface({ input: process.stdin, output: process.stdout });
-    let answer: string;
-    try {
-      answer = await consent.question(`Create this new local Markdown draft?\nPath: ${pending.preview.targetPath}\nBytes: ${Buffer.byteLength(pending.content, "utf8")}\nSHA-256: ${pending.digest}\nNo network request or email send will occur. [y/N] `);
-    } finally {
-      consent.close();
-    }
-    if (answer.trim().toLowerCase() !== "y") {
-      approvals.discard(pending.preview.previewId);
-      process.stdout.write("Draft creation cancelled before writing.\n");
-      return;
-    }
-    const approval = approvals.approve(pending.preview.previewId);
-    const written = await writeApprovedTextArtifact(pending, approval, outputRoot, policy, approvals);
-    process.stdout.write(`Local draft created: ${written.byteCount} bytes; SHA-256 ${written.sha256}.\n`);
-  } catch (error: unknown) {
-    process.stderr.write(`Draft creation failed: ${error instanceof DraftArtifactError || error instanceof PersistentFolderApprovalError ? error.message : "the artifact could not be created safely"}\n`);
-    process.exitCode = 3;
-  }
-}
-
 async function runDoctor(): Promise<void> {
   process.stdout.write("TaskForge doctor (early development)\n");
   let providerStatus = "not configured or invalid";
@@ -1893,7 +1787,7 @@ if (args.length === 0 || (args.length === 1 && (args[0] === "--help" || args[0] 
 } else if (args.length >= 2 && args[0] === "run" && args[1] === "architecture-report") {
   await runArchitectureReportCommand(args.slice(2), { withStore, requirePersistentFolderApproval });
 } else if (args.length >= 2 && args[0] === "run" && args[1] === "pdf-report") {
-  await runPdfReportCommand(args.slice(2));
+  await runPdfReportCommand(args.slice(2), { readApprovedInputFile, requirePersistentFolderApproval });
 } else if (args.length >= 2 && args[0] === "run" && args[1] === "file-patch") {
   await runFilePatchCommand(args.slice(2));
 } else if (args.length >= 2 && args[0] === "run" && args[1] === "agent-fix") {
@@ -1909,7 +1803,7 @@ if (args.length === 0 || (args.length === 1 && (args[0] === "--help" || args[0] 
 } else if (args.length >= 2 && args[0] === "run" && args[1] === "deployment-trace") {
   await runDeploymentTraceCommand(args.slice(2));
 } else if (args.length >= 2 && args[0] === "run" && args[1] === "draft") {
-  await runDraftCommand(args.slice(2));
+  await runDraftCommand(args.slice(2), { readApprovedInputFile, requirePersistentFolderApproval });
 } else if (args.length >= 2 && args[0] === "run" && args[1] === "specialist-review") {
   await runSpecialistReviewCommand(args.slice(2));
 } else if (args.length >= 2 && args[0] === "run" && args[1] === "data-specialist") {

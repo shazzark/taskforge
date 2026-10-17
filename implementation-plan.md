@@ -83,6 +83,12 @@ Moved CSV analysis/export, document analysis/export/conversion, and CSV/document
 
 **Verification:** Strict typecheck and clean build passed. CSV/document CLI, workflow, export, and conversion tests passed (16/16). Independent review found no behavior or approval-order changes. Successful interactive approval, artifact-reference failure, and resume CLI paths are not newly exercised end-to-end; existing tests cover related workflow portions. Further responsibility separation and full integration remain before the overall refactor is complete.
 
+### Checkpoint 15 — Extract artifact CLI commands: VERIFIED
+
+Moved PDF-report and local-draft command handlers into `src/cli/commands/artifacts.ts`, injecting the existing approved-input and persistent-folder-approval helpers. Create-only output and exact content approval behavior remain unchanged.
+
+**Verification:** Strict typecheck and clean build passed. The artifact CLI gate and draft/PDF capability suites passed (11/11). Independent review confirmed input consent, write grants, preview/hash confirmation, create-only writes, and dispatch behavior. `git diff --check` passed; the CLI and full-suite refactor remains in progress.
+
 ### Checkpoint 8 — Move document parsers and conversion under tools: VERIFIED
 
 Moved the five bounded parser/conversion modules from `src/documents/` to `src/tools/documents/` and their feature tests to `test/tools/documents/`. Updated orchestration/sampling/CLI imports and current docs; workflows remain responsible for approvals and persistence.

@@ -787,6 +787,12 @@ Moved CSV analysis/export, document analysis/export/conversion, and CSV/document
 
 **Verification:** Strict typecheck and clean build passed. CSV/document CLI, workflow, export, and conversion tests passed (16/16). Independent review confirmed read/write grant ordering, preview/hash approval, artifact reference persistence, and resume routing are unchanged. Existing tests do not drive successful interactive approval or artifact-reference failure end-to-end; those remain covered in parts by workflow/export tests. The new command module is still substantial, so further responsibility separation remains in scope. `git diff --check` passed. The full integrated suite remains required before overall refactor completion.
 
+### Refactor checkpoint 15 — Extract artifact CLI commands — VERIFIED
+
+Moved the PDF-report and local-draft command handlers into `src/cli/commands/artifacts.ts`. They continue to use the CLI's existing approved-input and persistent-folder helpers; artifact generation, exact preview/hash consent, create-only writes, and no-network behavior are unchanged. Added CLI tests for input and output consent gates.
+
+**Verification:** Strict typecheck and clean build passed. The new artifact CLI gate test and draft/PDF capability tests passed (11/11). Independent review confirmed read consent, output grants, preview/hash prompts, create-only writes, error handling, and dispatch are unchanged. `git diff --check` passed. Overall CLI organization and full integration remain in progress.
+
 ### Phase 9 documentation checkpoint — COMPLETE
 
 Updated in this checkpoint: `prd.md`, `trd.md`, `architecture.md`, `backendschema.md`, `appflow.md`, `implementation-plan.md`, `CAPABILITY_AUDIT.md`, and README record the approved scope and distinguish target design from current behavior. Cross-document proposal/status scan and `git diff --check` passed. No code changed, so the Phase 8.8 full-suite evidence remains the latest full-suite result; no new test claim is made. Commit this verified documentation checkpoint locally before starting Phase 10.
