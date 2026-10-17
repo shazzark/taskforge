@@ -37,11 +37,11 @@ test("architecture report cites actual inspected lines and labels inferences and
 test("unsupported languages and missing evidence are explicit", async () => {
   const rootPath = await mkdtemp(join(tmpdir(), "taskforge-architecture-unsupported-"));
   try {
-    await writeFile(join(rootPath, "main.py"), "from worker import run\n", "utf8");
+    await writeFile(join(rootPath, "main.rs"), "use worker::run;\n", "utf8");
     await writeFile(join(rootPath, "empty.ts"), "// no module declarations\n", "utf8");
     const policy = new WorkspacePathPolicy();
     const root = await policy.approveRoot(rootPath);
-    const report = await createArchitectureReport(root, policy, ["main.py", "empty.ts"]);
+    const report = await createArchitectureReport(root, policy, ["main.rs", "empty.ts"]);
     assert.equal(report.coverage.unsupportedFiles, 1);
     assert.equal(report.files[0]?.status, "unsupported-language");
     assert.match(report.files[0]?.missingEvidence.join(" ") ?? "", /No architecture rules/u);
@@ -92,6 +92,31 @@ test("Windows path casing does not hide an explicitly selected import target", {
     assert.ok(source);
     assert.ok(worker);
     assert.ok(report.diagram.edges.some((edge) => edge.from === source.id && edge.to === worker.id));
+  } finally {
+    await rm(rootPath, { recursive: true, force: true });
+  }
+});
+
+test("Python import evidence resolves relative modules only inside the selected file set", async () => {
+  const rootPath = await mkdtemp(join(tmpdir(), "taskforge-architecture-python-"));
+  try {
+    await mkdir(join(rootPath, "pkg"));
+    await writeFile(join(rootPath, "pkg", "entry.py"), "from .worker import run\nfrom .unselected import secret\nimport os, sys as system\n", "utf8");
+    await writeFile(join(rootPath, "pkg", "worker.py"), "def run():\n    return True\n", "utf8");
+    await writeFile(join(rootPath, "pkg", "unselected.py"), "secret = True\n", "utf8");
+    const policy = new WorkspacePathPolicy();
+    const root = await policy.approveRoot(rootPath);
+    const report = await createArchitectureReport(root, policy, ["pkg/entry.py", "pkg/worker.py"]);
+    assert.equal(report.files[0]?.language, "Python");
+    assert.equal(report.files[0]?.status, "analyzed");
+    const source = report.diagram.nodes.find((node) => node.kind === "file" && node.value === "pkg/entry.py");
+    const worker = report.diagram.nodes.find((node) => node.kind === "file" && node.value === "pkg/worker.py");
+    assert.ok(source);
+    assert.ok(worker);
+    assert.ok(report.diagram.edges.some((edge) => edge.from === source.id && edge.to === worker.id && edge.evidence.line === 1));
+    assert.ok(report.diagram.nodes.some((node) => node.kind === "module" && node.value === ".unselected"));
+    assert.ok(report.diagram.nodes.some((node) => node.kind === "module" && node.value === "os"));
+    assert.ok(report.diagram.nodes.some((node) => node.kind === "module" && node.value === "sys"));
   } finally {
     await rm(rootPath, { recursive: true, force: true });
   }

@@ -5,7 +5,7 @@ import { SourceReviewError, reviewSourceFiles } from "./workflows/source-review-
 
 const MAX_FILES = 20;
 const MAX_DIAGRAM_EDGES = 200;
-const SUPPORTED_EXTENSIONS = new Set([".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx", ".mts", ".cts"]);
+const SUPPORTED_EXTENSIONS = new Set([".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx", ".mts", ".cts", ".py"]);
 
 export interface ArchitectureEvidence {
   readonly path: string;
@@ -97,10 +97,21 @@ function analyzeFile(path: string, content: string): ArchitectureFileReport {
     const line = lines[index];
     if (line === undefined) continue;
     const evidence = { path, line: index + 1 };
-    const imports = line.matchAll(/\bimport\s+(?:[^;]*?\s+from\s+)?["']([^"']+)["']|\brequire\s*\(\s*["']([^"']+)["']\s*\)/gu);
-    for (const match of imports) {
-      const specifier = match[1] ?? match[2];
-      if (specifier !== undefined) observations.push({ kind: "import", description: `Imports ${specifier}.`, target: specifier, evidence });
+    if (extension === ".py") {
+      const fromImport = /^\s*from\s+(\.*[A-Za-z_][A-Za-z0-9_.]*|\.+)\s+import\b/u.exec(line);
+      const directImport = /^\s*import\s+(.+?)\s*(?:#.*)?$/u.exec(line);
+      const specifiers = fromImport?.[1] === undefined
+        ? (directImport?.[1] ?? "").split(",").map((part) => /^\s*([A-Za-z_][A-Za-z0-9_.]*)/u.exec(part)?.[1])
+        : [fromImport[1]];
+      for (const specifier of specifiers) {
+        if (specifier !== undefined) observations.push({ kind: "import", description: "Imports " + specifier + ".", target: specifier, evidence });
+      }
+    } else {
+      const imports = line.matchAll(/\bimport\s+(?:[^;]*?\s+from\s+)?["']([^"']+)["']|\brequire\s*\(\s*["']([^"']+)["']\s*\)/gu);
+      for (const match of imports) {
+        const specifier = match[1] ?? match[2];
+        if (specifier !== undefined) observations.push({ kind: "import", description: `Imports ${specifier}.`, target: specifier, evidence });
+      }
     }
     if (/^\s*export\s+(?:default\b|\{\b|(?:async\s+)?(?:class|function|const|let|var|type|interface|enum)\b)/u.test(line)) {
       observations.push({ kind: "export", description: "Declares an export.", target: null, evidence });
@@ -128,15 +139,30 @@ function selectedPathKey(value: string): string {
   return platform() === "win32" ? value.toLowerCase() : value;
 }
 
-/** Resolve relative JS/TS specifiers only against the caller-selected file set. */
-function resolveSelectedImport(importer: string, specifier: string, selectedFiles: ReadonlyMap<string, string>): string | undefined {
+/** Translate a Python relative module name to a path relative to its source file. */
+function pythonRelativeSpecifier(importer: string, specifier: string): string | undefined {
+  const match = /^(\.+)(.*)$/u.exec(specifier);
+  if (match === null || match[2] === undefined || match[2].length === 0) return undefined;
+  let packagePath = posix.dirname(importer);
+  for (let level = 1; level < (match[1]?.length ?? 0); level += 1) packagePath = posix.dirname(packagePath);
+  const modulePath = posix.join(packagePath, match[2].replaceAll(".", "/"));
+  const relativePath = posix.relative(posix.dirname(importer), modulePath);
+  return relativePath.startsWith(".") ? relativePath : "./" + relativePath;
+}
+
+function resolveSelectedImport(
+  importer: string,
+  specifier: string,
+  selectedFiles: ReadonlyMap<string, string>,
+  extensions: readonly string[] = RESOLVABLE_SOURCE_EXTENSIONS,
+): string | undefined {
   if (!specifier.startsWith(".")) return undefined;
   const path = posix.normalize(posix.join(posix.dirname(importer), specifier));
   const candidates = [path];
   const extension = posix.extname(path).toLowerCase();
   if (extension.length === 0) {
-    for (const suffix of RESOLVABLE_SOURCE_EXTENSIONS) candidates.push(`${path}${suffix}`);
-    for (const suffix of RESOLVABLE_SOURCE_EXTENSIONS) candidates.push(posix.join(path, `index${suffix}`));
+    for (const suffix of extensions) candidates.push(path + suffix);
+    for (const suffix of extensions) candidates.push(posix.join(path, suffix === ".py" ? "__init__.py" : "index" + suffix));
   } else if ([".js", ".jsx", ".mjs", ".cjs"].includes(extension)) {
     const stem = path.slice(0, -extension.length);
     for (const suffix of [".ts", ".tsx", ".mts", ".cts"] as const) candidates.push(`${stem}${suffix}`);
@@ -190,7 +216,12 @@ export async function createArchitectureReport(
         truncated = true;
         break;
       }
-      const resolvedPath = resolveSelectedImport(file.path, observation.target, selectedFiles);
+      const lookupSpecifier = file.language === "Python"
+        ? pythonRelativeSpecifier(file.path, observation.target)
+        : observation.target;
+      const resolvedPath = lookupSpecifier === undefined
+        ? undefined
+        : resolveSelectedImport(file.path, lookupSpecifier, selectedFiles, file.language === "Python" ? [".py"] : RESOLVABLE_SOURCE_EXTENSIONS);
       let to = resolvedPath === undefined ? undefined : fileIds.get(resolvedPath);
       if (to === undefined) to = moduleIds.get(observation.target);
       if (to === undefined) {
@@ -221,9 +252,9 @@ export async function createArchitectureReport(
     diagram: { format: "mermaid-flowchart", code: diagramLines.join("\n"), nodes, edges, truncated },
     limitations: [
       "Only explicitly selected files were read; this report does not represent the whole repository.",
-      "Import/export detection is line-based and heuristic; dynamic loading, generated code, and runtime behavior are not analyzed.",
+      "Import/export detection is line-based and heuristic; dynamic loading, multiline imports, generated code, and runtime behavior are not analyzed.",
       "Evidence identifies inspected file lines. It does not prove semantic correctness, reachability, or runtime architecture.",
-      "Relative JS/TS specifiers are matched heuristically only against exact selected files using common source suffixes; aliases, package exports, compiler settings, and runtime resolution are not analyzed.",
+      "Relative JS/TS and Python imports are matched heuristically only against exact selected files; aliases, package exports, compiler settings, and runtime resolution are not analyzed.",
       "Common credential patterns are redacted heuristically; other secrets may remain visible.",
       "Source files are never executed.",
     ],
