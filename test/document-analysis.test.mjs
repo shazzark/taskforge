@@ -3,7 +3,7 @@ import { createHash, randomUUID } from "node:crypto";
 import ExcelJS from "exceljs";
 import JSZip from "jszip";
 import test from "node:test";
-import { renderPdfReport } from "../dist/artifacts/pdf-report.js";
+import { renderPdfReport } from "../dist/tools/artifacts/pdf-report.js";
 import { analyzeDocument, DocumentWorkflowError, resumeDocumentAnalysisWorkflow } from "../dist/workflows/document-analysis-workflow.js";
 
 function createPersistenceRecorder() {

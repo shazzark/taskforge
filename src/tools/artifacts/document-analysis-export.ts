@@ -1,4 +1,4 @@
-import type { DocumentAnalysis } from "../workflows/document-analysis-workflow.js";
+import type { DocumentAnalysis } from "../../workflows/document-analysis-workflow.js";
 
 export type DocumentAnalysisExportFormat = "json" | "csv" | "markdown";
 

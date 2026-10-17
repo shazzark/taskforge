@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { resolve } from "node:path";
 import test from "node:test";
-import { DocumentAnalysisExportError, documentAnalysisExportFormat, renderDocumentAnalysisExport } from "../dist/artifacts/document-analysis-export.js";
+import { DocumentAnalysisExportError, documentAnalysisExportFormat, renderDocumentAnalysisExport } from "../../../dist/tools/artifacts/document-analysis-export.js";
 
 const analysis = { format: "xlsx", byteCount: 2048, characterCount: 0, wordCount: 0, lineCount: 0, headingCount: 0, sheetCount: 2, rowCount: 7, cellCount: 19 };
 

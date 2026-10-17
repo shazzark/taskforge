@@ -32,13 +32,13 @@ import { runReviewedCommand, validateSelectedNodeTestPath, type ReviewedCommandI
 import { redactSourceForDisplay, reviewSourceFiles, SourceReviewError } from "./workflows/source-review-workflow.js";
 import { ArchitectureReportError, createArchitectureReport } from "./architecture-report.js";
 import { ActionApprovalRegistry, ApprovalError } from "./security/approval-preview.js";
-import { previewPdfArtifact, PdfArtifactError, writeApprovedPdfArtifact } from "./artifacts/approved-pdf-output.js";
+import { previewPdfArtifact, PdfArtifactError, writeApprovedPdfArtifact } from "./tools/artifacts/approved-pdf-output.js";
 import { prepareFilePatch, prepareGeneratedFilePatch, applyPreparedFilePatch, PatchApplicationError } from "./tools/software/patch-application.js";
 import { GitDiffReviewError, listGitDiffFiles, readGitDiff } from "./tools/software/git-diff-review.js";
 import { investigateSource, ModelInvestigationError } from "./tools/software/model-investigation.js";
-import { DraftArtifactError, parseLocalDraftInput, previewPlainTextArtifact, previewTextArtifact, writeApprovedTextArtifact } from "./artifacts/drafts.js";
-import { csvAnalysisExportFormat, CsvAnalysisExportError, renderCsvAnalysisExport, type CsvAnalysisExportFormat } from "./artifacts/csv-analysis-export.js";
-import { documentAnalysisExportFormat, DocumentAnalysisExportError, renderDocumentAnalysisExport, type DocumentAnalysisExportFormat } from "./artifacts/document-analysis-export.js";
+import { DraftArtifactError, parseLocalDraftInput, previewPlainTextArtifact, previewTextArtifact, writeApprovedTextArtifact } from "./tools/artifacts/drafts.js";
+import { csvAnalysisExportFormat, CsvAnalysisExportError, renderCsvAnalysisExport, type CsvAnalysisExportFormat } from "./tools/artifacts/csv-analysis-export.js";
+import { documentAnalysisExportFormat, DocumentAnalysisExportError, renderDocumentAnalysisExport, type DocumentAnalysisExportFormat } from "./tools/artifacts/document-analysis-export.js";
 import { convertDocumentToPlainText, DocumentConversionError } from "./tools/documents/plain-text-conversion.js";
 import { escapeTerminalControls } from "./security/terminal-text.js";
 import { BrowserSearchError, GroqBrowserResearch } from "./integrations/groq-browser-search.js";

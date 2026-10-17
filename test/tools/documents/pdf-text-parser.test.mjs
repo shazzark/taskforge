@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { renderPdfReport } from "../../../dist/artifacts/pdf-report.js";
+import { renderPdfReport } from "../../../dist/tools/artifacts/pdf-report.js";
 import { parsePdfText, PdfTextParserError } from "../../../dist/tools/documents/pdf-text-parser.js";
 
 test("extracts text and page count from a generated PDF report", async () => {

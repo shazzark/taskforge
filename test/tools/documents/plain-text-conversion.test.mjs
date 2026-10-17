@@ -3,7 +3,7 @@ import ExcelJS from "exceljs";
 import JSZip from "jszip";
 import test from "node:test";
 import { convertDocumentToPlainText, DocumentConversionError } from "../../../dist/tools/documents/plain-text-conversion.js";
-import { renderPdfReport } from "../../../dist/artifacts/pdf-report.js";
+import { renderPdfReport } from "../../../dist/tools/artifacts/pdf-report.js";
 
 test("converts TXT, Markdown, PDF, and DOCX using the bounded extractors", async () => {
   assert.equal(await convertDocumentToPlainText(".txt", Buffer.from("\uFEFFalpha\r\nbeta\r")), "alpha\nbeta\n");

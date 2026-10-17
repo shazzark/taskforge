@@ -751,6 +751,12 @@ Moved the DOCX, PDF, TXT/Markdown, XLSX parsers and plain-text conversion capabi
 
 **Verification:** `npm run typecheck`, `npm run build`, and parser/conversion/workflow/data-specialist tests passed (26/26). The initial focused run exposed two test imports of the PDF renderer at the old relative depth; both were corrected and the complete focused group then passed. Independent review found no remaining stale active paths or behavior changes. `git diff --check` passed.
 
+### Refactor checkpoint 9 — Move artifact capabilities under tools — VERIFIED
+
+Moved PDF rendering, validated report exports, local draft rendering, and approved create-only output helpers to `src/tools/artifacts/`; moved the five feature-focused test files to `test/tools/artifacts/`. Updated CLI, document/data cross-feature tests, capability audit, and codebase map. Approval and write semantics are unchanged.
+
+**Verification:** `npm run typecheck`, `npm run build`, and the combined artifact/document/data capability suite passed (49/49). Initial checks found stale relative imports from the new source/test depth; the paths were corrected and the complete suite passed. Independent review found no remaining old active paths or behavior changes. `git diff --check` passed.
+
 ### Phase 9 documentation checkpoint — COMPLETE
 
 Updated in this checkpoint: `prd.md`, `trd.md`, `architecture.md`, `backendschema.md`, `appflow.md`, `implementation-plan.md`, `CAPABILITY_AUDIT.md`, and README record the approved scope and distinguish target design from current behavior. Cross-document proposal/status scan and `git diff --check` passed. No code changed, so the Phase 8.8 full-suite evidence remains the latest full-suite result; no new test claim is made. Commit this verified documentation checkpoint locally before starting Phase 10.

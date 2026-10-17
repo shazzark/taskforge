@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { renderPdfReport, PdfReportError } from "../dist/artifacts/pdf-report.js";
+import { renderPdfReport, PdfReportError } from "../../../dist/tools/artifacts/pdf-report.js";
 
 test("renders a bounded multi-section PDF in memory with metadata and valid PDF markers", async () => {
   const result = await renderPdfReport({

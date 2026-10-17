@@ -1,4 +1,4 @@
-import type { CsvAnalysisResult } from "../tools/data/csv-analysis.js";
+import type { CsvAnalysisResult } from "../data/csv-analysis.js";
 
 export type CsvAnalysisExportFormat = "json" | "csv" | "markdown";
 

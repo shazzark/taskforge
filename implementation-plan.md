@@ -59,6 +59,12 @@ Moved the five bounded parser/conversion modules from `src/documents/` to `src/t
 
 **Verification:** Strict typecheck/build and focused parser, conversion, analysis-workflow, and data-specialist tests passed (26/26). Two deeper test imports initially retained the old relative path to the PDF renderer; after correcting them, the entire focused group passed. Independent review found no remaining active old imports.
 
+### Checkpoint 9 — Move artifact rendering/output capabilities under tools: VERIFIED
+
+Moved PDF rendering, CSV/document aggregate export, local draft rendering, and approved create-only output into `src/tools/artifacts/`; moved their tests under `test/tools/artifacts/`. Updated CLI and cross-feature test imports, the capability audit and contribution map. Workflows and commands continue to own consent, orchestration and persistence.
+
+**Verification:** Strict typecheck/build and the combined artifact/document/data tests passed (49/49). Initial validation caught old relative imports in moved modules/tests; after fixing them, all affected tests passed. Independent review found no stale active paths or behavior changes.
+
 **Next checkpoints:** Move feature capabilities in small dependency-aware slices and split additional CLI handlers by responsibility, retaining `dist/cli.js` as the executable entry. Run the integrated serial suite after the structural migrations. No unrelated behavior changes or new dependencies are included.
 
 Phase 4.13 wires explicitly selected numeric CSV columns into the persisted workflow and all structured report formats. Selection names affect the checkpoint hash; strict typecheck and the full isolated MongoDB suite passed (105 tests, zero skipped), and independent review found no remaining issues after prototype-key and Markdown-label fixes.

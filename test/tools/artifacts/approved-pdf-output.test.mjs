@@ -3,9 +3,9 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { ActionApprovalRegistry } from "../dist/security/approval-preview.js";
-import { WorkspacePathPolicy } from "../dist/security/path-policy.js";
-import { previewPdfArtifact, PdfArtifactError, writeApprovedPdfArtifact } from "../dist/artifacts/approved-pdf-output.js";
+import { ActionApprovalRegistry } from "../../../dist/security/approval-preview.js";
+import { WorkspacePathPolicy } from "../../../dist/security/path-policy.js";
+import { previewPdfArtifact, PdfArtifactError, writeApprovedPdfArtifact } from "../../../dist/tools/artifacts/approved-pdf-output.js";
 
 const report = { title: "Fixture report", createdAt: "2026-01-01T00:00:00.000Z", sections: [{ heading: "Summary", body: "Verified fixture output." }] };
 

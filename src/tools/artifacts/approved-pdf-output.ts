@@ -1,8 +1,8 @@
 import { randomUUID, createHash } from "node:crypto";
 import { link, open, realpath, unlink } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
-import type { ActionApprovalRegistry, ActionPreview, ApprovedAction } from "../security/approval-preview.js";
-import type { ApprovedRoot, WorkspacePathPolicy } from "../security/path-policy.js";
+import type { ActionApprovalRegistry, ActionPreview, ApprovedAction } from "../../security/approval-preview.js";
+import type { ApprovedRoot, WorkspacePathPolicy } from "../../security/path-policy.js";
 import { renderPdfReport } from "./pdf-report.js";
 
 export class PdfArtifactError extends Error {

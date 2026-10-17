@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { CsvAnalysisExportError, csvAnalysisExportFormat, renderCsvAnalysisExport } from "../dist/artifacts/csv-analysis-export.js";
-import { analyzeCsv } from "../dist/tools/data/csv-analysis.js";
+import { CsvAnalysisExportError, csvAnalysisExportFormat, renderCsvAnalysisExport } from "../../../dist/tools/artifacts/csv-analysis-export.js";
+import { analyzeCsv } from "../../../dist/tools/data/csv-analysis.js";
 
 test("CSV analysis exports JSON, CSV, and Markdown aggregate counts without source data", () => {
   const analysis = analyzeCsv("private_name,private_value\nAlice,secret\nAlice,secret\nBob,\n", { numericColumns: [] });

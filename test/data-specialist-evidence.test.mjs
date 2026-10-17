@@ -6,7 +6,7 @@ import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { AgentBudgetLedger } from "../dist/agent/tool-loop.js";
 import { runSpecialistReview } from "../dist/agent/specialist-review.js";
-import { renderPdfReport } from "../dist/artifacts/pdf-report.js";
+import { renderPdfReport } from "../dist/tools/artifacts/pdf-report.js";
 import { DataSpecialistEvidenceError, prepareDataSpecialistEvidence } from "../dist/workflows/data-specialist-evidence.js";
 
 const cliPath = fileURLToPath(new URL("../dist/cli.js", import.meta.url));

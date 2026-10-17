@@ -3,9 +3,9 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { ActionApprovalRegistry } from "../dist/security/approval-preview.js";
-import { WorkspacePathPolicy } from "../dist/security/path-policy.js";
-import { DraftArtifactError, parseLocalDraftInput, previewTextArtifact, renderLocalDraft, writeApprovedTextArtifact } from "../dist/artifacts/drafts.js";
+import { ActionApprovalRegistry } from "../../../dist/security/approval-preview.js";
+import { WorkspacePathPolicy } from "../../../dist/security/path-policy.js";
+import { DraftArtifactError, parseLocalDraftInput, previewTextArtifact, renderLocalDraft, writeApprovedTextArtifact } from "../../../dist/tools/artifacts/drafts.js";
 
 test("local issue and email drafts render explicit local-only artifacts", () => {
   const issue = renderLocalDraft({
@@ -37,7 +37,7 @@ test("draft input validation rejects mismatched issue links and header injection
 });
 
 test("terminal control sequences in rendered content are escaped before preview display", async () => {
-  const { escapeTerminalControls } = await import("../dist/security/terminal-text.js");
+  const { escapeTerminalControls } = await import("../../../dist/security/terminal-text.js");
   const draft = renderLocalDraft({ kind: "email", subject: "Hello\u001b[2J", body: "Body\u0007" });
   const displayed = escapeTerminalControls(draft);
   assert.match(displayed, /\\u001b\[2J/u);
