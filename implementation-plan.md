@@ -89,6 +89,12 @@ Moved PDF-report and local-draft command handlers into `src/cli/commands/artifac
 
 **Verification:** Strict typecheck and clean build passed. The artifact CLI gate and draft/PDF capability suites passed (11/11). Independent review confirmed input consent, write grants, preview/hash confirmation, create-only writes, and dispatch behavior. `git diff --check` passed; the CLI and full-suite refactor remains in progress.
 
+### Checkpoint 16 — Extract browser-audit CLI command: IN PROGRESS
+
+Moved browser-audit CLI parsing, approvals, manual-login interaction, diagnostics presentation, screenshot paths, and optional aggregate specialist handoff into `src/cli/commands/browser-audit.ts`. The CLI entrypoint supplies the same store lifecycle and specialist review callback. No browser workflow or network policy changes are intended.
+
+**Verification so far:** Strict typecheck/build, browser CLI gate and fixture tests, independent review, and final diff check remain before commit.
+
 ### Checkpoint 8 — Move document parsers and conversion under tools: VERIFIED
 
 Moved the five bounded parser/conversion modules from `src/documents/` to `src/tools/documents/` and their feature tests to `test/tools/documents/`. Updated orchestration/sampling/CLI imports and current docs; workflows remain responsible for approvals and persistence.
@@ -199,3 +205,7 @@ Phase 5.7 adds an exact relative-file selector to the reviewed Node test runner.
 Phase 5.8 adds a fixed local TypeScript build check to the reviewed command runner. Build output is constrained to a fresh ignored directory under the approved root; external `outFile`, trace, and CPU-profile outputs are refused. Strict typecheck, focused tests, the full isolated MongoDB suite (118 passed, zero skipped), and independent permission-focused review passed.
 
 Phase 5.9 (build artifact lifecycle; implementation verified, full suite rerun pending) corrects retained compiler output: each run owns one ignored `.taskforge-build-*` directory for ESM dependency resolution and removes it in `finally`; the next build conservatively reaps only old directories whose owner marker matches a UUID-bound random directory ID, whose recorded process is gone, and whose contents are generated-only. Unknown and active folders remain. npm package inclusion is constrained by the existing `files` allowlist.
+
+### Code-organization checkpoint 16 — Browser-audit CLI extraction — VERIFIED
+
+Moved browser-audit argument parsing, consent and manual-login prompts, result presentation, screenshot output, and optional specialist handoff into `src/cli/commands/browser-audit.ts`; the entrypoint injects the existing store lifecycle and specialist operation. Strict typecheck/build and focused browser CLI/workflow/egress-proxy tests passed (22/22), `git diff --check` passed, and independent review found no blocking issues. Interactive owner login was not attempted. Remaining CLI decomposition and the integrated suite are still required before this refactor is complete.

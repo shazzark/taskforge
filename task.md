@@ -793,6 +793,12 @@ Moved the PDF-report and local-draft command handlers into `src/cli/commands/art
 
 **Verification:** Strict typecheck and clean build passed. The new artifact CLI gate test and draft/PDF capability tests passed (11/11). Independent review confirmed read consent, output grants, preview/hash prompts, create-only writes, error handling, and dispatch are unchanged. `git diff --check` passed. Overall CLI organization and full integration remain in progress.
 
+### Refactor checkpoint 16 — Extract browser-audit CLI command — VERIFIED
+
+Moved browser-audit argument parsing, target/consent gates, manual-login prompts, result presentation, local screenshot output, and optional specialist handoff wiring into `src/cli/commands/browser-audit.ts`. The entrypoint injects the existing store lifecycle and specialist-review operation. Browser workflow, network protections, and owner-login boundaries are unchanged. Added non-interactive gate coverage for loopback and public manual-login modes; neither test starts a browser or contacts a site.
+
+**Verification:** Strict `npm run typecheck` and clean `npm run build` passed. Focused browser workflow, CLI, and egress-proxy tests passed (22/22); `git diff --check` passed. Independent review found no blocking issues and confirmed consent, manual-login privacy, sanitization, and specialist boundaries are preserved. The CLI tests exercise non-interactive consent gates; interactive approval success is not directly covered. No live owner login or deployment access was attempted. Local checkpoint commit follows; the overall refactor still needs remaining CLI decomposition and the full integrated suite.
+
 ### Phase 9 documentation checkpoint — COMPLETE
 
 Updated in this checkpoint: `prd.md`, `trd.md`, `architecture.md`, `backendschema.md`, `appflow.md`, `implementation-plan.md`, `CAPABILITY_AUDIT.md`, and README record the approved scope and distinguish target design from current behavior. Cross-document proposal/status scan and `git diff --check` passed. No code changed, so the Phase 8.8 full-suite evidence remains the latest full-suite result; no new test claim is made. Commit this verified documentation checkpoint locally before starting Phase 10.
