@@ -804,3 +804,9 @@ Moved browser-audit argument parsing, target/consent gates, manual-login prompts
 Updated in this checkpoint: `prd.md`, `trd.md`, `architecture.md`, `backendschema.md`, `appflow.md`, `implementation-plan.md`, `CAPABILITY_AUDIT.md`, and README record the approved scope and distinguish target design from current behavior. Cross-document proposal/status scan and `git diff --check` passed. No code changed, so the Phase 8.8 full-suite evidence remains the latest full-suite result; no new test claim is made. Commit this verified documentation checkpoint locally before starting Phase 10.
 
 **Phase 9 verification:** Searched all seven planning/tracker documents plus README and capability audit for stale claims that the newly approved areas remain unapproved; only explicitly historical notes marked superseded remain. `git diff --check` passed. Existing CLI help was observed as `node dist/cli.js --help`; the walkthrough and exact current commands remain in `CAPABILITY_AUDIT.md`. Typecheck/build/full-suite were not rerun because this checkpoint changes documentation only; full serial suite evidence remains Phase 8.8 (152/152, isolated MongoDB test database).
+
+### Refactor checkpoint 17 � Extract folder-permission CLI command � VERIFIED
+
+Moved folder approval listing, grant/revoke validation and consent, and result/error presentation into `src/cli/commands/permissions.ts`; the entrypoint injects its existing store lifecycle. Canonical path validation, non-sensitive-root checks, exact read/write scope, terminal escaping, cancellation behavior, storage error handling, and exit codes are unchanged.
+
+**Verification:** Strict typecheck and clean build passed. Permission CLI and path-policy tests passed (14/14); `git diff --check` passed. Independent review found no behavior or security regression. Interactive approve/revoke success remains untested at CLI level, as before this move. Overall code organization remains in progress.

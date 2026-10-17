@@ -209,3 +209,7 @@ Phase 5.9 (build artifact lifecycle; implementation verified, full suite rerun p
 ### Code-organization checkpoint 16 — Browser-audit CLI extraction — VERIFIED
 
 Moved browser-audit argument parsing, consent and manual-login prompts, result presentation, screenshot output, and optional specialist handoff into `src/cli/commands/browser-audit.ts`; the entrypoint injects the existing store lifecycle and specialist operation. Strict typecheck/build and focused browser CLI/workflow/egress-proxy tests passed (22/22), `git diff --check` passed, and independent review found no blocking issues. Interactive owner login was not attempted. Remaining CLI decomposition and the integrated suite are still required before this refactor is complete.
+
+### Code-organization checkpoint 17 � Folder-permission CLI extraction � VERIFIED
+
+Moved folder permission command handling to `src/cli/commands/permissions.ts`, with the existing store lifecycle injected from `src/cli.ts`. Strict typecheck/build and focused permissions/path-policy checks passed (14/14), `git diff --check` passed, and independent review found no behavior or permission-boundary regression. The contributing code map now includes the permissions command module. The interactive approval success paths remain a pre-existing coverage gap; remaining CLI decomposition and the full integration suite are still required.
