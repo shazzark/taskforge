@@ -59,6 +59,12 @@ Moved `src/agent/task-registry.ts` and its feature test to `src/workflows/task-r
 
 **Verification:** Strict typecheck/build passed, and the registry plus task CLI tests passed (6/6) under isolated local-storage settings. A first CLI-only attempt without that test environment hit its existing five-second subprocess timeout; the isolated rerun passed. Independent source review found no stale active paths or behavioral changes. `git diff --check` passed.
 
+### Checkpoint 11 — Place architecture reporting under workflows: VERIFIED
+
+Moved the implementation and fixture tests from repository root into `src/workflows/architecture-report-workflow.ts` and `test/workflows/architecture-report-workflow.test.mjs`; updated imports and current codebase/capability maps. Added a build clean step for generated `dist/` output so stale outputs from moves do not enter packages. The report remains a local, exact-file, read-approved analysis and source is never executed.
+
+**Verification:** Strict typecheck, clean build, all six architecture-report fixtures, `git diff --check`, and package dry-run passed. The moved test's stale relative import and the package audit's old compiled path were corrected. Independent review found no behavior or scope issue. The package inventory is now 52 entries and contains only the new architecture workflow output. Full integration remains pending before the overall refactor is called complete.
+
 ### Checkpoint 8 — Move document parsers and conversion under tools: VERIFIED
 
 Moved the five bounded parser/conversion modules from `src/documents/` to `src/tools/documents/` and their feature tests to `test/tools/documents/`. Updated orchestration/sampling/CLI imports and current docs; workflows remain responsible for approvals and persistence.

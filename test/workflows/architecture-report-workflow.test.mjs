@@ -3,8 +3,8 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { ArchitectureReportError, createArchitectureReport } from "../dist/architecture-report.js";
-import { WorkspacePathPolicy } from "../dist/security/path-policy.js";
+import { ArchitectureReportError, createArchitectureReport } from "../../dist/workflows/architecture-report-workflow.js";
+import { WorkspacePathPolicy } from "../../dist/security/path-policy.js";
 
 test("architecture report cites actual inspected lines and labels inferences and coverage", async () => {
   const rootPath = await mkdtemp(join(tmpdir(), "taskforge-architecture-report-"));

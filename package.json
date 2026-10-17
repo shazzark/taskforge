@@ -22,7 +22,7 @@
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "build": "tsc",
+    "build": "node scripts/clean-dist.mjs && tsc",
     "test": "npm run build && node --test --test-concurrency=1"
   },
   "devDependencies": {

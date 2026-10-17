@@ -1,7 +1,7 @@
 import { extname, posix, resolve } from "node:path";
 import { platform } from "node:os";
-import type { ApprovedRoot, WorkspacePathPolicy } from "./security/path-policy.js";
-import { SourceReviewError, reviewSourceFiles } from "./workflows/source-review-workflow.js";
+import type { ApprovedRoot, WorkspacePathPolicy } from "../security/path-policy.js";
+import { SourceReviewError, reviewSourceFiles } from "./source-review-workflow.js";
 
 const MAX_FILES = 20;
 const MAX_DIAGRAM_EDGES = 200;

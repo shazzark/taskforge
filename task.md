@@ -763,6 +763,12 @@ Moved the built-in declarative task registry to `src/workflows/task-registry.ts`
 
 **Verification:** `npm run typecheck` and `npm run build` passed. The combined registry and CLI task tests passed (6/6) with local storage and a dedicated temporary `LOCALAPPDATA`; the direct registry tests also passed (4/4). The first focused CLI attempt without the local-storage test environment hit the existing five-second subprocess timeout; rerunning in the isolated test environment passed. Independent review found no stale active paths or behavior changes. `git diff --check` passed.
 
+### Refactor checkpoint 11 — Place architecture reporting under workflows — VERIFIED
+
+Moved the evidence-based architecture report implementation to `src/workflows/architecture-report-workflow.ts` and its feature tests to `test/workflows/`. Updated its imports, the CLI import, contribution map, capability audit, and Phase 19 package inventory. Added a build clean step that deletes only generated `dist/` output before `tsc`, preventing stale compiled copies of moved source files from entering packages. No report behavior, read approval, source-execution, or exact-file-scope behavior changed.
+
+**Verification:** `npm run typecheck`, clean `npm run build`, and the architecture report fixture suite passed (6/6). The first focused run found a stale relative `WorkspacePathPolicy` test import after the move; it was corrected and the full focused suite passed. `npm pack --dry-run --json` reported 52 entries (136,793 compressed bytes; 641,346 unpacked), including the new workflow output and no old `dist/architecture-report.js` copy. Independent review found no issues beyond the stale package path, which was corrected. `git diff --check` passed. The full integrated suite remains required before the overall code-organization refactor is complete.
+
 ### Phase 9 documentation checkpoint — COMPLETE
 
 Updated in this checkpoint: `prd.md`, `trd.md`, `architecture.md`, `backendschema.md`, `appflow.md`, `implementation-plan.md`, `CAPABILITY_AUDIT.md`, and README record the approved scope and distinguish target design from current behavior. Cross-document proposal/status scan and `git diff --check` passed. No code changed, so the Phase 8.8 full-suite evidence remains the latest full-suite result; no new test claim is made. Commit this verified documentation checkpoint locally before starting Phase 10.

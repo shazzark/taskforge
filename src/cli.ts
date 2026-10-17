@@ -30,7 +30,7 @@ import { inspectRepository, RepositoryInspectionError } from "./workflows/reposi
 import { analyzeDocument, DocumentWorkflowError, resumeDocumentAnalysisWorkflow } from "./workflows/document-analysis-workflow.js";
 import { runReviewedCommand, validateSelectedNodeTestPath, type ReviewedCommandId, ReviewedCommandError } from "./tools/software/reviewed-command.js";
 import { redactSourceForDisplay, reviewSourceFiles, SourceReviewError } from "./workflows/source-review-workflow.js";
-import { ArchitectureReportError, createArchitectureReport } from "./architecture-report.js";
+import { ArchitectureReportError, createArchitectureReport } from "./workflows/architecture-report-workflow.js";
 import { ActionApprovalRegistry, ApprovalError } from "./security/approval-preview.js";
 import { previewPdfArtifact, PdfArtifactError, writeApprovedPdfArtifact } from "./tools/artifacts/approved-pdf-output.js";
 import { prepareFilePatch, prepareGeneratedFilePatch, applyPreparedFilePatch, PatchApplicationError } from "./tools/software/patch-application.js";
