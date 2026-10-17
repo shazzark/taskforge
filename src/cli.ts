@@ -7,7 +7,6 @@ import { basename, dirname, extname, join, resolve } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { ConfigurationError, formatStoreConfigurationSummary, loadLocalEnvironmentFile, loadProviderConfiguration, loadStoreConfiguration } from "./config/configuration.js";
 import { AgentBudgetLedger, AgentToolError, runToolLoop } from "./agent/tool-loop.js";
-import { createPatchProposalTool } from "./agent/session-tools.js";
 import { runTasksCommand } from "./cli/commands/tasks.js";
 import { runGitHubIssuesCommand } from "./cli/commands/github-issues.js";
 import { runDeploymentTraceCommand } from "./cli/commands/deployment-trace.js";
@@ -18,6 +17,7 @@ import { runDraftCommand, runPdfReportCommand } from "./cli/commands/artifacts.j
 import { runBrowserAuditCommand } from "./cli/commands/browser-audit.js";
 import { runPermissionsCommand } from "./cli/commands/permissions.js";
 import { runChat, runNaturalLanguageInstruction } from "./cli/commands/agent-session.js";
+import { runAgentFixCommand, runFileMoveCommand, runFilePatchCommand, runGitDiffCommand, runSoftwareCheckCommand } from "./cli/commands/software-workflows.js";
 import { PersistentFolderApprovalError } from "./cli/command-errors.js";
 import { runSpecialistReview, type SpecialistTask, SpecialistReviewError } from "./agent/specialist-review.js";
 import {
@@ -31,11 +31,7 @@ import { connectTaskForgeStore } from "./storage/store-factory.js";
 import { createModelProvider } from "./providers/create-provider.js";
 import { ModelProviderError, type ProviderMessage } from "./providers/types.js";
 import { PathPolicyError, WorkspacePathPolicy } from "./security/path-policy.js";
-import { runReviewedCommand, validateSelectedNodeTestPath, type ReviewedCommandId, ReviewedCommandError } from "./tools/software/reviewed-command.js";
 import { redactSourceForDisplay, reviewSourceFiles, SourceReviewError } from "./workflows/source-review-workflow.js";
-import { ActionApprovalRegistry, ApprovalError } from "./security/approval-preview.js";
-import { prepareFilePatch, prepareGeneratedFilePatch, applyPreparedFilePatch, PatchApplicationError } from "./tools/software/patch-application.js";
-import { GitDiffReviewError, listGitDiffFiles, readGitDiff } from "./tools/software/git-diff-review.js";
 import { investigateSource, ModelInvestigationError } from "./tools/software/model-investigation.js";
 import { escapeTerminalControls } from "./security/terminal-text.js";
 import { BrowserSearchError, GroqBrowserResearch } from "./integrations/groq-browser-search.js";
@@ -234,419 +230,6 @@ async function listRunHistory(): Promise<void> {
     for (const artifact of history.artifacts.get(run.runId) ?? []) {
       process.stdout.write(`  artifact\t${artifact.type}\t${escapeTerminalControls(artifact.relativePath)}\t${artifact.bytes} bytes\tSHA-256 ${artifact.sha256}\n`);
     }
-  }
-}
-
-async function runSoftwareCheckCommand(commandArgs: readonly string[]): Promise<void> {
-  const rootValue = commandArgs[1];
-  const checkValue = commandArgs[3];
-  const selectedTestFile = commandArgs.length === 6 && commandArgs[4] === "--test" ? commandArgs[5] : undefined;
-  if (
-    (commandArgs.length !== 4 && selectedTestFile === undefined) || commandArgs[0] !== "--root" || rootValue === undefined ||
-    rootValue.trim().length === 0 || commandArgs[2] !== "--check" ||
-    (checkValue !== "node-test" && checkValue !== "typescript-check" && checkValue !== "typescript-build") ||
-    (selectedTestFile !== undefined && checkValue !== "node-test")
-  ) {
-    process.stderr.write("Expected --root <directory> --check <node-test|typescript-check|typescript-build> [--test <relative-file for node-test>].\n");
-    process.exitCode = 1;
-    return;
-  }
-  if (!process.stdin.isTTY || !process.stdout.isTTY) {
-    process.stderr.write("Software checks require an interactive terminal for explicit approval.\n");
-    process.exitCode = 2;
-    return;
-  }
-
-  const requestedRoot = resolve(rootValue);
-  const command: ReviewedCommandId = checkValue;
-  const rootConsent = createInterface({ input: process.stdin, output: process.stdout });
-  let rootAnswer: string;
-  try {
-    rootAnswer = await rootConsent.question(`Allow TaskForge to run a reviewed check in this exact repository root? ${requestedRoot} [y/N] `);
-  } finally {
-    rootConsent.close();
-  }
-  if (rootAnswer.trim().toLowerCase() !== "y") {
-    process.stdout.write("Software check cancelled before repository access.\n");
-    return;
-  }
-
-  try {
-    const policy = new WorkspacePathPolicy();
-    const approvedRoot = await policy.approveRoot(requestedRoot);
-    await requirePersistentFolderApproval(approvedRoot.path, "write");
-    const commandLabel = command === "node-test"
-      ? selectedTestFile === undefined
-        ? "node --test (runs the repository test code)"
-        : `node --test for ${escapeTerminalControls(selectedTestFile)} (runs that repository test file)`
-      : command === "typescript-check" ? "local TypeScript compiler --noEmit" : "local TypeScript compiler build (temporary output is removed after the check; configured outFile is rejected)";
-    const commandConsent = createInterface({ input: process.stdin, output: process.stdout });
-    let commandAnswer: string;
-    try {
-      commandAnswer = await commandConsent.question(`Run ${commandLabel} in the approved root? [y/N] `);
-    } finally {
-      commandConsent.close();
-    }
-    if (commandAnswer.trim().toLowerCase() !== "y") {
-      process.stdout.write("Software check cancelled before command execution.\n");
-      return;
-    }
-
-    const controller = new AbortController();
-    const handleInterrupt = (): void => controller.abort();
-    process.once("SIGINT", handleInterrupt);
-    let result: Awaited<ReturnType<typeof runReviewedCommand>> | undefined;
-    try {
-      result = await withStore((store) => runReviewedCommand(store, approvedRoot, policy, command, selectedTestFile, controller.signal));
-    } finally {
-      process.removeListener("SIGINT", handleInterrupt);
-    }
-    if (result !== undefined) {
-      process.stdout.write(
-        `Run ${result.run.runId} ${result.status}: ${result.command}; ` +
-        `exit=${result.exitCode === null ? "unavailable" : result.exitCode}; ` +
-        `duration=${result.durationMs}ms; observed output bytes=${result.observedOutputBytes}` +
-        `${result.outputTruncated ? " (capture limit reached)" : ""}. Output was not displayed or persisted.\n`,
-      );
-      if (result.status === "cancelled") process.exitCode = 130;
-      else if (result.status !== "passed") process.exitCode = 3;
-    }
-  } catch (error: unknown) {
-    const message = error instanceof ReviewedCommandError || error instanceof PersistentFolderApprovalError ? error.message : "Software check failed safely.";
-    process.stderr.write(`Software check failed: ${message}\n`);
-    process.exitCode = 3;
-  }
-}
-
-async function runFilePatchCommand(commandArgs: readonly string[]): Promise<void> {
-  if (
-    commandArgs.length !== 6 || commandArgs[0] !== "--root" || commandArgs[1] === undefined ||
-    commandArgs[2] !== "--target" || commandArgs[3] === undefined ||
-    commandArgs[4] !== "--content-file" || commandArgs[5] === undefined
-  ) {
-    process.stderr.write("Expected --root <directory> --target <relative-path> --content-file <relative-path>.\n");
-    process.exitCode = 1;
-    return;
-  }
-  if (!process.stdin.isTTY || !process.stdout.isTTY) {
-    process.stderr.write("File patching requires an interactive terminal for exact root, file-set and write approval.\n");
-    process.exitCode = 2;
-    return;
-  }
-  let rootPath: string;
-  try {
-    rootPath = await realpath(resolve(commandArgs[1]));
-  } catch {
-    process.stderr.write("The requested repository root could not be resolved.\n");
-    process.exitCode = 2;
-    return;
-  }
-  const targetRelativePath = commandArgs[3];
-  const contentRelativePath = commandArgs[5];
-  const rootConsent = createInterface({ input: process.stdin, output: process.stdout });
-  let rootAnswer: string;
-  try {
-    rootAnswer = await rootConsent.question(
-      `Review a replacement for this exact target?\nRoot: ${rootPath}\nTarget: ${targetRelativePath}\nReplacement content file: ${contentRelativePath}\nSource stays local; redaction is heuristic. [y/N] `,
-    );
-  } finally {
-    rootConsent.close();
-  }
-  if (rootAnswer.trim().toLowerCase() !== "y") {
-    process.stdout.write("File patch cancelled before access.\n");
-    return;
-  }
-  try {
-    const policy = new WorkspacePathPolicy();
-    const approvedRoot = await policy.approveRoot(rootPath);
-    await requirePersistentFolderApproval(approvedRoot.path, "read");
-    await requirePersistentFolderApproval(approvedRoot.path, "write");
-    const approvals = new ActionApprovalRegistry(policy);
-    const prepared = await prepareFilePatch(approvedRoot, policy, approvals, targetRelativePath, contentRelativePath);
-    const currentFiles = await reviewSourceFiles(approvedRoot, policy, [targetRelativePath]);
-    const current = currentFiles[0];
-    if (current === undefined) throw new PatchApplicationError();
-    process.stdout.write(`\n--- CURRENT ${current.path} (${current.byteCount} bytes) ---\n${current.content}\n`);
-    process.stdout.write(`\n--- REPLACEMENT ${contentRelativePath} (SHA-256 ${prepared.sha256}) ---\n${redactSourceForDisplay(prepared.content)}\n`);
-    const patchConsent = createInterface({ input: process.stdin, output: process.stdout });
-    let patchAnswer: string;
-    try {
-      patchAnswer = await patchConsent.question(
-        `Apply this exact replacement to ${prepared.preview.targetPath}? The target will be revalidated before write. [y/N] `,
-      );
-    } finally {
-      patchConsent.close();
-    }
-    if (patchAnswer.trim().toLowerCase() !== "y") {
-      approvals.discard(prepared.preview.previewId);
-      process.stdout.write("File patch cancelled before writing.\n");
-      return;
-    }
-    const approval = approvals.approve(prepared.preview.previewId);
-    await applyPreparedFilePatch(prepared, approval, approvals);
-    process.stdout.write(`Replacement applied to ${prepared.preview.targetPath}. Run a reviewed check to verify it.\n`);
-  } catch (error: unknown) {
-    const message = error instanceof PatchApplicationError || error instanceof PersistentFolderApprovalError ? error.message : "File patch failed safely.";
-    process.stderr.write(`File patch failed: ${message}\n`);
-    process.exitCode = 3;
-  }
-}
-
-async function runAgentFixCommand(commandArgs: readonly string[]): Promise<void> {
-  const values = new Map<string, string>();
-  for (let index = 0; index < commandArgs.length;) {
-    const key = commandArgs[index];
-    const value = commandArgs[index + 1];
-    if ((key !== "--root" && key !== "--target" && key !== "--goal" && key !== "--test") ||
-        value === undefined || values.has(key)) {
-      process.stderr.write("Expected --root <directory> --target <relative-source-file> --goal <instruction> --test <relative-test-file>.\n");
-      process.exitCode = 1;
-      return;
-    }
-    values.set(key, value);
-    index += 2;
-  }
-  const rootValue = values.get("--root");
-  const target = values.get("--target");
-  const goal = values.get("--goal");
-  const testFile = values.get("--test");
-  if (values.size !== 4 || rootValue === undefined || target === undefined || goal === undefined || testFile === undefined ||
-      goal.trim().length === 0 || Buffer.byteLength(goal, "utf8") > 2_000) {
-    process.stderr.write("Provide a root, one relative source target, a goal up to 2,000 bytes, and one relative Node test file.\n");
-    process.exitCode = 1;
-    return;
-  }
-  if (!process.stdin.isTTY || !process.stdout.isTTY) {
-    process.stderr.write("Agent fixes require an interactive terminal for source transfer, patch, and check approval.\n");
-    process.exitCode = 2;
-    return;
-  }
-
-  let rootPath: string;
-  let providerConfiguration;
-  try {
-    rootPath = await realpath(resolve(rootValue));
-    providerConfiguration = loadProviderConfiguration();
-  } catch (error: unknown) {
-    process.stderr.write(error instanceof ConfigurationError ? `Agent fix setup error: ${error.message}\n` : "The approved repository root could not be resolved.\n");
-    process.exitCode = 2;
-    return;
-  }
-  const consent = createInterface({ input: process.stdin, output: process.stdout });
-  let answer: string;
-  try {
-    answer = await consent.question(`Read this exact target and check path in the approved root?\nRoot: ${escapeTerminalControls(rootPath)}\nTarget: ${escapeTerminalControls(target)}\nGoal: ${escapeTerminalControls(goal)}\nVerification test: ${escapeTerminalControls(testFile)}\nOnly a locally heuristically redacted target excerpt may be sent to the selected provider. [y/N] `);
-  } finally {
-    consent.close();
-  }
-  if (answer.trim().toLowerCase() !== "y") {
-    process.stdout.write("Agent fix cancelled before repository access.\n");
-    return;
-  }
-
-  const controller = new AbortController();
-  const handleInterrupt = (): void => controller.abort();
-  process.once("SIGINT", handleInterrupt);
-  try {
-    const policy = new WorkspacePathPolicy();
-    const root = await policy.approveRoot(rootPath);
-    await requirePersistentFolderApproval(root.path, "read");
-    await requirePersistentFolderApproval(root.path, "write");
-    const selectedTest = await validateSelectedNodeTestPath(root, policy, testFile);
-    const targetPath = resolve(root.path, target);
-    const targetIsTest = process.platform === "win32"
-      ? targetPath.toLowerCase() === selectedTest.canonicalPath.toLowerCase()
-      : targetPath === selectedTest.canonicalPath;
-    if (targetIsTest) throw new ReviewedCommandError("The patch target and verification test must be different files.");
-    const files = await reviewSourceFiles(root, policy, [target]);
-    const file = files[0];
-    if (file === undefined || file.content.includes("[REDACTED:")) {
-      throw new SourceReviewError("The selected source contains redacted credential-like text; full-file generated replacement is refused to avoid copying or deleting hidden material.");
-    }
-    const transferText = `${file.path}\n${file.content}\n\nGoal: ${goal}`;
-    if (Buffer.byteLength(transferText, "utf8") > 24 * 1024) throw new SourceReviewError("The target and goal exceed the 24 KiB model-input limit.");
-    process.stdout.write(`\n--- REDACTED SOURCE ${file.path} (${file.byteCount} bytes, ${file.lineCount} lines) ---\n${escapeTerminalControls(file.content)}\n`);
-    const provider = createModelProvider(providerConfiguration);
-    const transferConsent = createInterface({ input: process.stdin, output: process.stdout });
-    let transferAnswer: string;
-    try {
-      transferAnswer = await transferConsent.question(`Send this exact redacted source and goal to ${providerConfiguration.kind} (${provider.model}) to generate a full-file replacement? Redaction can miss secrets. The model has only a replacement-proposal tool; it cannot read files, run commands, or write. [y/N] `);
-    } finally {
-      transferConsent.close();
-    }
-    if (transferAnswer.trim().toLowerCase() !== "y") {
-      process.stdout.write("Agent fix cancelled before provider transfer.\n");
-      return;
-    }
-
-    let replacement: string | undefined;
-    const result = await runToolLoop(
-      provider.provider,
-      provider.model,
-      [
-        { role: "system", content: "You are TaskForge's code change proposer. You may only call propose_replacement with a complete replacement for the single supplied source file. Do not claim changes were applied or tests run. If the request is unclear, explain the ambiguity without calling the tool. Preserve unrelated behavior and avoid adding dependencies or permission expansion." },
-        { role: "user", content: `Target: ${file.path}\nGoal: ${goal}\nCurrent redacted source:\n${file.content}` },
-      ],
-      [createPatchProposalTool((value) => { replacement = value; })],
-      { maxModelRequests: 8, maxToolActions: 1, signal: controller.signal },
-    );
-    if (replacement === undefined) {
-      if (result.content.length > 0) process.stdout.write(`TaskForge> ${escapeTerminalControls(result.content)}\n`);
-      process.stdout.write("No replacement preview was generated; the target was not changed.\n");
-      return;
-    }
-    if (redactSourceForDisplay(replacement) !== replacement) {
-      throw new PatchApplicationError("The generated replacement contains credential-like text that would be hidden in the review; candidate refused.");
-    }
-    const approvals = new ActionApprovalRegistry(policy);
-    const prepared = await prepareGeneratedFilePatch(root, policy, approvals, target, replacement);
-    const current = await reviewSourceFiles(root, policy, [target]);
-    const currentFile = current[0];
-    if (currentFile === undefined || currentFile.content.includes("[REDACTED:")) {
-      approvals.discard(prepared.preview.previewId);
-      throw new SourceReviewError("The target changed or contains credential-like text; generated preview discarded.");
-    }
-    process.stdout.write(`\n--- CURRENT ${escapeTerminalControls(currentFile.path)} (SHA-256 of replacement ${prepared.sha256}) ---\n${escapeTerminalControls(currentFile.content)}\n`);
-    process.stdout.write(`\n--- GENERATED REPLACEMENT (SHA-256 ${prepared.sha256}) ---\n${escapeTerminalControls(redactSourceForDisplay(prepared.content))}\n`);
-    const patchConsent = createInterface({ input: process.stdin, output: process.stdout });
-    let patchAnswer: string;
-    try {
-      patchAnswer = await patchConsent.question(`Apply this exact generated replacement to ${prepared.preview.targetPath}? The current target snapshot is bound to this preview and revalidated before writing. [y/N] `);
-    } finally {
-      patchConsent.close();
-    }
-    if (patchAnswer.trim().toLowerCase() !== "y") {
-      approvals.discard(prepared.preview.previewId);
-      process.stdout.write("Generated patch declined; target unchanged.\n");
-      return;
-    }
-    const approval = approvals.approve(prepared.preview.previewId);
-    await applyPreparedFilePatch(prepared, approval, approvals);
-    process.stdout.write(`Generated replacement applied to ${prepared.preview.targetPath}. Now approve the relevant fixed Node test.\n`);
-    await runSoftwareCheckCommand(["--root", root.path, "--check", "node-test", "--test", testFile]);
-  } catch (error: unknown) {
-    const message = error instanceof PatchApplicationError || error instanceof SourceReviewError || error instanceof PersistentFolderApprovalError
-      ? error.message
-      : error instanceof ModelProviderError ? error.message : "Agent fix failed safely; inspect the target before retrying.";
-    process.stderr.write(`Agent fix failed: ${message}\n`);
-    process.exitCode = controller.signal.aborted || (error instanceof ModelProviderError && error.kind === "cancelled") ? 130 : 3;
-  } finally {
-    process.off("SIGINT", handleInterrupt);
-  }
-}
-
-async function runFileMoveCommand(commandArgs: readonly string[]): Promise<void> {
-  if (commandArgs.length !== 4 || commandArgs[0] !== "--source" || commandArgs[1] === undefined ||
-      commandArgs[2] !== "--target" || commandArgs[3] === undefined) {
-    process.stderr.write("Expected --source <file> --target <new-file>.\n");
-    process.exitCode = 1;
-    return;
-  }
-  if (!process.stdin.isTTY || !process.stdout.isTTY) {
-    process.stderr.write("File moves require an interactive terminal for exact operation approval.\n");
-    process.exitCode = 2;
-    return;
-  }
-  try {
-    const sourcePath = resolve(commandArgs[1]);
-    const targetPath = resolve(commandArgs[3]);
-    const extension = extname(sourcePath).toLowerCase();
-    const supported = new Set([".txt", ".md", ".markdown", ".csv", ".pdf", ".docx", ".xlsx"]);
-    if (!supported.has(extension) || extname(targetPath).toLowerCase() !== extension) {
-      process.stderr.write("File move supports matching TXT, Markdown, CSV, PDF, DOCX, or XLSX extensions.\n");
-      process.exitCode = 2;
-      return;
-    }
-    const policy = new WorkspacePathPolicy();
-    const sourceRoot = await policy.approveRoot(dirname(sourcePath));
-    const targetRoot = await policy.approveRoot(dirname(targetPath));
-    await requirePersistentFolderApproval(sourceRoot.path, "read");
-    await requirePersistentFolderApproval(sourceRoot.path, "write");
-    await requirePersistentFolderApproval(targetRoot.path, "write");
-    const registry = new ActionApprovalRegistry(policy);
-    const preview = await registry.preview({ kind: "move", sourcePath, targetPath });
-    const consent = createInterface({ input: process.stdin, output: process.stdout });
-    let answer: string;
-    try {
-      answer = await consent.question(
-        `Move this exact file?\nSource: ${escapeTerminalControls(preview.sourcePath ?? "")}\nDestination (must not exist): ${escapeTerminalControls(preview.targetPath)}\nSize: ${preview.sourceBytes ?? 0} bytes\nSHA-256: ${preview.sourceSha256 ?? "unavailable"}\nThe source is removed after a verified same-volume hard link is created. [y/N] `,
-      );
-    } finally {
-      consent.close();
-    }
-    if (answer.trim().toLowerCase() !== "y") {
-      registry.discard(preview.previewId);
-      process.stdout.write("File move cancelled before mutation.\n");
-      return;
-    }
-    await registry.applyApprovedMove(registry.approve(preview.previewId));
-    process.stdout.write(`Moved file to ${escapeTerminalControls(preview.targetPath)}.\n`);
-  } catch (error: unknown) {
-    const detail = error instanceof PersistentFolderApprovalError ? error.message
-      : error instanceof ApprovalError ? error.message
-        : error instanceof PathPolicyError ? error.message : "the move could not be completed safely";
-    process.stderr.write(`File move failed: ${detail}. The source may remain if the destination could not be verified.\n`);
-    process.exitCode = 3;
-  }
-}
-
-async function runGitDiffCommand(commandArgs: readonly string[]): Promise<void> {
-  if (commandArgs.length !== 2 || commandArgs[0] !== "--root" || commandArgs[1] === undefined) {
-    process.stderr.write("Expected --root <directory>.\n");
-    process.exitCode = 1;
-    return;
-  }
-  if (!process.stdin.isTTY || !process.stdout.isTTY) {
-    process.stderr.write("Git diff review requires an interactive terminal for exact root and changed-file approval.\n");
-    process.exitCode = 2;
-    return;
-  }
-  let rootPath: string;
-  try {
-    rootPath = await realpath(resolve(commandArgs[1]));
-  } catch {
-    process.stderr.write("The requested repository root could not be resolved.\n");
-    process.exitCode = 2;
-    return;
-  }
-  const consent = createInterface({ input: process.stdin, output: process.stdout });
-  let rootAnswer: string;
-  try {
-    rootAnswer = await consent.question(`Inspect staged Git changes from this exact repository root?\nRoot: ${rootPath}\nNo source is read until the staged-file list is approved. [y/N] `);
-  } finally {
-    consent.close();
-  }
-  if (rootAnswer.trim().toLowerCase() !== "y") {
-    process.stdout.write("Git diff review cancelled before content access.\n");
-    return;
-  }
-  try {
-    const policy = new WorkspacePathPolicy();
-    const root = await policy.approveRoot(rootPath);
-    await requirePersistentFolderApproval(root.path, "read");
-    const files = await listGitDiffFiles(root, policy);
-    if (files.length === 0) {
-      process.stdout.write("No tracked changes are available for review. Unstaged and untracked files are not included.\n");
-      return;
-    }
-    const fileList = files.map((file) => `  ${JSON.stringify(file)}`).join("\n");
-    const fileConsent = createInterface({ input: process.stdin, output: process.stdout });
-    let fileAnswer: string;
-    try {
-      fileAnswer = await fileConsent.question(`Display the locally redacted diff for these exact changed files?\n${fileList}\nMaximum: 20 files and 48 KiB. Redaction is heuristic. [y/N] `);
-    } finally {
-      fileConsent.close();
-    }
-    if (fileAnswer.trim().toLowerCase() !== "y") {
-      process.stdout.write("Git diff review cancelled before content access.\n");
-      return;
-    }
-    const review = await readGitDiff(root, policy, files);
-    process.stdout.write(review.diff.length === 0 ? "The approved diff is empty.\n" : `${review.diff}\n`);
-  } catch (error: unknown) {
-    const message = error instanceof GitDiffReviewError || error instanceof PersistentFolderApprovalError ? error.message : "Git diff review failed safely.";
-    process.stderr.write(`Git diff review failed: ${message}\n`);
-    process.exitCode = 3;
   }
 }
 
@@ -1218,7 +801,7 @@ if (args.length === 0 || (args.length === 1 && (args[0] === "--help" || args[0] 
 } else if (args.length >= 2 && args[0] === "run" && args[1] === "document-convert") {
   await runDocumentConversionCommand(args.slice(2), { withStore, readApprovedInputFile, requirePersistentFolderApproval });
 } else if (args.length >= 2 && args[0] === "run" && args[1] === "software-check") {
-  await runSoftwareCheckCommand(args.slice(2));
+  await runSoftwareCheckCommand(args.slice(2), { withStore, requirePersistentFolderApproval });
 } else if (args.length >= 2 && args[0] === "run" && args[1] === "source-review") {
   await runSourceReviewCommand(args.slice(2), { withStore, requirePersistentFolderApproval });
 } else if (args.length >= 2 && args[0] === "run" && args[1] === "architecture-report") {
@@ -1226,13 +809,13 @@ if (args.length === 0 || (args.length === 1 && (args[0] === "--help" || args[0] 
 } else if (args.length >= 2 && args[0] === "run" && args[1] === "pdf-report") {
   await runPdfReportCommand(args.slice(2), { readApprovedInputFile, requirePersistentFolderApproval });
 } else if (args.length >= 2 && args[0] === "run" && args[1] === "file-patch") {
-  await runFilePatchCommand(args.slice(2));
+  await runFilePatchCommand(args.slice(2), { withStore, requirePersistentFolderApproval });
 } else if (args.length >= 2 && args[0] === "run" && args[1] === "agent-fix") {
-  await runAgentFixCommand(args.slice(2));
+  await runAgentFixCommand(args.slice(2), { withStore, requirePersistentFolderApproval });
 } else if (args.length >= 2 && args[0] === "run" && args[1] === "file-move") {
-  await runFileMoveCommand(args.slice(2));
+  await runFileMoveCommand(args.slice(2), { withStore, requirePersistentFolderApproval });
 } else if (args.length >= 2 && args[0] === "run" && args[1] === "git-diff") {
-  await runGitDiffCommand(args.slice(2));
+  await runGitDiffCommand(args.slice(2), { withStore, requirePersistentFolderApproval });
 } else if (args.length >= 2 && args[0] === "run" && args[1] === "model-investigate") {
   await runModelInvestigationCommand(args.slice(2));
 } else if (args.length >= 2 && args[0] === "run" && args[1] === "github-issues") {

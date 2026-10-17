@@ -816,3 +816,9 @@ Moved folder approval listing, grant/revoke validation and consent, and result/e
 Moved `do` and `chat` command handling and CSV/document agent-tool wiring into `src/cli/commands/agent-session.ts`. The entrypoint injects the existing approved-file reader and store lifecycle. Provider consent, exact-file approval, fixed tool exposure, shared per-session budget, cancellation, and message-window behavior are intended to remain unchanged.
 
 **Verification so far:** Strict typecheck and clean build passed. Agent session CLI and tool tests passed (9/9); `git diff --check` passed. Independent review found no behavioral differences: provider consent, exact-file approval, cancellation, shared budgets, bounded message history, and fixed tool exposure remain intact. Interactive approval and history success paths remain untested at CLI level, as before the move. The final integrated suite for this refactor remains required.
+
+### Refactor checkpoint 19 - Extract reviewed software CLI workflows - VERIFIED
+
+Moved software checks, static and generated file patches, model-assisted single-file fixes, approved file moves, and staged Git diff review into `src/cli/commands/software-workflows.ts`. The module receives the established store lifecycle and persistent-folder approval function from the entrypoint. Command allowlists, preview/hash checks, exact consent order, source redaction, cancellation, and error/exit behavior are unchanged.
+
+**Verification:** Strict typecheck/build passed. Focused agent-session/permissions CLI, reviewed-command, patch-application, and Git diff review tests passed (21/21); `git diff --check` passed. Independent review found no behavior changes or approval-boundary regression. Interactive success paths remain only partially covered at CLI level; the full suite after this extraction remains required.

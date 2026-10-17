@@ -217,3 +217,7 @@ Moved folder permission command handling to `src/cli/commands/permissions.ts`, w
 ### Code-organization checkpoint 18 - Natural-language and chat CLI extraction - VERIFIED
 
 Moved `do` and `chat` command handling and CSV/document agent-tool wiring into `src/cli/commands/agent-session.ts`. The entrypoint injects the existing approved-file reader and store lifecycle. Focused agent session CLI/tool tests passed (9/9), strict typecheck/build passed, and `git diff --check` passed. Independent review found no behavioral differences: provider consent, exact-file approval, cancellation, shared budgets, bounded message history, and fixed tool exposure remain intact. Interactive approval and history success paths remain untested at CLI level, as before the move. The final integrated suite for this refactor remains required.
+
+### Code-organization checkpoint 19 - Reviewed software CLI workflows - VERIFIED
+
+Moved approved software checks, patch/fix/move actions, and staged Git diff review into `src/cli/commands/software-workflows.ts` with the existing store and persistent-grant helpers injected. Strict typecheck/build and focused tests passed (21/21); `git diff --check` passed; independent review found no approval or behavior regression. The full integrated suite after this checkpoint remains required before declaring the cross-cutting refactor complete.
