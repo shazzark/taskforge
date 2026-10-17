@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import ExcelJS from "exceljs";
 import JSZip from "jszip";
 import test from "node:test";
-import { parseXlsxText, XlsxParserError } from "../dist/documents/xlsx-parser.js";
+import { parseXlsxText, XlsxParserError } from "../../../dist/tools/documents/xlsx-parser.js";
 
 async function createWorkbookBuffer(addContent) {
   const workbook = new ExcelJS.Workbook();

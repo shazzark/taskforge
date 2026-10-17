@@ -39,7 +39,7 @@ import { investigateSource, ModelInvestigationError } from "./tools/software/mod
 import { DraftArtifactError, parseLocalDraftInput, previewPlainTextArtifact, previewTextArtifact, writeApprovedTextArtifact } from "./artifacts/drafts.js";
 import { csvAnalysisExportFormat, CsvAnalysisExportError, renderCsvAnalysisExport, type CsvAnalysisExportFormat } from "./artifacts/csv-analysis-export.js";
 import { documentAnalysisExportFormat, DocumentAnalysisExportError, renderDocumentAnalysisExport, type DocumentAnalysisExportFormat } from "./artifacts/document-analysis-export.js";
-import { convertDocumentToPlainText, DocumentConversionError } from "./documents/plain-text-conversion.js";
+import { convertDocumentToPlainText, DocumentConversionError } from "./tools/documents/plain-text-conversion.js";
 import { escapeTerminalControls } from "./security/terminal-text.js";
 import { BrowserSearchError, GroqBrowserResearch } from "./integrations/groq-browser-search.js";
 import {

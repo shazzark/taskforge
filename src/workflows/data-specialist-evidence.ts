@@ -1,8 +1,8 @@
 import { sampleCsv } from "../tools/data/csv-analysis.js";
-import { parseDocxText } from "../documents/docx-parser.js";
-import { parsePdfText } from "../documents/pdf-text-parser.js";
-import { parseTextDocument } from "../documents/text-parser.js";
-import { parseXlsxText } from "../documents/xlsx-parser.js";
+import { parseDocxText } from "../tools/documents/docx-parser.js";
+import { parsePdfText } from "../tools/documents/pdf-text-parser.js";
+import { parseTextDocument } from "../tools/documents/text-parser.js";
+import { parseXlsxText } from "../tools/documents/xlsx-parser.js";
 import { redactSourceForDisplay } from "./source-review-workflow.js";
 
 const MAX_INPUT_BYTES = 8 * 1024 * 1024;

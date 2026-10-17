@@ -745,6 +745,12 @@ Moved the bounded CSV analysis/parser module to `src/tools/data/csv-analysis.ts`
 
 **Verification:** `npm run typecheck`, `npm run build`, and CSV analysis/export/CLI/data-specialist tests passed (20/20). Independent review found no stale import or behavior change. `git diff --check` passed.
 
+### Refactor checkpoint 8 — Move document parsers and conversion under tools — VERIFIED
+
+Moved the DOCX, PDF, TXT/Markdown, XLSX parsers and plain-text conversion capability to `src/tools/documents/`; moved their focused tests to `test/tools/documents/`. Updated document workflow, data-specialist sampling, CLI, report-generation test imports and codebase/capability maps. Parsing, conversion, approvals, and persistence behavior are unchanged.
+
+**Verification:** `npm run typecheck`, `npm run build`, and parser/conversion/workflow/data-specialist tests passed (26/26). The initial focused run exposed two test imports of the PDF renderer at the old relative depth; both were corrected and the complete focused group then passed. Independent review found no remaining stale active paths or behavior changes. `git diff --check` passed.
+
 ### Phase 9 documentation checkpoint — COMPLETE
 
 Updated in this checkpoint: `prd.md`, `trd.md`, `architecture.md`, `backendschema.md`, `appflow.md`, `implementation-plan.md`, `CAPABILITY_AUDIT.md`, and README record the approved scope and distinguish target design from current behavior. Cross-document proposal/status scan and `git diff --check` passed. No code changed, so the Phase 8.8 full-suite evidence remains the latest full-suite result; no new test claim is made. Commit this verified documentation checkpoint locally before starting Phase 10.

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import JSZip from "jszip";
 import test from "node:test";
-import { DocxParserError, parseDocxText } from "../dist/documents/docx-parser.js";
+import { DocxParserError, parseDocxText } from "../../../dist/tools/documents/docx-parser.js";
 
 async function createDocx(documentXml) {
   const zip = new JSZip();

@@ -53,6 +53,12 @@ Moved the bounded parser and analyzer to `src/tools/data/csv-analysis.ts`, moved
 
 **Verification:** Strict typecheck/build and focused CSV parser/export/CLI/data-specialist tests passed (20/20). Independent source review found no stale path or behavior change. No stored record or permission contract changed.
 
+### Checkpoint 8 — Move document parsers and conversion under tools: VERIFIED
+
+Moved the five bounded parser/conversion modules from `src/documents/` to `src/tools/documents/` and their feature tests to `test/tools/documents/`. Updated orchestration/sampling/CLI imports and current docs; workflows remain responsible for approvals and persistence.
+
+**Verification:** Strict typecheck/build and focused parser, conversion, analysis-workflow, and data-specialist tests passed (26/26). Two deeper test imports initially retained the old relative path to the PDF renderer; after correcting them, the entire focused group passed. Independent review found no remaining active old imports.
+
 **Next checkpoints:** Move feature capabilities in small dependency-aware slices and split additional CLI handlers by responsibility, retaining `dist/cli.js` as the executable entry. Run the integrated serial suite after the structural migrations. No unrelated behavior changes or new dependencies are included.
 
 Phase 4.13 wires explicitly selected numeric CSV columns into the persisted workflow and all structured report formats. Selection names affect the checkpoint hash; strict typecheck and the full isolated MongoDB suite passed (105 tests, zero skipped), and independent review found no remaining issues after prototype-key and Markdown-label fixes.

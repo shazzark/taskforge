@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { parseTextDocument, TextDocumentError } from "../dist/documents/text-parser.js";
+import { parseTextDocument, TextDocumentError } from "../../../dist/tools/documents/text-parser.js";
 
 test("normalizes a BOM and Windows line endings while counting text", () => {
   const result = parseTextDocument("\uFEFFHello world\r\nSecond line\r\n", "txt");

@@ -2,10 +2,10 @@ import { createHash, randomUUID } from "node:crypto";
 import { TextDecoder } from "node:util";
 import type { RunSummary } from "../storage/types.js";
 import type { TaskForgeStore } from "../storage/store.js";
-import { parseDocxText } from "../documents/docx-parser.js";
-import { parsePdfText } from "../documents/pdf-text-parser.js";
-import { parseTextDocument } from "../documents/text-parser.js";
-import { parseXlsxText } from "../documents/xlsx-parser.js";
+import { parseDocxText } from "../tools/documents/docx-parser.js";
+import { parsePdfText } from "../tools/documents/pdf-text-parser.js";
+import { parseTextDocument } from "../tools/documents/text-parser.js";
+import { parseXlsxText } from "../tools/documents/xlsx-parser.js";
 
 const WORKFLOW_ID = "document-analyze";
 const STEP_ID = "parse";
