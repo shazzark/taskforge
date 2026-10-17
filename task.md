@@ -805,8 +805,14 @@ Updated in this checkpoint: `prd.md`, `trd.md`, `architecture.md`, `backendschem
 
 **Phase 9 verification:** Searched all seven planning/tracker documents plus README and capability audit for stale claims that the newly approved areas remain unapproved; only explicitly historical notes marked superseded remain. `git diff --check` passed. Existing CLI help was observed as `node dist/cli.js --help`; the walkthrough and exact current commands remain in `CAPABILITY_AUDIT.md`. Typecheck/build/full-suite were not rerun because this checkpoint changes documentation only; full serial suite evidence remains Phase 8.8 (152/152, isolated MongoDB test database).
 
-### Refactor checkpoint 17 � Extract folder-permission CLI command � VERIFIED
+### Refactor checkpoint 17 - Extract folder-permission CLI command - VERIFIED
 
 Moved folder approval listing, grant/revoke validation and consent, and result/error presentation into `src/cli/commands/permissions.ts`; the entrypoint injects its existing store lifecycle. Canonical path validation, non-sensitive-root checks, exact read/write scope, terminal escaping, cancellation behavior, storage error handling, and exit codes are unchanged.
 
-**Verification:** Strict typecheck and clean build passed. Permission CLI and path-policy tests passed (14/14); `git diff --check` passed. Independent review found no behavior or security regression. Interactive approve/revoke success remains untested at CLI level, as before this move. Overall code organization remains in progress.
+**Verification:** Strict typecheck and clean build passed. Permission CLI and path-policy tests passed (14/14); `git diff --check` passed. Independent review found no behavior or security regression. Interactive approve/revoke success remains untested at CLI level, as before this move. After this checkpoint, the integrated serial `npm test` passed 200/200 (0 failed, 0 skipped) in 182.5 seconds using isolated local storage and a dedicated MongoDB test database. Remaining CLI decomposition and a final integrated run are still required before the refactor is complete.
+
+### Refactor checkpoint 18 - Extract natural-language and chat CLI commands - VERIFIED
+
+Moved `do` and `chat` command handling and CSV/document agent-tool wiring into `src/cli/commands/agent-session.ts`. The entrypoint injects the existing approved-file reader and store lifecycle. Provider consent, exact-file approval, fixed tool exposure, shared per-session budget, cancellation, and message-window behavior are intended to remain unchanged.
+
+**Verification so far:** Strict typecheck and clean build passed. Agent session CLI and tool tests passed (9/9); `git diff --check` passed. Independent review found no behavioral differences: provider consent, exact-file approval, cancellation, shared budgets, bounded message history, and fixed tool exposure remain intact. Interactive approval and history success paths remain untested at CLI level, as before the move. The final integrated suite for this refactor remains required.

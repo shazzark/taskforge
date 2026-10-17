@@ -213,3 +213,7 @@ Moved browser-audit argument parsing, consent and manual-login prompts, result p
 ### Code-organization checkpoint 17 � Folder-permission CLI extraction � VERIFIED
 
 Moved folder permission command handling to `src/cli/commands/permissions.ts`, with the existing store lifecycle injected from `src/cli.ts`. Strict typecheck/build and focused permissions/path-policy checks passed (14/14), `git diff --check` passed, and independent review found no behavior or permission-boundary regression. The contributing code map now includes the permissions command module. The interactive approval success paths remain a pre-existing coverage gap; remaining CLI decomposition and the full integration suite are still required.
+
+### Code-organization checkpoint 18 - Natural-language and chat CLI extraction - VERIFIED
+
+Moved `do` and `chat` command handling and CSV/document agent-tool wiring into `src/cli/commands/agent-session.ts`. The entrypoint injects the existing approved-file reader and store lifecycle. Focused agent session CLI/tool tests passed (9/9), strict typecheck/build passed, and `git diff --check` passed. Independent review found no behavioral differences: provider consent, exact-file approval, cancellation, shared budgets, bounded message history, and fixed tool exposure remain intact. Interactive approval and history success paths remain untested at CLI level, as before the move. The final integrated suite for this refactor remains required.
