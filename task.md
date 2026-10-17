@@ -639,15 +639,25 @@ Depends on existing browser/specialist boundaries and Phases 12, 14 and 15. The 
 
 **Acceptance:** Automated synthetic integration covers ephemeral login, separate journey approval, no session/profile import, specialist limits/shared budgets/tool denials. BookFinder search/results/details/back requires owner manual login and journey approval in the fresh ephemeral browser. It remains pending until owner-operated evidence exists; the earlier authorization remains valid.
 
-### Phase 17 — Evidence-based architecture reports/diagrams — NOT STARTED
+### Phase 17 — Evidence-based architecture reports/diagrams — IN PROGRESS
 
 Depends on Phases 11–12 and approved path access.
 
-**Acceptance:** Synthetic repositories produce reports/diagrams with verifiable file/line evidence, bounded scope, inference/coverage labels, redaction and unsupported-language handling; no source execution or outside-root reads.
+**Implemented subphase:** Offline architecture reports for an explicitly selected set of 1–20 files under an approved repository root. The CLI requires interactive exact-root/file-set approval and persistent read-folder approval. The current analyzer recognizes line-based JavaScript/TypeScript import/export evidence, cites file and line, labels dependency-role statements as inference, reports unsupported languages and missing evidence, and emits a Mermaid flowchart import graph with structured node metadata and an evidence reference per edge. It reuses bounded local heuristic redaction, does not execute source, and does not walk the repository. Broader language coverage and module resolution remain unimplemented.
 
-### Phase 18 — Read-only GitHub/Vercel deployment tracing — NOT STARTED
+**Verification:** `npm run typecheck`, `npm run build`, and `node --test test/architecture-report.test.mjs` passed (3/3); integrated full serial suite passed 187/187, zero failed or skipped. Fixtures cover cited diagram edges, line evidence, inference/coverage, unsupported-language/missing-evidence reporting, redaction, exact file selection, and unapproved/out-of-root rejection. The report remains heuristic and does not establish runtime architecture.
+
+**Integrated verification (17 October):** After the diagram and Vercel 404-classification change, full serial `npm test` passed **187/187, 0 failed, 0 skipped** in 121.7 seconds with `TASKFORGE_TEST_MONGODB_URI=mongodb://127.0.0.1:27017/taskforge_recovery_phase18_404_20261017`; Mongo integration derives its own disposable database. This includes the Phase 17/18 fixtures and CLI integration. A preceding launch without the required isolated URI was interrupted after 14 passing cases and before Mongo integration; it made no normal-data changes. Earlier correct-URI runs passed 186/186 before the 404-classification test was added.
+
+**Acceptance:** Synthetic repositories produce reports/diagrams with verifiable file/line evidence, bounded scope, inference/coverage labels, redaction and unsupported-language handling; no source execution or outside-root reads. Broader language coverage and resolved dependency mapping remain.
+
+### Phase 18 — Read-only GitHub/Vercel deployment tracing — IN PROGRESS
 
 Depends on Phase 12 and permission/secret handling. No deployment actions.
+
+**Implemented subphase:** Interactive CLI tracing for an exact public GitHub `owner/name`, Vercel `prj_...` project ID and optional `team_...` ID. The adapter performs only allowlisted GitHub Actions and Vercel deployment-list GETs, rejects redirects, limits each response to 256 KiB/25 records and 15 seconds, validates returned records/links, reports providers independently, joins validated deployment/run commit SHAs, and accepts the Vercel token only as an ephemeral call argument. No deployment operation is implemented. A prior read-only public check of `shazzark/taskforge` returned zero workflow runs; that is not BookFinder deployment evidence.
+
+**Verification:** `npm run typecheck`, `npm run build`, and `node --test test/deployment-tracing.test.mjs` passed (5/5 after adding a Vercel 404-classification regression case). Fixtures cover allowlisted GETs, SHA joins, independent auth/partial states, response/input validation, caps, and token/error non-disclosure. Vercel 404 is reported as not-found-or-inaccessible, not as proven authentication failure. No live Vercel request was made. Live verification is blocked on owner identifying the exact project/team scope and providing local `TASKFORGE_VERCEL_TOKEN`; do not record or display the token.
 
 **Acceptance:** API fixtures prove minimum read scopes, no writes, source links, redaction and honest auth/expiry/partial-result states. Live tracing waits for authorized account/project setup and is separately verified.
 

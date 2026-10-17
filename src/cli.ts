@@ -6,7 +6,8 @@ import { mkdtemp, open, realpath, stat, writeFile } from "node:fs/promises";
 import { basename, dirname, extname, join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { createInterface } from "node:readline/promises";
-import { ConfigurationError, formatStoreConfigurationSummary, loadProviderConfiguration, loadStoreConfiguration } from "./config.js";
+import { ConfigurationError, formatStoreConfigurationSummary, loadLocalEnvironmentFile, loadProviderConfiguration, loadStoreConfiguration } from "./config.js";
+import { DeploymentTraceError, traceDeployments } from "./integrations/deployment-tracing.js";
 import { AgentBudgetLedger, AgentToolError, runToolLoop } from "./agent/tool-loop.js";
 import { createCsvAnalysisTool, createDocumentAnalysisTool, createPatchProposalTool, TASKFORGE_AGENT_SYSTEM_MESSAGE } from "./agent/session-tools.js";
 import { BUILT_IN_TASKS, getBuiltInTask, TaskRegistryError, validateTaskInputs } from "./agent/task-registry.js";
@@ -28,6 +29,7 @@ import { inspectRepository, RepositoryInspectionError } from "./workflows/reposi
 import { analyzeDocument, DocumentWorkflowError, resumeDocumentAnalysisWorkflow } from "./workflows/document-analysis-workflow.js";
 import { runReviewedCommand, validateSelectedNodeTestPath, type ReviewedCommandId, ReviewedCommandError } from "./software/reviewed-command.js";
 import { redactSourceForDisplay, reviewSourceFiles, SourceReviewError } from "./workflows/source-review-workflow.js";
+import { ArchitectureReportError, createArchitectureReport } from "./architecture-report.js";
 import { ActionApprovalRegistry, ApprovalError } from "./security/approval-preview.js";
 import { previewPdfArtifact, PdfArtifactError, writeApprovedPdfArtifact } from "./artifacts/approved-pdf-output.js";
 import { prepareFilePatch, prepareGeneratedFilePatch, applyPreparedFilePatch, PatchApplicationError } from "./software/patch-application.js";
@@ -51,7 +53,7 @@ import type { ScheduleRecord, ScheduleWorkflowId } from "./mongo-store.js";
 
 const helpText = `TaskForge ${packageJson.version} (early development)
 
-Usage: taskforge [--help | --version | config | doctor | model-check | do <instruction> | chat | tasks list | tasks inspect <task-id> | tasks validate <task-id> --inputs-json <object> | permissions approve/list/revoke | run csv-analyze --input <path> [--numeric-column <header>]... [--output <new.json|csv|md>] | run document-analyze --input <path> [--output <new.json|csv|md>] | run agent-fix --root <directory> --target <relative-source> --goal <instruction> --test <relative-test.mjs> | run data-specialist --input <path> --goal <question> | run browser-audit --url <url> [--journey <json-array>] [--origin <https-origin>]... [--specialist] | run document-convert --input <path> --output <new.txt> | run file-move --source <file> --target <new-file> | run ... | resume <run-id> --input <path> [--numeric-column <header>]... | history list | schedule ...]
+Usage: taskforge [--help | --version | config | doctor | model-check | do <instruction> | chat | tasks list | tasks inspect <task-id> | tasks validate <task-id> --inputs-json <object> | permissions approve/list/revoke | run architecture-report --root <directory> --file <relative-path>... | run deployment-trace --repository <owner/name> --project-id <prj_id> [--team-id <team_id>] | run csv-analyze --input <path> [--numeric-column <header>]... [--output <new.json|csv|md>] | run document-analyze --input <path> [--output <new.json|csv|md>] | run agent-fix --root <directory> --target <relative-source> --goal <instruction> --test <relative-test.mjs> | run data-specialist --input <path> --goal <question> | run browser-audit --url <url> [--journey <json-array>] [--origin <https-origin>]... [--specialist] | run document-convert --input <path> --output <new.txt> | run file-move --source <file> --target <new-file> | run ... | resume <run-id> --input <path> [--numeric-column <header>]... | history list | schedule ...]
 
 The config command validates local settings and prints a redacted summary.
 The doctor command checks the selected local SQLite or MongoDB storage and reports available setup areas.
@@ -62,12 +64,14 @@ The tasks command lists or inspects built-in validated declarative task definiti
 The csv-analyze workflow reads one explicitly approved CSV file, stores redacted run metadata, and can calculate exact selected-column decimal totals with --numeric-column.
 The repo-inspect workflow inventories one explicitly approved repository root without reading file contents or running commands.
 The source-review workflow reads only explicitly selected source files and displays bounded, locally redacted content; it does not send or persist source.
+The architecture-report workflow analyzes only an exact approved set of explicitly selected files, reports line evidence and labeled inferences, and never executes source or walks the repository.
 The file-patch workflow shows redacted current and replacement text, then applies one content-bound replacement only after exact approval.
 The agent-fix workflow sends one explicitly approved, heuristically redacted source file and goal to the selected model, previews a full-file candidate, applies it only after a separate exact approval, then asks permission to run one selected Node test. It cannot read other files or create commits.
 The file-move workflow moves one supported document or data file after exact approval; source read/write and destination write folder grants are required, and the destination must be on the same filesystem volume.
 The git-diff workflow displays a bounded, locally redacted staged diff after exact root and file approval; it does not call a model or persist source.
 The model-investigate workflow sends selected, heuristically redacted source to the configured model only after an additional explicit transfer confirmation; it runs no tools and persists no source or findings.
 The github-issues workflow reads at most 20 open issue titles from one public repository without a token; it excludes pull requests and writes nothing.
+The deployment-trace workflow reads up to 25 GitHub Actions runs and Vercel deployments for an exact repository and project, makes only bounded GET requests, and joins matching commit SHAs. Vercel access uses TASKFORGE_VERCEL_TOKEN from the local environment; no deployment action is performed.
 The draft workflow creates a new local Markdown GitHub issue or email draft from an explicitly approved JSON input; it never contacts GitHub or an email service.
 The specialist-review workflow sends approved, heuristically redacted source excerpts to bounded read-only workers and asks the same configured model to review their findings; repository workers can use only literal search over those excerpts, the browser-specialist receives aggregate audit evidence, and the data-specialist receives a locally redacted sample from one approved file. Every local-content transfer requires a separate disclosure and confirmation.
 The research workflow sends an approved query to Groq browser search, then displays bounded source metadata and an unverified answer; --compare <question> --against <question> runs two searches and shows source excerpts and exact shared URLs side by side without inferring source agreement.
@@ -1387,6 +1391,66 @@ async function runGitDiffCommand(commandArgs: readonly string[]): Promise<void> 
   }
 }
 
+async function runArchitectureReportCommand(commandArgs: readonly string[]): Promise<void> {
+  if (commandArgs.length < 4 || commandArgs[0] !== "--root" || commandArgs[1] === undefined) {
+    process.stderr.write("Expected --root <directory> --file <relative-path> [--file <relative-path> ...].\n");
+    process.exitCode = 1;
+    return;
+  }
+  const paths: string[] = [];
+  for (let index = 2; index < commandArgs.length; index += 2) {
+    const option = commandArgs[index];
+    const path = commandArgs[index + 1];
+    if (option !== "--file" || path === undefined) {
+      process.stderr.write("Each selected file must use --file followed by a relative path.\n");
+      process.exitCode = 1;
+      return;
+    }
+    paths.push(path);
+  }
+  if (paths.length > 20) {
+    process.stderr.write("Select no more than 20 files for an architecture report.\n");
+    process.exitCode = 1;
+    return;
+  }
+  if (!process.stdin.isTTY || !process.stdout.isTTY) {
+    process.stderr.write("Architecture reports require interactive exact-root and file-set approval.\n");
+    process.exitCode = 2;
+    return;
+  }
+  let rootPath: string;
+  try {
+    rootPath = await realpath(resolve(commandArgs[1]));
+  } catch {
+    process.stderr.write("The requested repository root could not be resolved.\n");
+    process.exitCode = 2;
+    return;
+  }
+  const consent = createInterface({ input: process.stdin, output: process.stdout });
+  let answer: string;
+  try {
+    answer = await consent.question(`Read these exact files for a local architecture report?\nRoot: ${escapeTerminalControls(rootPath)}\nFiles:\n${paths.map((path) => `  ${JSON.stringify(escapeTerminalControls(path))}`).join("\n")}\nOnly these files are read, using bounded heuristic redaction. Source is not executed and the report is not a full-repository scan. [y/N] `);
+  } finally {
+    consent.close();
+  }
+  if (answer.trim().toLowerCase() !== "y") {
+    process.stdout.write("Architecture report cancelled before file access.\n");
+    return;
+  }
+  try {
+    const policy = new WorkspacePathPolicy();
+    const root = await policy.approveRoot(rootPath);
+    await requirePersistentFolderApproval(root.path, "read");
+    const report = await createArchitectureReport(root, policy, paths);
+    process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
+  } catch (error: unknown) {
+    const message = error instanceof ArchitectureReportError || error instanceof PersistentFolderApprovalError || error instanceof PathPolicyError
+      ? error.message : "Architecture report failed safely.";
+    process.stderr.write(`${message}\n`);
+    process.exitCode = 3;
+  }
+}
+
 async function runModelInvestigationCommand(commandArgs: readonly string[]): Promise<void> {
   if (commandArgs.length < 4 || commandArgs[0] !== "--root" || commandArgs[1] === undefined) {
     process.stderr.write("Expected --root <directory> --file <relative-path> [--file <relative-path> ...].\n");
@@ -1674,6 +1738,67 @@ async function runGitHubIssuesCommand(commandArgs: readonly string[]): Promise<v
   } catch (error: unknown) {
     const message = error instanceof GitHubReadError ? error.message : "GitHub issue read failed safely.";
     process.stderr.write(`GitHub issue read failed: ${message}\n`);
+    process.exitCode = 3;
+  }
+}
+
+async function runDeploymentTraceCommand(commandArgs: readonly string[]): Promise<void> {
+  const valid = (commandArgs.length === 4 || commandArgs.length === 6) &&
+    commandArgs[0] === "--repository" && commandArgs[1] !== undefined &&
+    commandArgs[2] === "--project-id" && commandArgs[3] !== undefined &&
+    (commandArgs.length === 4 || (commandArgs[4] === "--team-id" && commandArgs[5] !== undefined));
+  if (!valid) {
+    process.stderr.write("Expected --repository <owner/name> --project-id <prj_id> [--team-id <team_id>].\n");
+    process.exitCode = 1;
+    return;
+  }
+  if (!process.stdin.isTTY || !process.stdout.isTTY) {
+    process.stderr.write("Deployment tracing requires interactive approval for the exact public repository and Vercel project scope.\n");
+    process.exitCode = 2;
+    return;
+  }
+  try {
+    loadLocalEnvironmentFile();
+  } catch (error: unknown) {
+    process.stderr.write(error instanceof ConfigurationError ? error.message : "The local environment file could not be loaded safely.\n");
+    process.exitCode = 2;
+    return;
+  }
+  const token = process.env["TASKFORGE_VERCEL_TOKEN"];
+  if (token === undefined || token.length === 0) {
+    process.stderr.write("Vercel tracing requires TASKFORGE_VERCEL_TOKEN in the local environment. No network request was made.\n");
+    process.exitCode = 2;
+    return;
+  }
+  const repository = commandArgs[1];
+  const projectId = commandArgs[3];
+  if (repository === undefined || projectId === undefined) {
+    process.stderr.write("The selected deployment scope is incomplete.\n");
+    process.exitCode = 1;
+    return;
+  }
+  const teamId = commandArgs[5];
+  const consent = createInterface({ input: process.stdin, output: process.stdout });
+  let answer: string;
+  try {
+    const teamLine = teamId === undefined ? "" : `\nVercel team: ${escapeTerminalControls(teamId)}`;
+    answer = await consent.question(
+      `Read-only deployment trace for exactly this public GitHub repository and Vercel project?\nRepository: ${escapeTerminalControls(repository)}\nVercel project: ${escapeTerminalControls(projectId)}${teamLine}\nThis sends bounded GET requests to GitHub Actions and Vercel deployment-list APIs. The Vercel token is sent only to api.vercel.com and is never displayed or stored. No deployment action will be performed. [y/N] `,
+    );
+  } finally {
+    consent.close();
+  }
+  if (answer.trim().toLowerCase() !== "y") {
+    process.stdout.write("Deployment trace cancelled before network access.\n");
+    return;
+  }
+  try {
+    const result = await traceDeployments(repository, projectId, token, fetch, teamId);
+    process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+    if (result.github.status !== "ok" || result.vercel.status !== "ok") process.exitCode = 3;
+  } catch (error: unknown) {
+    const message = error instanceof DeploymentTraceError ? error.message : "Deployment tracing failed safely.";
+    process.stderr.write(`${message}\n`);
     process.exitCode = 3;
   }
 }
@@ -2577,6 +2702,8 @@ if (args.length === 0 || (args.length === 1 && (args[0] === "--help" || args[0] 
   await runSoftwareCheckCommand(args.slice(2));
 } else if (args.length >= 2 && args[0] === "run" && args[1] === "source-review") {
   await runSourceReviewCommand(args.slice(2));
+} else if (args.length >= 2 && args[0] === "run" && args[1] === "architecture-report") {
+  await runArchitectureReportCommand(args.slice(2));
 } else if (args.length >= 2 && args[0] === "run" && args[1] === "pdf-report") {
   await runPdfReportCommand(args.slice(2));
 } else if (args.length >= 2 && args[0] === "run" && args[1] === "file-patch") {
@@ -2591,6 +2718,8 @@ if (args.length === 0 || (args.length === 1 && (args[0] === "--help" || args[0] 
   await runModelInvestigationCommand(args.slice(2));
 } else if (args.length >= 2 && args[0] === "run" && args[1] === "github-issues") {
   await runGitHubIssuesCommand(args.slice(2));
+} else if (args.length >= 2 && args[0] === "run" && args[1] === "deployment-trace") {
+  await runDeploymentTraceCommand(args.slice(2));
 } else if (args.length >= 2 && args[0] === "run" && args[1] === "draft") {
   await runDraftCommand(args.slice(2));
 } else if (args.length >= 2 && args[0] === "run" && args[1] === "specialist-review") {

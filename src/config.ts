@@ -175,7 +175,7 @@ export function parseProviderConfiguration(value: unknown): ProviderConfiguratio
   throw new ConfigurationError(`${MODEL_PROVIDER_ENVIRONMENT_VARIABLE} must be either groq or ollama.`);
 }
 
-function loadLocalEnvironmentFile(environment: Readonly<Record<string, string | undefined>>): void {
+export function loadLocalEnvironmentFile(environment: Readonly<Record<string, string | undefined>> = process.env): void {
   if (environment === process.env) {
     const result = dotenv.config({ quiet: true });
     const errorCode = isRecord(result.error) ? result.error["code"] : undefined;
