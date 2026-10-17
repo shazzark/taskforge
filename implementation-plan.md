@@ -71,6 +71,12 @@ Moved repository inventory, selected-source review, and architecture-report hand
 
 **Verification:** Strict typecheck and clean build passed. New CLI gate coverage and related repository-inspection, source-review, and architecture-report tests passed (11/11). Independent review confirmed the original consent, approval, workflow-call and error paths were preserved. `git diff --check` passed; full integration remains pending for the overall refactor.
 
+### Checkpoint 13 — Extract scheduling CLI command: VERIFIED
+
+Moved schedule argument parsing, schedule lifecycle output, recovery confirmation, foreground runner control, and scheduled CSV/document execution wiring into `src/cli/commands/scheduling.ts`. Existing store and approved-file behavior are injected by the entrypoint; scheduler mechanics stay in `src/scheduling/`.
+
+**Verification:** Strict typecheck and clean build passed. Scheduling CLI gate coverage and scheduler fixtures passed (6/6). Independent review confirmed persistent and per-occurrence approval order, resume/recovery, SIGINT cleanup and store lifetime. The interactive path was source-reviewed, not driven end-to-end. `git diff --check` passed; the full integrated suite remains pending for overall refactor completion.
+
 ### Checkpoint 8 — Move document parsers and conversion under tools: VERIFIED
 
 Moved the five bounded parser/conversion modules from `src/documents/` to `src/tools/documents/` and their feature tests to `test/tools/documents/`. Updated orchestration/sampling/CLI imports and current docs; workflows remain responsible for approvals and persistence.

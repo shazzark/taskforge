@@ -775,6 +775,12 @@ Moved the repository inventory, selected-source review, and architecture-report 
 
 **Verification:** Strict typecheck and clean build passed. The new CLI gate test plus repository inspection, source review, and architecture report tests passed (11/11). Independent review found no ordering, output, error, or permission regression; the TTY test is a gate-level smoke test, while the workflow approval paths remain covered by existing fixture tests. `git diff --check` passed. The integrated suite remains required before the overall code-organization refactor is complete.
 
+### Refactor checkpoint 13 — Extract scheduling CLI command — VERIFIED
+
+Moved schedule argument validation, creation/list/status/recovery commands, foreground tick handling, and scheduled CSV/document execution wiring into `src/cli/commands/scheduling.ts`. The dispatcher injects the existing storage and approved-file helpers. Scheduler service logic remains in `src/scheduling/`; approval on each occurrence, cancellation, persistence, and schedule semantics are unchanged. Added CLI checks for invalid definitions and unattended creation refusal.
+
+**Verification:** Strict typecheck and clean build passed. The scheduling CLI gate test plus scheduler fixtures passed (6/6). Independent review confirmed argument validation, approval ordering, per-occurrence read approval, uncertain-run resume, claim recovery, SIGINT cleanup, and store lifetime are unchanged. Interactive confirmation and SIGINT are source-reviewed but not newly driven end-to-end. `git diff --check` passed. The integrated suite remains required before the overall refactor is complete.
+
 ### Phase 9 documentation checkpoint — COMPLETE
 
 Updated in this checkpoint: `prd.md`, `trd.md`, `architecture.md`, `backendschema.md`, `appflow.md`, `implementation-plan.md`, `CAPABILITY_AUDIT.md`, and README record the approved scope and distinguish target design from current behavior. Cross-document proposal/status scan and `git diff --check` passed. No code changed, so the Phase 8.8 full-suite evidence remains the latest full-suite result; no new test claim is made. Commit this verified documentation checkpoint locally before starting Phase 10.
