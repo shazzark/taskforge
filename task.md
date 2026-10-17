@@ -661,9 +661,13 @@ Depends on Phase 12 and permission/secret handling. No deployment actions.
 
 **Acceptance:** API fixtures prove minimum read scopes, no writes, source links, redaction and honest auth/expiry/partial-result states. Live tracing waits for authorized account/project setup and is separately verified.
 
-### Phase 19 — Guided setup and Windows bundled-runtime distribution — NOT STARTED
+### Phase 19 — Guided setup and Windows bundled-runtime distribution — IN PROGRESS
 
 Depends on Phase 10 and stable CLI/integrations. Evaluate licensing, architecture, browser runtime, size and updates before choosing distribution mechanics.
+
+**Phase 19.1 — Distribution inventory — COMPLETE (documentation only).** `PHASE19_DISTRIBUTION_AUDIT.md` records the current npm artifact, Node and Playwright runtime/browser requirements, data-retention boundary, candidate portable-ZIP and installer paths, and dependency ordering. No installer/runtime implementation or acceptance is claimed. The npm artifact dry-run lists 48 files and excludes checked secret/session/private/report paths. Playwright is a runtime dynamic import but currently a dev dependency; the previous production consumer smoke did not exercise browser commands. Correct and verify runtime packaging before a clean consumer can claim browser support.
+
+**Next subphase:** Finish applicable Phase 10 Windows/storage and compatibility gates. Then fix/test production dependency classification and browser runtime availability in a production-only package consumer. Only after that should the bundle mechanism, integrity/SBOM, clean-machine, upgrade and uninstall-retention acceptance be implemented. No owner decision blocks the inventory; a clean Windows operator/machine is needed for final acceptance.
 
 **Acceptance:** Clean Windows machine without preinstalled Node launches documented workflows with bundled runtime; package excludes credentials/session/private artifacts; integrity, license, data preservation, upgrade/side-by-side and uninstall-retention checks pass. No service provisioning or model download.
 
