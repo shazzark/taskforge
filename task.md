@@ -693,7 +693,7 @@ Depends on all applicable prior acceptance gates.
 
 **Acceptance:** Owner synthetic walkthrough covers approval, cancellation, failure and expected artifacts. A different developer completes clean Windows trial. BookFinder live journey is recorded separately. Neither can be marked complete from agent review.
 
-## Cross-cutting code organization and maintainability — IN PROGRESS
+## Cross-cutting code organization and maintainability — COMPLETE
 
 This structural refactor does not change the approved 11 product work areas. It preserves the CLI contract, persisted-data schema, permission boundaries, and strict TypeScript settings. See the source placement guidance in `CONTRIBUTING.md`.
 
@@ -797,7 +797,7 @@ Moved the PDF-report and local-draft command handlers into `src/cli/commands/art
 
 Moved browser-audit argument parsing, target/consent gates, manual-login prompts, result presentation, local screenshot output, and optional specialist handoff wiring into `src/cli/commands/browser-audit.ts`. The entrypoint injects the existing store lifecycle and specialist-review operation. Browser workflow, network protections, and owner-login boundaries are unchanged. Added non-interactive gate coverage for loopback and public manual-login modes; neither test starts a browser or contacts a site.
 
-**Verification:** Strict `npm run typecheck` and clean `npm run build` passed. Focused browser workflow, CLI, and egress-proxy tests passed (22/22); `git diff --check` passed. Independent review found no blocking issues and confirmed consent, manual-login privacy, sanitization, and specialist boundaries are preserved. The CLI tests exercise non-interactive consent gates; interactive approval success is not directly covered. No live owner login or deployment access was attempted. Local checkpoint commit follows; the overall refactor still needs remaining CLI decomposition and the full integrated suite.
+**Verification:** Strict `npm run typecheck` and clean `npm run build` passed. Focused browser workflow, CLI, and egress-proxy tests passed (22/22); `git diff --check` passed. Independent review found no blocking issues and confirmed consent, manual-login privacy, sanitization, and specialist boundaries are preserved. The CLI tests exercise non-interactive consent gates; interactive approval success is not directly covered. No live owner login or deployment access was attempted. At this checkpoint, remaining CLI decomposition and the integrated suite were still pending; see checkpoints 17–20 for their completion.
 
 ### Phase 9 documentation checkpoint — COMPLETE
 
@@ -809,16 +809,22 @@ Updated in this checkpoint: `prd.md`, `trd.md`, `architecture.md`, `backendschem
 
 Moved folder approval listing, grant/revoke validation and consent, and result/error presentation into `src/cli/commands/permissions.ts`; the entrypoint injects its existing store lifecycle. Canonical path validation, non-sensitive-root checks, exact read/write scope, terminal escaping, cancellation behavior, storage error handling, and exit codes are unchanged.
 
-**Verification:** Strict typecheck and clean build passed. Permission CLI and path-policy tests passed (14/14); `git diff --check` passed. Independent review found no behavior or security regression. Interactive approve/revoke success remains untested at CLI level, as before this move. After this checkpoint, the integrated serial `npm test` passed 200/200 (0 failed, 0 skipped) in 182.5 seconds using isolated local storage and a dedicated MongoDB test database. Remaining CLI decomposition and a final integrated run are still required before the refactor is complete.
+**Verification:** Strict typecheck and clean build passed. Permission CLI and path-policy tests passed (14/14); `git diff --check` passed. Independent review found no behavior or security regression. Interactive approve/revoke success remains untested at CLI level, as before this move. After this checkpoint, the integrated serial `npm test` passed 200/200 (0 failed, 0 skipped) in 182.5 seconds using isolated local storage and a dedicated MongoDB test database. At checkpoint 17, remaining CLI decomposition and the final integrated run were pending; checkpoints 18-20 completed them.
 
 ### Refactor checkpoint 18 - Extract natural-language and chat CLI commands - VERIFIED
 
 Moved `do` and `chat` command handling and CSV/document agent-tool wiring into `src/cli/commands/agent-session.ts`. The entrypoint injects the existing approved-file reader and store lifecycle. Provider consent, exact-file approval, fixed tool exposure, shared per-session budget, cancellation, and message-window behavior are intended to remain unchanged.
 
-**Verification so far:** Strict typecheck and clean build passed. Agent session CLI and tool tests passed (9/9); `git diff --check` passed. Independent review found no behavioral differences: provider consent, exact-file approval, cancellation, shared budgets, bounded message history, and fixed tool exposure remain intact. Interactive approval and history success paths remain untested at CLI level, as before the move. The final integrated suite for this refactor remains required.
+**Verification so far:** Strict typecheck and clean build passed. Agent session CLI and tool tests passed (9/9); `git diff --check` passed. Independent review found no behavioral differences: provider consent, exact-file approval, cancellation, shared budgets, bounded message history, and fixed tool exposure remain intact. Interactive approval and history success paths remain untested at CLI level, as before the move. The final integrated suite passed after subsequent checkpoint 19; see checkpoint 20.
 
 ### Refactor checkpoint 19 - Extract reviewed software CLI workflows - VERIFIED
 
 Moved software checks, static and generated file patches, model-assisted single-file fixes, approved file moves, and staged Git diff review into `src/cli/commands/software-workflows.ts`. The module receives the established store lifecycle and persistent-folder approval function from the entrypoint. Command allowlists, preview/hash checks, exact consent order, source redaction, cancellation, and error/exit behavior are unchanged.
 
-**Verification:** Strict typecheck/build passed. Focused agent-session/permissions CLI, reviewed-command, patch-application, and Git diff review tests passed (21/21); `git diff --check` passed. Independent review found no behavior changes or approval-boundary regression. Interactive success paths remain only partially covered at CLI level; the full suite after this extraction remains required.
+**Verification:** Strict typecheck/build passed. Focused agent-session/permissions CLI, reviewed-command, patch-application, and Git diff review tests passed (21/21); `git diff --check` passed. Independent review found no behavior changes or approval-boundary regression. Interactive success paths remain only partially covered at CLI level; the final integrated run after this extraction passed: serial `npm test`, 200/200, 0 failed, 0 skipped, 157.4 seconds, using isolated local storage and a dedicated MongoDB test database.
+
+### Refactor checkpoint 20 - Integrated structural verification - VERIFIED
+
+The code-organization work moved persistence/configuration/workflow/tool responsibilities under feature-focused folders, added the CONTRIBUTING codebase map, and extracted the major CLI command families while preserving the public CLI entrypoint. The CLI remains responsible for top-level dispatch, shared exact-file approval/storage lifecycle, configuration/diagnostics, and smaller command flows; there are no empty backend folders or generic helper buckets.
+
+**Verification:** Final strict build through `npm test` passed serially with 200/200 tests, 0 failed, 0 skipped (157.4 seconds). The full run used an isolated local-storage root and a dedicated MongoDB test database. Focused checks and independent reviews passed at each extraction checkpoint. `git diff --check` passed. No live owner login, Vercel trace, deployment action, or provider call was made for this structural refactor.
