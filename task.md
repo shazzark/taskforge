@@ -733,6 +733,12 @@ Moved public GitHub issue command parsing, terminal confirmation, adapter invoca
 
 **Verification:** `npm run typecheck`, `npm run build`, and `node --test --test-concurrency=1 test/cli/github-issues.test.mjs test/github-public-issues.test.mjs` passed (3/3). Independent review found no behavioral regression; cancellation also returns before the adapter call by source order. `git diff --check` passed.
 
+### Refactor checkpoint 6 — Extract deployment-trace CLI command — VERIFIED
+
+Moved deployment-trace argument handling, TTY/config/token preflight, explicit consent, adapter invocation, and result display to `src/cli/commands/deployment-trace.ts`; `src/cli.ts` retains dispatch. The established sequence and read-only behavior are preserved. Added CLI tests for malformed scope, non-interactive refusal, and token non-disclosure.
+
+**Verification:** `npm run typecheck`, `npm run build`, and deployment CLI/adapter tests passed (6/6). Independent review confirmed the preflight order and safe output. Interactive credential loading and affirmative live API calls remain covered by source/fixture behavior only; no live Vercel request was made. `git diff --check` passed.
+
 ### Phase 9 documentation checkpoint — COMPLETE
 
 Updated in this checkpoint: `prd.md`, `trd.md`, `architecture.md`, `backendschema.md`, `appflow.md`, `implementation-plan.md`, `CAPABILITY_AUDIT.md`, and README record the approved scope and distinguish target design from current behavior. Cross-document proposal/status scan and `git diff --check` passed. No code changed, so the Phase 8.8 full-suite evidence remains the latest full-suite result; no new test claim is made. Commit this verified documentation checkpoint locally before starting Phase 10.

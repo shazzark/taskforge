@@ -41,6 +41,12 @@ Moved the public issue reader's argument/TTY/consent/result handler from `src/cl
 
 **Verification:** `npm run typecheck`, `npm run build`, and `node --test --test-concurrency=1 test/cli/github-issues.test.mjs test/github-public-issues.test.mjs` passed (3/3). Independent source review confirmed the network adapter is called only after consent; malformed and non-interactive CLI cases are tested. This checkpoint does not make live GitHub/Vercel access claims.
 
+### Checkpoint 6 — Extract read-only deployment tracing CLI command: VERIFIED
+
+Moved deployment-trace argument parsing, terminal/config/token preflight, exact-scope consent, adapter call, and result presentation into `src/cli/commands/deployment-trace.ts`. Kept the original preflight ordering and output protections. Added subprocess coverage for malformed input, non-interactive refusal, and token non-disclosure.
+
+**Verification:** Strict typecheck/build and deployment CLI/adapter tests passed (6/6). Independent source review confirmed argument validation → TTY → local environment → token check → consent → adapter order. No live Vercel call or interactive token path was exercised.
+
 **Next checkpoints:** Move feature capabilities in small dependency-aware slices and split additional CLI handlers by responsibility, retaining `dist/cli.js` as the executable entry. Run the integrated serial suite after the structural migrations. No unrelated behavior changes or new dependencies are included.
 
 Phase 4.13 wires explicitly selected numeric CSV columns into the persisted workflow and all structured report formats. Selection names affect the checkpoint hash; strict typecheck and the full isolated MongoDB suite passed (105 tests, zero skipped), and independent review found no remaining issues after prototype-key and Markdown-label fixes.
