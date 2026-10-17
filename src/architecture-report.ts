@@ -1,4 +1,5 @@
-import { extname, resolve } from "node:path";
+import { extname, posix, resolve } from "node:path";
+import { platform } from "node:os";
 import type { ApprovedRoot, WorkspacePathPolicy } from "./security/path-policy.js";
 import { SourceReviewError, reviewSourceFiles } from "./workflows/source-review-workflow.js";
 
@@ -122,6 +123,31 @@ function analyzeFile(path: string, content: string): ArchitectureFileReport {
   return { path, language, status: "analyzed", observations, inferences, missingEvidence };
 }
 
+const RESOLVABLE_SOURCE_EXTENSIONS = [".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs"] as const;
+function selectedPathKey(value: string): string {
+  return platform() === "win32" ? value.toLowerCase() : value;
+}
+
+/** Resolve relative JS/TS specifiers only against the caller-selected file set. */
+function resolveSelectedImport(importer: string, specifier: string, selectedFiles: ReadonlyMap<string, string>): string | undefined {
+  if (!specifier.startsWith(".")) return undefined;
+  const path = posix.normalize(posix.join(posix.dirname(importer), specifier));
+  const candidates = [path];
+  const extension = posix.extname(path).toLowerCase();
+  if (extension.length === 0) {
+    for (const suffix of RESOLVABLE_SOURCE_EXTENSIONS) candidates.push(`${path}${suffix}`);
+    for (const suffix of RESOLVABLE_SOURCE_EXTENSIONS) candidates.push(posix.join(path, `index${suffix}`));
+  } else if ([".js", ".jsx", ".mjs", ".cjs"].includes(extension)) {
+    const stem = path.slice(0, -extension.length);
+    for (const suffix of [".ts", ".tsx", ".mts", ".cts"] as const) candidates.push(`${stem}${suffix}`);
+  }
+  for (const candidate of candidates) {
+    const selected = selectedFiles.get(selectedPathKey(candidate));
+    if (selected !== undefined) return selected;
+  }
+  return undefined;
+}
+
 /** Analyze only caller-selected files beneath an already approved root. */
 export async function createArchitectureReport(
   root: ApprovedRoot,
@@ -153,6 +179,7 @@ export async function createArchitectureReport(
     nodes.push({ id, kind: "file", value: file.path });
   }
   const moduleIds = new Map<string, string>();
+  const selectedFiles = new Map(files.map((file) => [selectedPathKey(file.path), file.path]));
   let truncated = false;
   for (const file of files) {
     const from = fileIds.get(file.path);
@@ -163,8 +190,14 @@ export async function createArchitectureReport(
         truncated = true;
         break;
       }
-      let to = moduleIds.get(observation.target);
+      const resolvedPath = resolveSelectedImport(file.path, observation.target, selectedFiles);
+      let to = resolvedPath === undefined ? undefined : fileIds.get(resolvedPath);
+      if (to === undefined) to = moduleIds.get(observation.target);
       if (to === undefined) {
+        if (resolvedPath !== undefined) {
+          // A selected path always has a file node, so this is defensive only.
+          continue;
+        }
         to = `module_${moduleIds.size + 1}`;
         moduleIds.set(observation.target, to);
         nodes.push({ id: to, kind: "module", value: observation.target });
@@ -190,7 +223,7 @@ export async function createArchitectureReport(
       "Only explicitly selected files were read; this report does not represent the whole repository.",
       "Import/export detection is line-based and heuristic; dynamic loading, generated code, and runtime behavior are not analyzed.",
       "Evidence identifies inspected file lines. It does not prove semantic correctness, reachability, or runtime architecture.",
-      "The generated diagram is a bounded import graph for the selected files; module specifiers are not resolved to prove that they identify repository files.",
+      "Relative JS/TS specifiers are matched heuristically only against exact selected files using common source suffixes; aliases, package exports, compiler settings, and runtime resolution are not analyzed.",
       "Common credential patterns are redacted heuristically; other secrets may remain visible.",
       "Source files are never executed.",
     ],

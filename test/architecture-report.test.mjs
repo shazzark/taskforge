@@ -52,6 +52,51 @@ test("unsupported languages and missing evidence are explicit", async () => {
   }
 });
 
+test("relative JavaScript and TypeScript imports resolve only to explicitly selected files", async () => {
+  const rootPath = await mkdtemp(join(tmpdir(), "taskforge-architecture-selected-resolution-"));
+  try {
+    await mkdir(join(rootPath, "src"));
+    await writeFile(join(rootPath, "src", "entry.ts"), "import './worker.js';\nimport './util';\nimport 'node:fs';\n", "utf8");
+    await writeFile(join(rootPath, "src", "worker.ts"), "export const worker = true;\n", "utf8");
+    await writeFile(join(rootPath, "src", "util.ts"), "export const util = true;\n", "utf8");
+    await writeFile(join(rootPath, "src", "unselected.ts"), "export const ignored = true;\n", "utf8");
+    const policy = new WorkspacePathPolicy();
+    const root = await policy.approveRoot(rootPath);
+    const report = await createArchitectureReport(root, policy, ["src/entry.ts", "src/worker.ts", "src/util.ts"]);
+    const source = report.diagram.nodes.find((node) => node.kind === "file" && node.value === "src/entry.ts");
+    const worker = report.diagram.nodes.find((node) => node.kind === "file" && node.value === "src/worker.ts");
+    const util = report.diagram.nodes.find((node) => node.kind === "file" && node.value === "src/util.ts");
+    assert.ok(source);
+    assert.ok(worker);
+    assert.ok(util);
+    assert.ok(report.diagram.edges.some((edge) => edge.from === source.id && edge.to === worker.id && edge.evidence.line === 1));
+    assert.ok(report.diagram.edges.some((edge) => edge.from === source.id && edge.to === util.id && edge.evidence.line === 2));
+    assert.ok(report.diagram.nodes.some((node) => node.kind === "module" && node.value === "node:fs"));
+    assert.ok(report.limitations.some((item) => item.includes("exact selected files")));
+  } finally {
+    await rm(rootPath, { recursive: true, force: true });
+  }
+});
+
+test("Windows path casing does not hide an explicitly selected import target", { skip: process.platform !== "win32" }, async () => {
+  const rootPath = await mkdtemp(join(tmpdir(), "taskforge-architecture-windows-case-"));
+  try {
+    await mkdir(join(rootPath, "src"));
+    await writeFile(join(rootPath, "src", "entry.ts"), "import './worker.js';\n", "utf8");
+    await writeFile(join(rootPath, "src", "worker.ts"), "export const worker = true;\n", "utf8");
+    const policy = new WorkspacePathPolicy();
+    const root = await policy.approveRoot(rootPath);
+    const report = await createArchitectureReport(root, policy, ["src/entry.ts", "SRC/WORKER.ts"]);
+    const source = report.diagram.nodes.find((node) => node.kind === "file" && node.value === "src/entry.ts");
+    const worker = report.diagram.nodes.find((node) => node.kind === "file" && node.value.toLowerCase() === "src/worker.ts");
+    assert.ok(source);
+    assert.ok(worker);
+    assert.ok(report.diagram.edges.some((edge) => edge.from === source.id && edge.to === worker.id));
+  } finally {
+    await rm(rootPath, { recursive: true, force: true });
+  }
+});
+
 test("report reads only explicit approved files and uses existing secret redaction", async () => {
   const rootPath = await mkdtemp(join(tmpdir(), "taskforge-architecture-boundary-"));
   const outsidePath = await mkdtemp(join(tmpdir(), "taskforge-architecture-outside-"));
