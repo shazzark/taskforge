@@ -2,6 +2,14 @@
 
 TaskForge is an early-development Windows-first TypeScript CLI. Contributions should preserve the permission boundaries and documented phase scope.
 
+## Codebase map
+
+`src/cli.ts` remains the executable entry point and top-level dispatcher. Command-specific parsing, validation calls, and terminal output belong in `src/cli/commands/`; keep handlers small and call the relevant workflow or application service. Agent planning, tool loops, and specialist coordination belong in `src/agent/`. Repeatable task behavior belongs in `src/workflows/`; task definitions and their validation stay with the task-registry feature until a coherent workflow boundary is established. Feature capabilities are currently grouped in `src/data/`, `src/documents/`, `src/software/`, and `src/artifacts/`; new file, data, document, software, and browser capabilities should be organized under `src/tools/` as those existing groups are moved in bounded changes. Provider APIs and provider contracts belong in `src/providers/`; external search, GitHub, and Vercel adapters belong in `src/integrations/`.
+
+Persistence interfaces and adapters are currently under `src/persistence/`, with MongoDB code at `src/mongo-store.ts`; the storage refactor will bring both under `src/storage/` without changing the persisted schema. Approval and access-grant code currently lives in `src/security/`; place permission policy there or in `src/permissions/` when the permission boundary is separated. Network protections, path safety, untrusted-input handling, and redaction belong in `src/security/`. Schedule state and execution belong in `src/scheduling/`. Configuration currently lives in `src/config.ts`; it may move under `src/config/` when that yields a clearer boundary. Add `src/shared/` only for types, errors, or utilities genuinely shared across features. Do not create empty backend-style folders or broad `helpers.ts`/`utils.ts` modules.
+
+Keep validation, types, and helpers with the feature they describe. Put focused tests under matching feature directories in `test/` (for example, `test/agent/` and `test/cli/`), and update direct compiled-module imports when source files move. Preserve NodeNext `.js` import specifiers, the `dist/cli.js` package entry point, strict TypeScript options, CLI output/exit codes, storage compatibility, and permission boundaries during structural changes.
+
 ## Development setup
 
 - Use Node.js 22.13.0 or later and npm.

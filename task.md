@@ -693,6 +693,18 @@ Depends on all applicable prior acceptance gates.
 
 **Acceptance:** Owner synthetic walkthrough covers approval, cancellation, failure and expected artifacts. A different developer completes clean Windows trial. BookFinder live journey is recorded separately. Neither can be marked complete from agent review.
 
+## Cross-cutting code organization and maintainability — IN PROGRESS
+
+This structural refactor does not change the approved 11 product work areas. It preserves the CLI contract, persisted-data schema, permission boundaries, and strict TypeScript settings. See the source placement guidance in `CONTRIBUTING.md`.
+
+### Refactor checkpoint 1 — Extract task-registry CLI command — VERIFIED
+
+Moved the `tasks list|inspect|validate` handler and its task-registry imports from `src/cli.ts` to `src/cli/commands/tasks.ts`. Moved its CLI and registry tests into `test/cli/` and `test/agent/`. Top-level argument dispatch and command semantics remain unchanged; package and compiler output paths remain unchanged.
+
+**Verification:** `npm run typecheck`, `npm run build`, and `node --test test/cli/tasks.test.mjs test/agent/task-registry.test.mjs` passed (6/6). CLI tests cover output (including the em-dash separator), exit status, rejected input, and value redaction. `git diff --check` is required before each local checkpoint.
+
+**Next:** Extract domain types/errors from the Mongo adapter, then move both persistence adapters and their interfaces to `src/storage/`; update direct compiled-path test imports and retain the current schema. Continue with bounded configuration, capability, and CLI handler moves, verifying each affected feature. Run the integrated serial suite before declaring this refactor complete.
+
 ### Phase 9 documentation checkpoint — COMPLETE
 
 Updated in this checkpoint: `prd.md`, `trd.md`, `architecture.md`, `backendschema.md`, `appflow.md`, `implementation-plan.md`, `CAPABILITY_AUDIT.md`, and README record the approved scope and distinguish target design from current behavior. Cross-document proposal/status scan and `git diff --check` passed. No code changed, so the Phase 8.8 full-suite evidence remains the latest full-suite result; no new test claim is made. Commit this verified documentation checkpoint locally before starting Phase 10.

@@ -3,7 +3,7 @@ import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 
-const cliPath = fileURLToPath(new URL("../dist/cli.js", import.meta.url));
+const cliPath = fileURLToPath(new URL("../../dist/cli.js", import.meta.url));
 
 function run(...args) {
   return spawnSync(process.execPath, [cliPath, ...args], { encoding: "utf8", timeout: 5_000, windowsHide: true });
@@ -22,6 +22,7 @@ test("tasks list and inspect expose only the built-in validated task catalog", (
   assert.equal(inspected.status, 0);
   assert.match(inspected.stdout, /Inputs:/u);
   assert.match(inspected.stdout, /Outputs:/u);
+  assert.match(inspected.stdout, /\u2014/u);
   assert.match(inspected.stdout, /csv\.analyze/u);
 });
 
