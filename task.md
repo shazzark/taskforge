@@ -769,6 +769,12 @@ Moved the evidence-based architecture report implementation to `src/workflows/ar
 
 **Verification:** `npm run typecheck`, clean `npm run build`, and the architecture report fixture suite passed (6/6). The first focused run found a stale relative `WorkspacePathPolicy` test import after the move; it was corrected and the full focused suite passed. `npm pack --dry-run --json` reported 52 entries (136,793 compressed bytes; 641,346 unpacked), including the new workflow output and no old `dist/architecture-report.js` copy. Independent review found no issues beyond the stale package path, which was corrected. `git diff --check` passed. The full integrated suite remains required before the overall code-organization refactor is complete.
 
+### Refactor checkpoint 12 — Extract read-only repository inspection CLI commands — VERIFIED
+
+Moved the repository inventory, selected-source review, and architecture-report CLI handlers into `src/cli/commands/repository-inspection.ts`. The shared persistent-approval error now lives in `src/cli/command-errors.ts`; the dispatcher passes existing storage and approval helpers into these handlers. Consent text, validation order, exit codes, exact file/root scope, and read-only workflow calls are preserved. Added CLI tests for malformed architecture arguments and non-interactive refusal across all three commands.
+
+**Verification:** Strict typecheck and clean build passed. The new CLI gate test plus repository inspection, source review, and architecture report tests passed (11/11). Independent review found no ordering, output, error, or permission regression; the TTY test is a gate-level smoke test, while the workflow approval paths remain covered by existing fixture tests. `git diff --check` passed. The integrated suite remains required before the overall code-organization refactor is complete.
+
 ### Phase 9 documentation checkpoint — COMPLETE
 
 Updated in this checkpoint: `prd.md`, `trd.md`, `architecture.md`, `backendschema.md`, `appflow.md`, `implementation-plan.md`, `CAPABILITY_AUDIT.md`, and README record the approved scope and distinguish target design from current behavior. Cross-document proposal/status scan and `git diff --check` passed. No code changed, so the Phase 8.8 full-suite evidence remains the latest full-suite result; no new test claim is made. Commit this verified documentation checkpoint locally before starting Phase 10.

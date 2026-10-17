@@ -65,6 +65,12 @@ Moved the implementation and fixture tests from repository root into `src/workfl
 
 **Verification:** Strict typecheck, clean build, all six architecture-report fixtures, `git diff --check`, and package dry-run passed. The moved test's stale relative import and the package audit's old compiled path were corrected. Independent review found no behavior or scope issue. The package inventory is now 52 entries and contains only the new architecture workflow output. Full integration remains pending before the overall refactor is called complete.
 
+### Checkpoint 12 — Extract read-only repository inspection commands: VERIFIED
+
+Moved repository inventory, selected-source review, and architecture-report handlers into `src/cli/commands/repository-inspection.ts`; the existing dispatcher injects the same store and persistent-read-approval helpers. Moved the shared approval error to `src/cli/command-errors.ts`. Added CLI coverage for exact argument and non-interactive TTY gates. No permission or workflow behavior was intended to change.
+
+**Verification:** Strict typecheck and clean build passed. New CLI gate coverage and related repository-inspection, source-review, and architecture-report tests passed (11/11). Independent review confirmed the original consent, approval, workflow-call and error paths were preserved. `git diff --check` passed; full integration remains pending for the overall refactor.
+
 ### Checkpoint 8 — Move document parsers and conversion under tools: VERIFIED
 
 Moved the five bounded parser/conversion modules from `src/documents/` to `src/tools/documents/` and their feature tests to `test/tools/documents/`. Updated orchestration/sampling/CLI imports and current docs; workflows remain responsible for approvals and persistence.
