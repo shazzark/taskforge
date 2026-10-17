@@ -1,12 +1,17 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { MongoClient } from "mongodb";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test from "node:test";
 import { MongoStore } from "../dist/mongo-store.js";
 import { SqliteStore } from "../dist/persistence/sqlite-store.js";
+import { WorkspacePathPolicy } from "../dist/security/path-policy.js";
+import { runCsvAnalysisWorkflow } from "../dist/workflows/csv-analysis-workflow.js";
+import { analyzeDocument } from "../dist/workflows/document-analysis-workflow.js";
+import { inspectRepository } from "../dist/workflows/repository-inspection-workflow.js";
 
 const mongoBase = process.env.TASKFORGE_TEST_MONGODB_URI;
 
@@ -55,7 +60,56 @@ async function exerciseCommonContract(store, scopePath, prefix) {
   assert.equal((await store.listSchedules())[0]?.status, "active");
   assert.equal((await store.setScheduleStatus(`${prefix}-schedule`, "paused"))?.status, "paused");
   assert.equal((await store.listSchedules())[0]?.status, "paused");
+
+  const dueAt = new Date();
+  const recurringScheduleId = `${prefix}-recurring-schedule`;
+  await store.createSchedule({
+    scheduleId: recurringScheduleId,
+    workflowId: "csv-analyze",
+    inputPath: resolve(scopePath, "recurring.csv"),
+    nextRunAt: dueAt,
+    intervalMinutes: 5,
+  });
+  const due = await store.claimDueSchedules(dueAt, 30_000);
+  assert.equal(due.length, 1);
+  assert.equal(due[0]?.schedule.scheduleId, recurringScheduleId);
+  assert.equal(due[0]?.occurrence.status, "awaiting_approval");
+  assert.equal((await store.getRunSummary(due[0].occurrence.runId))?.state, "awaiting_approval");
+  const dispatch = await store.claimPendingScheduleOccurrences(`${prefix}-worker`);
+  assert.equal(dispatch.length, 1);
+  assert.equal((await store.claimPendingScheduleOccurrences(`${prefix}-other-worker`)).length, 0);
+  await store.releaseScheduleOccurrenceClaim(recurringScheduleId, dueAt, `${prefix}-worker`);
+  assert.equal((await store.claimPendingScheduleOccurrences(`${prefix}-retry-worker`)).length, 1);
+  assert.equal(await store.recoverScheduleOccurrenceClaim(recurringScheduleId, dueAt), true);
+  assert.equal((await store.claimPendingScheduleOccurrences(`${prefix}-recovered-worker`)).length, 1);
+  await store.finishScheduleOccurrence(recurringScheduleId, dueAt, "failed", `${prefix}-recovered-worker`);
+  const finishedSchedule = (await store.listSchedules()).find((schedule) => schedule.scheduleId === recurringScheduleId);
+  assert.equal(finishedSchedule?.pendingOccurrence, undefined);
+  assert.equal(finishedSchedule?.occurrences.some((occurrence) => occurrence.status === "failed"), true);
+
   assert.equal((await store.getRunSummary(runId))?.state, "completed");
+
+  const csv = await runCsvAnalysisWorkflow(store, Buffer.from("name,amount\nA,2\nB,3\n", "utf8"), undefined, ["amount"]);
+  assert.equal(csv.run.state, "completed");
+  assert.equal(csv.analysis.rowCount, 2);
+  assert.equal((await store.getRunSummary(csv.run.runId))?.state, "completed");
+
+  const document = await analyzeDocument(store, ".txt", Buffer.from("synthetic private marker", "utf8"));
+  assert.equal(document.run.state, "completed");
+  assert.equal(document.analysis.wordCount, 3);
+  assert.equal((await store.getRunSummary(document.run.runId))?.summary.includes("synthetic private marker"), false);
+
+  const workspace = join(scopePath, `${prefix}-workspace`);
+  await mkdir(join(workspace, "src"), { recursive: true });
+  await mkdir(join(workspace, "test"), { recursive: true });
+  await writeFile(join(workspace, "src", "entry.ts"), "export const entry = true;\n", "utf8");
+  await writeFile(join(workspace, "test", "entry.test.mjs"), "// synthetic test file\n", "utf8");
+  const policy = new WorkspacePathPolicy();
+  const approvedRoot = await policy.approveRoot(workspace);
+  const repository = await inspectRepository(store, approvedRoot, policy);
+  assert.equal(repository.run.state, "completed");
+  assert.equal(repository.inventory.sourceFileCount, 2);
+  assert.equal((await store.getRunSummary(repository.run.runId))?.summary.includes(workspace), false);
 }
 
 test("SQLite implements the shared persistence adapter contract", async (t) => {
@@ -86,5 +140,23 @@ test("MongoDB implements the shared persistence adapter contract", { skip: typeo
         finally { await rm(scopePath, { recursive: true, force: true }); }
       }
     }
+  }
+});
+
+test("CLI doctor opens local storage only under the isolated LOCALAPPDATA root", async () => {
+  const localAppData = await mkdtemp(join(tmpdir(), "taskforge-local-doctor-contract-"));
+  try {
+    const result = spawnSync(process.execPath, ["dist/cli.js", "doctor"], {
+      encoding: "utf8",
+      env: { ...process.env, TASKFORGE_STORAGE: "local", LOCALAPPDATA: localAppData, TASKFORGE_MONGODB_URI: undefined },
+      timeout: 10_000,
+    });
+    assert.equal(result.error, undefined);
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /Storage: local SQLite database \(path redacted\)/u);
+    assert.match(result.stdout, /Local storage: available/u);
+    assert.equal(result.stdout.includes(localAppData), false);
+  } finally {
+    await rm(localAppData, { recursive: true, force: true });
   }
 });
