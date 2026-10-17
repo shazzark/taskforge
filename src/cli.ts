@@ -39,7 +39,7 @@ import { DataSpecialistEvidenceError, prepareDataSpecialistEvidence } from "./wo
 
 const helpText = `TaskForge ${packageJson.version} (early development)
 
-Usage: taskforge [--help | --version | config | doctor | model-check | do <instruction> | chat | tasks list | tasks inspect <task-id> | tasks validate <task-id> --inputs-json <object> | permissions approve/list/revoke | run architecture-report --root <directory> --file <relative-path>... | run deployment-trace --repository <owner/name> --project-id <prj_id> [--team-id <team_id>] | run csv-analyze --input <path> [--numeric-column <header>]... [--output <new.json|csv|md>] | run document-analyze --input <path> [--output <new.json|csv|md>] | run agent-fix --root <directory> --target <relative-source> --goal <instruction> --test <relative-test.mjs> | run data-specialist --input <path> --goal <question> | run browser-audit --url <url> [--journey <json-array>] [--origin <https-origin>]... [--specialist] | run document-convert --input <path> --output <new.txt> | run file-move --source <file> --target <new-file> | run ... | resume <run-id> --input <path> [--numeric-column <header>]... | history list | schedule ...]
+Usage: taskforge [--help | --version | config | doctor | model-check | do <instruction> | chat | tasks list | tasks inspect <task-id> | tasks validate <task-id> --inputs-json <object> | tasks validate-definition --file <definition.json> | tasks install --file <definition.json> | permissions approve/list/revoke | run architecture-report --root <directory> --file <relative-path>... | run deployment-trace --repository <owner/name> --project-id <prj_id> [--team-id <team_id>] | run csv-analyze --input <path> [--numeric-column <header>]... [--output <new.json|csv|md>] | run document-analyze --input <path> [--output <new.json|csv|md>] | run agent-fix --root <directory> --target <relative-source> --goal <instruction> --test <relative-test.mjs> | run data-specialist --input <path> --goal <question> | run browser-audit --url <url> [--journey <json-array>] [--origin <https-origin>]... [--specialist] | run document-convert --input <path> --output <new.txt> | run file-move --source <file> --target <new-file> | run ... | resume <run-id> --input <path> [--numeric-column <header>]... | history list | schedule ...]
 
 The config command validates local settings and prints a redacted summary.
 The doctor command checks the selected local SQLite or MongoDB storage and reports available setup areas.
@@ -94,6 +94,7 @@ async function readApprovedInputFile(
   askQuestion?: ApprovalQuestion,
   signal?: AbortSignal,
   reportFailure?: (failure: InputReadFailure) => void,
+  maxBytes = 8 * 1024 * 1024,
 ): Promise<Uint8Array | undefined> {
   if (!process.stdin.isTTY || !process.stdout.isTTY) {
     process.stderr.write("File workflows require an interactive terminal for explicit read approval.\n");
@@ -152,17 +153,17 @@ async function readApprovedInputFile(
     const file = await open(canonicalPath, "r");
     try {
       const metadata = await file.stat();
-      if (!metadata.isFile() || metadata.size > 8 * 1024 * 1024) {
-        throw new Error("The approved input must be a regular file within the 8 MiB workflow limit.");
+      if (!Number.isInteger(maxBytes) || maxBytes < 1 || maxBytes > 8 * 1024 * 1024 || !metadata.isFile() || metadata.size > maxBytes) {
+        throw new Error("The approved input must be a regular file within its workflow size limit.");
       }
-      const buffer = Buffer.alloc(8 * 1024 * 1024 + 1);
+      const buffer = Buffer.alloc(maxBytes + 1);
       const { bytesRead } = await file.read(buffer, 0, buffer.byteLength, 0);
       if (isSignalAborted(signal)) {
         reportFailure?.("cancelled");
         return undefined;
       }
-      if (bytesRead > 8 * 1024 * 1024 || (await realpath(authorized.path)) !== canonicalPath) {
-        throw new Error("The approved file changed or exceeds the workflow limit.");
+      if (bytesRead > maxBytes || (await realpath(authorized.path)) !== canonicalPath) {
+        throw new Error("The approved file changed or exceeds its workflow size limit.");
       }
       return buffer.subarray(0, bytesRead);
     } finally {
@@ -789,7 +790,7 @@ if (args.length === 0 || (args.length === 1 && (args[0] === "--help" || args[0] 
 } else if (args.length === 1 && args[0] === "chat") {
   await runChat({ withStore, readApprovedInputFile });
 } else if (args.length >= 1 && args[0] === "tasks") {
-  runTasksCommand(args.slice(1));
+  await runTasksCommand(args.slice(1), { readApprovedInputFile });
 } else if (args.length >= 1 && args[0] === "permissions") {
   await runPermissionsCommand(args.slice(1), { withStore });
 } else if (args.length >= 2 && args[0] === "run" && args[1] === "csv-analyze") {

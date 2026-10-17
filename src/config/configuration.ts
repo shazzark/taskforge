@@ -234,12 +234,24 @@ export function loadStoreConfiguration(
     const mongo = parseConfiguration({ mongodbUri });
     return { kind: "mongodb", mongodbUri: mongo.mongodbUri };
   }
+  return { kind: "local", path: join(taskForgeDataDirectory(environment), "taskforge.sqlite3") };
+}
+
+function taskForgeDataDirectory(environment: Readonly<Record<string, string | undefined>>): string {
   const configuredDataRoot = environment["LOCALAPPDATA"] || environment["XDG_DATA_HOME"];
   const localDataRoot = configuredDataRoot ?? join(homedir(), platform() === "win32" ? "AppData" : ".local", "share");
   if (!isAbsolute(localDataRoot) || localDataRoot !== localDataRoot.trim() || /[\u0000-\u001f\u007f]/u.test(localDataRoot)) {
     throw new ConfigurationError("The operating-system local data directory must be an absolute path without control characters.");
   }
-  return { kind: "local", path: join(localDataRoot, "TaskForge", "taskforge.sqlite3") };
+  return join(localDataRoot, "TaskForge");
+}
+
+/** Resolve TaskForge's per-user data directory without selecting or requiring a storage backend. */
+export function resolveTaskForgeDataDirectory(
+  environment: Readonly<Record<string, string | undefined>> = process.env,
+): string {
+  loadLocalEnvironmentFile(environment);
+  return taskForgeDataDirectory(environment);
 }
 
 export function formatStoreConfigurationSummary(configuration: StoreConfiguration): string {
