@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -29,6 +30,35 @@ test("run records, transitions, bounded events, and checkpoints persist across r
   assert.equal((await reopened.getRunEvents(run.runId)).length, 1);
   assert.deepEqual((await reopened.loadRunCheckpoint(run.runId, hash, hash))?.completedStepIds, ["step-1"]);
   await reopened.close();
+});
+
+test("SQLite recovers committed data and rolls back an interrupted transaction after process exit", async t => {
+  const { path, store } = await fixture(t);
+  await store.saveRunSummary({ runId: "before-interruption", workflowId: "synthetic", summary: "committed" });
+  await store.close();
+  const child = spawnSync(process.execPath, ["-e", [
+    'const { DatabaseSync } = require("node:sqlite");',
+    'const db = new DatabaseSync(process.argv[1]);',
+    'db.exec("BEGIN IMMEDIATE");',
+    'db.prepare("INSERT INTO runs(id,value) VALUES (?,?)").run("interrupted-write", "{}")',
+    'process.exit(71);',
+  ].join(";"), path], { encoding: "utf8", timeout: 10_000 });
+  assert.equal(child.error, undefined);
+  assert.equal(child.status, 71, child.stderr);
+
+  const reopened = await SqliteStore.connect({ path });
+  try {
+    assert.equal((await reopened.getRunSummary("before-interruption"))?.summary, "committed");
+    assert.equal(await reopened.getRunSummary("interrupted-write"), null);
+    const integrity = new DatabaseSync(path);
+    try {
+      assert.equal(integrity.prepare("PRAGMA integrity_check").get().integrity_check, "ok");
+    } finally {
+      integrity.close();
+    }
+  } finally {
+    await reopened.close();
+  }
 });
 
 test("input validation, secret redaction, approvals, and state transitions hold", async t => {
