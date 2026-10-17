@@ -11,6 +11,7 @@ import { DeploymentTraceError, traceDeployments } from "./integrations/deploymen
 import { AgentBudgetLedger, AgentToolError, runToolLoop } from "./agent/tool-loop.js";
 import { createCsvAnalysisTool, createDocumentAnalysisTool, createPatchProposalTool, TASKFORGE_AGENT_SYSTEM_MESSAGE } from "./agent/session-tools.js";
 import { runTasksCommand } from "./cli/commands/tasks.js";
+import { runGitHubIssuesCommand } from "./cli/commands/github-issues.js";
 import { runSpecialistReview, type SpecialistTask, SpecialistReviewError } from "./agent/specialist-review.js";
 import {
   DatabasePersistenceError,
@@ -35,7 +36,6 @@ import { previewPdfArtifact, PdfArtifactError, writeApprovedPdfArtifact } from "
 import { prepareFilePatch, prepareGeneratedFilePatch, applyPreparedFilePatch, PatchApplicationError } from "./tools/software/patch-application.js";
 import { GitDiffReviewError, listGitDiffFiles, readGitDiff } from "./tools/software/git-diff-review.js";
 import { investigateSource, ModelInvestigationError } from "./tools/software/model-investigation.js";
-import { GitHubReadError, readPublicIssues } from "./integrations/github-public-issues.js";
 import { DraftArtifactError, parseLocalDraftInput, previewPlainTextArtifact, previewTextArtifact, writeApprovedTextArtifact } from "./artifacts/drafts.js";
 import { csvAnalysisExportFormat, CsvAnalysisExportError, renderCsvAnalysisExport, type CsvAnalysisExportFormat } from "./artifacts/csv-analysis-export.js";
 import { documentAnalysisExportFormat, DocumentAnalysisExportError, renderDocumentAnalysisExport, type DocumentAnalysisExportFormat } from "./artifacts/document-analysis-export.js";
@@ -1700,45 +1700,6 @@ async function runSpecialistReviewCommand(commandArgs: readonly string[]): Promi
     process.exitCode = controller.signal.aborted ? 130 : 3;
   } finally {
     process.removeListener("SIGINT", handleInterrupt);
-  }
-}
-
-async function runGitHubIssuesCommand(commandArgs: readonly string[]): Promise<void> {
-  if (commandArgs.length !== 2 || commandArgs[0] !== "--repository" || commandArgs[1] === undefined) {
-    process.stderr.write("Expected --repository <owner/name>.\n");
-    process.exitCode = 1;
-    return;
-  }
-  if (!process.stdin.isTTY || !process.stdout.isTTY) {
-    process.stderr.write("GitHub issue reading requires an interactive confirmation for the public repository request.\n");
-    process.exitCode = 2;
-    return;
-  }
-  const repository = commandArgs[1];
-  const consent = createInterface({ input: process.stdin, output: process.stdout });
-  let answer: string;
-  try {
-    answer = await consent.question(`Read up to 20 open issue titles from the public repository ${repository}? The request uses no GitHub token and will not write anything. [y/N] `);
-  } finally {
-    consent.close();
-  }
-  if (answer.trim().toLowerCase() !== "y") {
-    process.stdout.write("GitHub issue read cancelled before network access.\n");
-    return;
-  }
-  try {
-    const issues = await readPublicIssues(repository);
-    if (issues.length === 0) {
-      process.stdout.write("No open issues were returned.\n");
-      return;
-    }
-    for (const issue of issues) {
-      process.stdout.write(`#${issue.number} [${issue.state}] ${issue.title}\n${issue.url}\n`);
-    }
-  } catch (error: unknown) {
-    const message = error instanceof GitHubReadError ? error.message : "GitHub issue read failed safely.";
-    process.stderr.write(`GitHub issue read failed: ${message}\n`);
-    process.exitCode = 3;
   }
 }
 

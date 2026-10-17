@@ -723,7 +723,15 @@ Moved reviewed command execution, patch application, model investigation, and Gi
 
 **Verification:** `npm run typecheck` and `npm run build` passed; `node --test --test-concurrency=1 test/tools/software/*.test.mjs` passed (15/15). `git diff --check` passed. The focused tests include generated and approved file patching, seeded failure reproduction, approved command constraints, Git diff redaction, and model finding bounds.
 
+**Integrated verification:** `npm test` passed (194/194, 0 failed, 0 skipped) in 124.3 seconds with `TASKFORGE_STORAGE=local`, isolated temporary `LOCALAPPDATA`, and a dedicated loopback Mongo test base. The first integrated attempt had two existing five-second CLI subprocess tests time out under load (192/194); the complete affected CLI test file passed 4/4 on focused rerun, and the full serial rerun passed 194/194. No timeout or behavior was changed.
+
 **Next:** Move remaining feature capabilities and continue splitting CLI command families by responsibility, then run the full serial test suite to confirm recursive test discovery and integrated behavior.
+
+### Refactor checkpoint 5 — Extract GitHub issue CLI command — VERIFIED
+
+Moved public GitHub issue command parsing, terminal confirmation, adapter invocation, and result presentation to `src/cli/commands/github-issues.ts`. `src/cli.ts` keeps only command dispatch. Added CLI subprocess coverage for malformed arguments and valid non-interactive invocations; both stop before network access. The read-only adapter and its behavior are unchanged.
+
+**Verification:** `npm run typecheck`, `npm run build`, and `node --test --test-concurrency=1 test/cli/github-issues.test.mjs test/github-public-issues.test.mjs` passed (3/3). Independent review found no behavioral regression; cancellation also returns before the adapter call by source order. `git diff --check` passed.
 
 ### Phase 9 documentation checkpoint — COMPLETE
 
