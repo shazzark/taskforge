@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { MongoClient } from "mongodb";
 import { tmpdir } from "node:os";
@@ -9,8 +9,8 @@ import test from "node:test";
 import { MongoStore } from "../dist/mongo-store.js";
 import { SqliteStore } from "../dist/persistence/sqlite-store.js";
 import { WorkspacePathPolicy } from "../dist/security/path-policy.js";
-import { runCsvAnalysisWorkflow } from "../dist/workflows/csv-analysis-workflow.js";
-import { analyzeDocument } from "../dist/workflows/document-analysis-workflow.js";
+import { resumeCsvAnalysisWorkflow, runCsvAnalysisWorkflow } from "../dist/workflows/csv-analysis-workflow.js";
+import { analyzeDocument, resumeDocumentAnalysisWorkflow } from "../dist/workflows/document-analysis-workflow.js";
 import { inspectRepository } from "../dist/workflows/repository-inspection-workflow.js";
 
 const mongoBase = process.env.TASKFORGE_TEST_MONGODB_URI;
@@ -98,6 +98,42 @@ async function exerciseCommonContract(store, scopePath, prefix) {
   assert.equal(document.run.state, "completed");
   assert.equal(document.analysis.wordCount, 3);
   assert.equal((await store.getRunSummary(document.run.runId))?.summary.includes("synthetic private marker"), false);
+
+  const resumeCsvBytes = Buffer.from("value\n7\n", "utf8");
+  const resumeCsvId = `${prefix}-resume-csv`;
+  const resumeCsvInputHash = createHash("sha256").update(resumeCsvBytes).digest("hex");
+  await store.saveRunSummary({ runId: resumeCsvId, workflowId: "csv-analyze", summary: "Synthetic interrupted CSV run." });
+  await store.updateRunState(resumeCsvId, "uncertain");
+  await store.saveRunCheckpoint({
+    runId: resumeCsvId,
+    version: 1,
+    inputHash: resumeCsvInputHash,
+    stateHash: createHash("sha256").update("taskforge:csv-analyze:v1").digest("hex"),
+    completedStepIds: [],
+    pendingStepId: "analyze",
+  });
+  const resumedCsv = await resumeCsvAnalysisWorkflow(store, resumeCsvId, resumeCsvBytes);
+  assert.equal(resumedCsv.resumed, true);
+  assert.equal(resumedCsv.run.state, "completed");
+  assert.equal(resumedCsv.analysis.rowCount, 1);
+
+  const resumeDocumentBytes = Buffer.from("Synthetic recovered document.", "utf8");
+  const resumeDocumentId = `${prefix}-resume-document`;
+  const resumeDocumentInputHash = createHash("sha256").update(resumeDocumentBytes).digest("hex");
+  await store.saveRunSummary({ runId: resumeDocumentId, workflowId: "document-analyze", summary: "Synthetic interrupted document run." });
+  await store.updateRunState(resumeDocumentId, "uncertain");
+  await store.saveRunCheckpoint({
+    runId: resumeDocumentId,
+    version: 1,
+    inputHash: resumeDocumentInputHash,
+    stateHash: createHash("sha256").update("taskforge:document-analyze:v2:txt").digest("hex"),
+    completedStepIds: [],
+    pendingStepId: "parse",
+  });
+  const resumedDocument = await resumeDocumentAnalysisWorkflow(store, resumeDocumentId, ".txt", resumeDocumentBytes);
+  assert.equal(resumedDocument.resumed, true);
+  assert.equal(resumedDocument.run.state, "completed");
+  assert.equal(resumedDocument.analysis.wordCount, 3);
 
   const workspace = join(scopePath, `${prefix}-workspace`);
   await mkdir(join(workspace, "src"), { recursive: true });
