@@ -100,9 +100,15 @@ function analyzeFile(path: string, content: string): ArchitectureFileReport {
     if (extension === ".py") {
       const fromImport = /^\s*from\s+(\.*[A-Za-z_][A-Za-z0-9_.]*|\.+)\s+import\b/u.exec(line);
       const directImport = /^\s*import\s+(.+?)\s*(?:#.*)?$/u.exec(line);
-      const specifiers = fromImport?.[1] === undefined
+      const fromSpecifier = fromImport?.[1];
+      const specifiers = fromSpecifier === undefined
         ? (directImport?.[1] ?? "").split(",").map((part) => /^\s*([A-Za-z_][A-Za-z0-9_.]*)/u.exec(part)?.[1])
-        : [fromImport[1]];
+        : /^\.+$/u.test(fromSpecifier)
+          ? line.slice(fromImport?.[0]?.length ?? line.length).split(",").map((part) => {
+            const importedName = /^\s*([A-Za-z_][A-Za-z0-9_]*)/u.exec(part)?.[1];
+            return importedName === undefined ? undefined : fromSpecifier + importedName;
+          })
+          : [fromSpecifier];
       for (const specifier of specifiers) {
         if (specifier !== undefined) observations.push({ kind: "import", description: "Imports " + specifier + ".", target: specifier, evidence });
       }

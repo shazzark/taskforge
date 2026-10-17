@@ -101,19 +101,23 @@ test("Python import evidence resolves relative modules only inside the selected 
   const rootPath = await mkdtemp(join(tmpdir(), "taskforge-architecture-python-"));
   try {
     await mkdir(join(rootPath, "pkg"));
-    await writeFile(join(rootPath, "pkg", "entry.py"), "from .worker import run\nfrom .unselected import secret\nimport os, sys as system\n", "utf8");
+    await writeFile(join(rootPath, "pkg", "entry.py"), "from .worker import run\nfrom . import sibling as sibling_module\nfrom .unselected import secret\nimport os, sys as system\n", "utf8");
     await writeFile(join(rootPath, "pkg", "worker.py"), "def run():\n    return True\n", "utf8");
+    await writeFile(join(rootPath, "pkg", "sibling.py"), "value = True\n", "utf8");
     await writeFile(join(rootPath, "pkg", "unselected.py"), "secret = True\n", "utf8");
     const policy = new WorkspacePathPolicy();
     const root = await policy.approveRoot(rootPath);
-    const report = await createArchitectureReport(root, policy, ["pkg/entry.py", "pkg/worker.py"]);
+    const report = await createArchitectureReport(root, policy, ["pkg/entry.py", "pkg/worker.py", "pkg/sibling.py"]);
     assert.equal(report.files[0]?.language, "Python");
     assert.equal(report.files[0]?.status, "analyzed");
     const source = report.diagram.nodes.find((node) => node.kind === "file" && node.value === "pkg/entry.py");
     const worker = report.diagram.nodes.find((node) => node.kind === "file" && node.value === "pkg/worker.py");
+    const sibling = report.diagram.nodes.find((node) => node.kind === "file" && node.value === "pkg/sibling.py");
     assert.ok(source);
     assert.ok(worker);
+    assert.ok(sibling);
     assert.ok(report.diagram.edges.some((edge) => edge.from === source.id && edge.to === worker.id && edge.evidence.line === 1));
+    assert.ok(report.diagram.edges.some((edge) => edge.from === source.id && edge.to === sibling.id && edge.evidence.line === 2));
     assert.ok(report.diagram.nodes.some((node) => node.kind === "module" && node.value === ".unselected"));
     assert.ok(report.diagram.nodes.some((node) => node.kind === "module" && node.value === "os"));
     assert.ok(report.diagram.nodes.some((node) => node.kind === "module" && node.value === "sys"));
