@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { isIP } from "node:net";
-import type { RunSummary } from "../mongo-store.js";
-import type { TaskForgeStore } from "../persistence/store.js";
+import type { RunSummary } from "../storage/types.js";
+import type { TaskForgeStore } from "../storage/store.js";
 import { createBrowserEgressProxy, isGlobalUnicastAddress, type BrowserEgressProxyOptions } from "../security/browser-egress-proxy.js";
 import { isRecord } from "../providers/types.js";
 import { escapeTerminalControls } from "../security/terminal-text.js";

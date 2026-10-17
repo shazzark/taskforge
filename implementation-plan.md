@@ -17,7 +17,19 @@ This refactor does not add a twelfth product work area. It reorganizes existing 
 
 **Verification:** `npm run typecheck`, `npm run build`, and `node --test test/cli/tasks.test.mjs test/agent/task-registry.test.mjs` passed (6/6). The command's output, status codes, schema validation, em-dash output formatting, and secret-safe field reporting remain covered by the feature-adjacent tests.
 
-**Next checkpoints:** Separate domain types and persistence errors from the Mongo adapter before relocating MongoDB and SQLite under `src/storage/`; then continue moving config and feature capabilities in small dependency-aware slices. Split additional CLI handlers by responsibility, retaining `dist/cli.js` as the executable entry. Run the integrated serial suite after the structural migrations. No unrelated behavior changes or new dependencies are included.
+### Checkpoint 2 — Shared storage boundary and adapters: VERIFIED
+
+Moved persistence contracts, shared domain types/errors, SQLite and MongoDB adapters into `src/storage/`; the cross-adapter port is now explicit and no longer derives from the Mongo implementation type. Updated workflow/scheduler/CLI imports and moved storage tests into `test/storage/`. Mongo collections, SQLite schema, and CLI backend selection are unchanged.
+
+**Verification:** `npm run typecheck`, `npm run build`, and isolated `node --test test/storage/sqlite-store.test.mjs test/storage/mongodb.integration.test.mjs test/storage/store-contract.test.mjs` passed (15/15), using a dedicated temporary `LOCALAPPDATA` and loopback Mongo test URI. This includes the interrupted SQLite transaction check and both adapter contracts.
+
+### Checkpoint 3 — Place configuration in its responsibility folder: VERIFIED
+
+Moved configuration loading and validation to `src/config/configuration.ts`; updated provider, integration, storage, CLI, and test imports. Configuration behavior and environment-variable contracts are unchanged.
+
+**Verification:** `npm run typecheck`, `npm run build`, and the focused config/provider/storage/CLI test command passed (43/43), including nested tests under `test/config/`, `test/agent/`, `test/cli/`, and `test/storage/`.
+
+**Next checkpoints:** Move feature capabilities in small dependency-aware slices and split additional CLI handlers by responsibility, retaining `dist/cli.js` as the executable entry. Run the integrated serial suite after the structural migrations. No unrelated behavior changes or new dependencies are included.
 
 Phase 4.13 wires explicitly selected numeric CSV columns into the persisted workflow and all structured report formats. Selection names affect the checkpoint hash; strict typecheck and the full isolated MongoDB suite passed (105 tests, zero skipped), and independent review found no remaining issues after prototype-key and Markdown-label fixes.
 

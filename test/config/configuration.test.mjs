@@ -10,10 +10,10 @@ import {
   loadConfiguration,
   loadStoreConfiguration,
   parseConfiguration,
-} from "../dist/config.js";
+} from "../../dist/config/configuration.js";
 
 const localMongoUri = "mongodb://localhost:27017/taskforge_test?marker=redaction-check";
-const cliPath = fileURLToPath(new URL("../dist/cli.js", import.meta.url));
+const cliPath = fileURLToPath(new URL("../../dist/cli.js", import.meta.url));
 
 function isolatedEnvironment(mongodbUri, extra = {}) {
   const environment = {};

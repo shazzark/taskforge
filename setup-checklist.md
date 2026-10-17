@@ -29,11 +29,11 @@ Codex can add reviewed, pinned npm dependencies and update `package-lock.json` a
 
 ## Configuration contract
 
-`src/config.ts` implements `TASKFORGE_MONGODB_URI`, `TASKFORGE_PROVIDER`, `TASKFORGE_GROQ_API_KEY`, `TASKFORGE_GROQ_MODEL`, `TASKFORGE_OLLAMA_BASE_URL`, and `TASKFORGE_OLLAMA_MODEL`. GitHub and search variables below are proposals only; those integrations are not implemented. Blank/commented values are optional. Do not set unused credentials; there should be no key per workflow/agent unless the selected external provider actually requires it.
+`src/config/configuration.ts` implements `TASKFORGE_MONGODB_URI`, `TASKFORGE_PROVIDER`, `TASKFORGE_GROQ_API_KEY`, `TASKFORGE_GROQ_MODEL`, `TASKFORGE_OLLAMA_BASE_URL`, and `TASKFORGE_OLLAMA_MODEL`. Blank/commented values are optional. Do not set unused credentials; there should be no key per workflow/agent unless the selected external provider actually requires it.
 
 | Variable | Status / use |
 |---|---|
-| `TASKFORGE_MONGODB_URI` | Implemented in `src/config.ts`; required for current config/doctor. Keep URI local and private. |
+| `TASKFORGE_MONGODB_URI` | Implemented in `src/config/configuration.ts`; required when MongoDB is selected by config/doctor. Keep URI local and private. |
 | `TASKFORGE_PROVIDER` | Implemented Phase 2 provider selection: `groq` or `ollama`; no implicit fallback/switch. |
 | `TASKFORGE_GROQ_API_KEY` | Implemented Phase 2 secret; needed only when selecting Groq. |
 | `TASKFORGE_GROQ_MODEL` | Implemented Phase 2 model selector; current value presence was inspected without printing it. Recommended initial value `openai/gpt-oss-20b`. |

@@ -1,5 +1,5 @@
 import Groq from "groq-sdk";
-import type { ProviderConfiguration } from "../config.js";
+import type { ProviderConfiguration } from "../config/configuration.js";
 import {
   ModelProviderError,
   parseProviderCompletion,

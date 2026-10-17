@@ -10,21 +10,23 @@ import { fileURLToPath } from "node:url";
 import test from "node:test";
 import {
   DatabaseConnectionError,
-  DatabasePersistenceError,
   MongoStore,
+} from "../../dist/storage/mongodb-store.js";
+import {
+  DatabasePersistenceError,
   PersistenceInputError,
   StaleCheckpointError,
-} from "../dist/mongo-store.js";
-import { parseConfiguration } from "../dist/config.js";
-import { resumeCsvAnalysisWorkflow, runCsvAnalysisWorkflow } from "../dist/workflows/csv-analysis-workflow.js";
-import { analyzeDocument, resumeDocumentAnalysisWorkflow } from "../dist/workflows/document-analysis-workflow.js";
-import { inspectRepository } from "../dist/workflows/repository-inspection-workflow.js";
-import { runReviewedCommand } from "../dist/software/reviewed-command.js";
-import { WorkspacePathPolicy } from "../dist/security/path-policy.js";
-import { runBrowserAudit } from "../dist/workflows/browser-audit-workflow.js";
+} from "../../dist/storage/types.js";
+import { parseConfiguration } from "../../dist/config/configuration.js";
+import { resumeCsvAnalysisWorkflow, runCsvAnalysisWorkflow } from "../../dist/workflows/csv-analysis-workflow.js";
+import { analyzeDocument, resumeDocumentAnalysisWorkflow } from "../../dist/workflows/document-analysis-workflow.js";
+import { inspectRepository } from "../../dist/workflows/repository-inspection-workflow.js";
+import { runReviewedCommand } from "../../dist/software/reviewed-command.js";
+import { WorkspacePathPolicy } from "../../dist/security/path-policy.js";
+import { runBrowserAudit } from "../../dist/workflows/browser-audit-workflow.js";
 
 const testUri = process.env.TASKFORGE_TEST_MONGODB_URI;
-const cliPath = fileURLToPath(new URL("../dist/cli.js", import.meta.url));
+const cliPath = fileURLToPath(new URL("../../dist/cli.js", import.meta.url));
 
 function createIsolatedTestUri(value) {
   if (typeof value !== "string" || value.length === 0) {

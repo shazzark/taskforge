@@ -6,7 +6,7 @@ import { mkdtemp, open, realpath, stat, writeFile } from "node:fs/promises";
 import { basename, dirname, extname, join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { createInterface } from "node:readline/promises";
-import { ConfigurationError, formatStoreConfigurationSummary, loadLocalEnvironmentFile, loadProviderConfiguration, loadStoreConfiguration } from "./config.js";
+import { ConfigurationError, formatStoreConfigurationSummary, loadLocalEnvironmentFile, loadProviderConfiguration, loadStoreConfiguration } from "./config/configuration.js";
 import { DeploymentTraceError, traceDeployments } from "./integrations/deployment-tracing.js";
 import { AgentBudgetLedger, AgentToolError, runToolLoop } from "./agent/tool-loop.js";
 import { createCsvAnalysisTool, createDocumentAnalysisTool, createPatchProposalTool, TASKFORGE_AGENT_SYSTEM_MESSAGE } from "./agent/session-tools.js";
@@ -18,9 +18,9 @@ import {
   PersistenceInputError,
   type ArtifactType,
   type FolderApproval,
-} from "./mongo-store.js";
-import type { TaskForgeStore } from "./persistence/store.js";
-import { connectTaskForgeStore } from "./persistence/store-factory.js";
+} from "./storage/types.js";
+import type { TaskForgeStore } from "./storage/store.js";
+import { connectTaskForgeStore } from "./storage/store-factory.js";
 import { createModelProvider } from "./providers/create-provider.js";
 import { ModelProviderError, type ProviderMessage } from "./providers/types.js";
 import { PathPolicyError, WorkspacePathPolicy } from "./security/path-policy.js";
@@ -49,7 +49,7 @@ import {
 } from "./workflows/browser-audit-workflow.js";
 import { DataSpecialistEvidenceError, prepareDataSpecialistEvidence } from "./workflows/data-specialist-evidence.js";
 import { runSchedulerTick, runScheduler } from "./scheduling/scheduler.js";
-import type { ScheduleRecord, ScheduleWorkflowId } from "./mongo-store.js";
+import type { ScheduleRecord, ScheduleWorkflowId } from "./storage/types.js";
 
 const helpText = `TaskForge ${packageJson.version} (early development)
 

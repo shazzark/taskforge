@@ -1,8 +1,8 @@
 import { createHash, randomUUID } from "node:crypto";
 import { TextDecoder } from "node:util";
 import { analyzeCsv, CsvAnalysisError, type CsvAnalysisResult } from "../data/csv-analysis.js";
-import type { RunSummary } from "../mongo-store.js";
-import type { TaskForgeStore } from "../persistence/store.js";
+import type { RunSummary } from "../storage/types.js";
+import type { TaskForgeStore } from "../storage/store.js";
 
 const WORKFLOW_ID = "csv-analyze";
 const ANALYSIS_STEP_ID = "analyze";

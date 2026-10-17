@@ -1,4 +1,4 @@
-import { ConfigurationError, type ProviderConfiguration } from "../config.js";
+import { ConfigurationError, type ProviderConfiguration } from "../config/configuration.js";
 import { GroqProvider } from "./groq-provider.js";
 import { OllamaProvider } from "./ollama-provider.js";
 import type { ModelProvider } from "./types.js";

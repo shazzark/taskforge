@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { AgentBudgetError, AgentToolError, runToolLoop } from "../dist/agent/tool-loop.js";
-import { ConfigurationError, loadProviderConfiguration, parseConfiguration } from "../dist/config.js";
+import { ConfigurationError, loadProviderConfiguration, parseConfiguration } from "../dist/config/configuration.js";
 import { GroqProvider } from "../dist/providers/groq-provider.js";
 import { OllamaProvider } from "../dist/providers/ollama-provider.js";
 import { ModelProviderError } from "../dist/providers/types.js";

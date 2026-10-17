@@ -1,5 +1,5 @@
-import type { ScheduleOccurrence, ScheduleRecord } from "../mongo-store.js";
-import type { TaskForgeStore } from "../persistence/store.js";
+import type { ScheduleOccurrence, ScheduleRecord } from "../storage/types.js";
+import type { TaskForgeStore } from "../storage/store.js";
 import { setTimeout as delay } from "node:timers/promises";
 
 const SCHEDULER_GRACE_MS = 30_000;

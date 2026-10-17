@@ -1,4 +1,4 @@
-import type { ProviderConfiguration } from "../config.js";
+import type { ProviderConfiguration } from "../config/configuration.js";
 import {
   ModelProviderError,
   isRecord,

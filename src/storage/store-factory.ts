@@ -1,7 +1,8 @@
 import { mkdir } from "node:fs/promises";
 import { dirname } from "node:path";
-import { DatabasePersistenceError, MongoStore } from "../mongo-store.js";
-import { loadStoreConfiguration, type StoreConfiguration } from "../config.js";
+import { MongoStore } from "./mongodb-store.js";
+import { DatabasePersistenceError } from "./types.js";
+import { loadStoreConfiguration, type StoreConfiguration } from "../config/configuration.js";
 import type { TaskForgeStore } from "./store.js";
 
 export async function connectTaskForgeStore(

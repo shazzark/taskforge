@@ -5,7 +5,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { SqliteStore } from "../dist/persistence/sqlite-store.js";
+import { SqliteStore } from "../../dist/storage/sqlite-store.js";
 
 async function fixture(t) {
   const directory = await mkdtemp(join(tmpdir(), "taskforge-sqlite-"));

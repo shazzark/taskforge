@@ -2,8 +2,8 @@ import { DatabaseSync } from "node:sqlite";
 import { createHash } from "node:crypto";
 import { extname, isAbsolute, relative, resolve, sep } from "node:path";
 import { platform } from "node:os";
-import type { ArtifactReference, FolderApproval, RunCheckpoint, RunEvent, RunState, RunSummary, ScheduleOccurrence, ScheduleRecord } from "../mongo-store.js";
-import { DatabasePersistenceError, DatabaseShutdownError, PersistenceInputError, StaleCheckpointError } from "../mongo-store.js";
+import type { ArtifactReference, FolderApproval, RunCheckpoint, RunEvent, RunState, RunSummary, ScheduleOccurrence, ScheduleRecord } from "./types.js";
+import { DatabasePersistenceError, DatabaseShutdownError, PersistenceInputError, StaleCheckpointError } from "./types.js";
 import type { TaskForgeStore } from "./store.js";
 
 const MAX_EVENTS = 300, MAX_EVENT_BYTES = 2 * 1024, MAX_RUN_EVENT_BYTES = 5 * 1024 * 1024;

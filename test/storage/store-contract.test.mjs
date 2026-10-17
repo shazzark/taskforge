@@ -6,12 +6,12 @@ import { MongoClient } from "mongodb";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test from "node:test";
-import { MongoStore } from "../dist/mongo-store.js";
-import { SqliteStore } from "../dist/persistence/sqlite-store.js";
-import { WorkspacePathPolicy } from "../dist/security/path-policy.js";
-import { resumeCsvAnalysisWorkflow, runCsvAnalysisWorkflow } from "../dist/workflows/csv-analysis-workflow.js";
-import { analyzeDocument, resumeDocumentAnalysisWorkflow } from "../dist/workflows/document-analysis-workflow.js";
-import { inspectRepository } from "../dist/workflows/repository-inspection-workflow.js";
+import { MongoStore } from "../../dist/storage/mongodb-store.js";
+import { SqliteStore } from "../../dist/storage/sqlite-store.js";
+import { WorkspacePathPolicy } from "../../dist/security/path-policy.js";
+import { resumeCsvAnalysisWorkflow, runCsvAnalysisWorkflow } from "../../dist/workflows/csv-analysis-workflow.js";
+import { analyzeDocument, resumeDocumentAnalysisWorkflow } from "../../dist/workflows/document-analysis-workflow.js";
+import { inspectRepository } from "../../dist/workflows/repository-inspection-workflow.js";
 
 const mongoBase = process.env.TASKFORGE_TEST_MONGODB_URI;
 

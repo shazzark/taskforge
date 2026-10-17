@@ -1,8 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { opendir, realpath, stat } from "node:fs/promises";
 import { basename, extname, join, resolve } from "node:path";
-import type { RunSummary } from "../mongo-store.js";
-import type { TaskForgeStore } from "../persistence/store.js";
+import type { RunSummary } from "../storage/types.js";
+import type { TaskForgeStore } from "../storage/store.js";
 import { PathPolicyError, type ApprovedRoot, type WorkspacePathPolicy } from "../security/path-policy.js";
 
 const WORKFLOW_ID = "repository-inspect";

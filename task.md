@@ -703,7 +703,21 @@ Moved the `tasks list|inspect|validate` handler and its task-registry imports fr
 
 **Verification:** `npm run typecheck`, `npm run build`, and `node --test test/cli/tasks.test.mjs test/agent/task-registry.test.mjs` passed (6/6). CLI tests cover output (including the em-dash separator), exit status, rejected input, and value redaction. `git diff --check` is required before each local checkpoint.
 
-**Next:** Extract domain types/errors from the Mongo adapter, then move both persistence adapters and their interfaces to `src/storage/`; update direct compiled-path test imports and retain the current schema. Continue with bounded configuration, capability, and CLI handler moves, verifying each affected feature. Run the integrated serial suite before declaring this refactor complete.
+**Next:** Storage-boundary extraction and configuration relocation are recorded in checkpoints 2 and 3 below. Continue with bounded capability and CLI-handler moves, verifying each affected feature. Run the integrated serial suite before declaring this refactor complete.
+
+### Refactor checkpoint 2 — Consolidate storage contracts and adapters — VERIFIED
+
+Moved persistence contracts, shared domain types/errors, SQLite and MongoDB adapters into `src/storage/`. Replaced the persistence port's dependency on the `MongoStore` class with explicit adapter-neutral methods. Updated workflows, scheduler and CLI imports; moved persistence tests under `test/storage/`. Mongo collections, SQLite schema, backend-selection behavior and saved record shapes were not changed.
+
+**Verification:** `npm run typecheck`, `npm run build`, and isolated `node --test test/storage/sqlite-store.test.mjs test/storage/mongodb.integration.test.mjs test/storage/store-contract.test.mjs` passed (15/15), using a dedicated temporary `LOCALAPPDATA` and loopback Mongo test URI. The tests cover adapter contracts, connection errors, record persistence, and SQLite recovery after process exit.
+
+### Refactor checkpoint 3 — Move configuration — VERIFIED
+
+Moved configuration loading and validation to `src/config/configuration.ts`; updated provider, integration, storage, CLI, and test imports. Environment-variable names, validation rules, redaction, provider defaults, and storage selection are unchanged.
+
+**Verification:** `npm run typecheck`, `npm run build`, and the focused config/provider/storage/CLI test command passed (43/43), including tests in nested feature directories.
+
+**Next:** Move feature capabilities in bounded slices, split more CLI command families by responsibility, then run the full serial test suite to confirm recursive test discovery and integrated behavior.
 
 ### Phase 9 documentation checkpoint — COMPLETE
 
