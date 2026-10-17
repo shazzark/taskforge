@@ -25,6 +25,8 @@ schedules: scheduleId, workflow/version, redactedInputs, timezone, trigger, enab
 ## Indexes and deletion
 Unique runId, eventId, workflowId+version and scheduleId. Index events by runId+sequence and runs by createdAt. TTL on events.expiresAt and eligible runs.expiresAt, acknowledging TTL is eventual rather than immediate. Child cleanup requires an explicit retention job; TTL alone does not cascade to checkpoints, artifacts or files. history delete performs application-level coordinated cleanup and records failures without claiming all data is gone.
 
+**Current adapter behavior (2026-10-15):** SQLite and MongoDB `history list` each return at most the newest 50 run summaries. This is only a display window: neither adapter currently purges older run data or exposes a history-delete API/CLI. Artifact file cleanup is not part of history listing. The TTL, retention and coordinated-deletion text above is a target proposal, not current behavior. See `LIFECYCLE_AUDIT.md`.
+
 ## State transitions
 created -> planning -> awaitingApproval/executing -> validating -> completed. Nonterminal runs can become blocked, failed, cancelled or checkpointed. Partial work is represented explicitly. Workers cannot mark the parent complete. Completion requires workflow acceptance results and durable final state.
 

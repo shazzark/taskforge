@@ -9,7 +9,9 @@ import { parseXlsxText } from "../documents/xlsx-parser.js";
 
 const WORKFLOW_ID = "document-analyze";
 const STEP_ID = "parse";
-const STATE_HASH = createHash("sha256").update("taskforge:document-analyze:v1").digest("hex");
+function workflowStateHash(format: SupportedDocumentFormat): string {
+  return createHash("sha256").update(`taskforge:document-analyze:v2:${format}`).digest("hex");
+}
 const MAX_INPUT_BYTES = 8 * 1024 * 1024;
 const WORD_PATTERN = /[\p{L}\p{N}]+(?:['’\-][\p{L}\p{N}]+)*/gu;
 
@@ -173,7 +175,7 @@ async function executeAnalysis(
       runId: run.runId,
       version: 1,
       inputHash,
-      stateHash: STATE_HASH,
+      stateHash: workflowStateHash(format),
       completedStepIds: [],
       pendingStepId: STEP_ID,
     });
@@ -183,7 +185,7 @@ async function executeAnalysis(
       runId: run.runId,
       version: 1,
       inputHash,
-      stateHash: STATE_HASH,
+      stateHash: workflowStateHash(format),
       completedStepIds: [STEP_ID],
     });
     await store.appendRunEvent({ runId: run.runId, eventId: randomUUID(), type: "step_finished", stepId: STEP_ID });
@@ -231,7 +233,7 @@ export async function resumeDocumentAnalysisWorkflow(
     throw new DocumentWorkflowError("Only an uncertain document-analyze run can be resumed.");
   }
   const inputHash = createHash("sha256").update(input).digest("hex");
-  const checkpoint = await store.loadRunCheckpoint(runId, inputHash, STATE_HASH);
+  const checkpoint = await store.loadRunCheckpoint(runId, inputHash, workflowStateHash(format));
   if (checkpoint === null || (checkpoint.pendingStepId !== STEP_ID && !checkpoint.completedStepIds.includes(STEP_ID))) {
     throw new DocumentWorkflowError("The run has no resumable document checkpoint for these input bytes.");
   }

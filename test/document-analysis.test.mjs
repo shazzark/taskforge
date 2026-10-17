@@ -111,17 +111,18 @@ test("document workflow rejects unsupported formats and records malformed UTF-8 
   assert.equal(persistence.state.events.some((event) => event.type === "run_failed"), true);
 });
 
-test("document resume rejects changed bytes and deterministically completes the checkpoint", async () => {
+test("document resume rejects changed bytes and formats, then deterministically completes the checkpoint", async () => {
   const persistence = createPersistenceRecorder();
   const runId = randomUUID();
   const input = Buffer.from("same input bytes", "utf8");
   await persistence.saveRunSummary({ runId, workflowId: "document-analyze", summary: "Interrupted." });
   await persistence.updateRunState(runId, "uncertain");
   const inputHash = createHash("sha256").update(input).digest("hex");
-  const stateHash = createHash("sha256").update("taskforge:document-analyze:v1").digest("hex");
+  const stateHash = createHash("sha256").update("taskforge:document-analyze:v2:txt").digest("hex");
   await persistence.saveRunCheckpoint({ runId, version: 1, inputHash, stateHash, completedStepIds: [], pendingStepId: "parse" });
 
   await assert.rejects(resumeDocumentAnalysisWorkflow(persistence, runId, ".txt", Buffer.from("changed")), /checkpoint/);
+  await assert.rejects(resumeDocumentAnalysisWorkflow(persistence, runId, ".md", input), /checkpoint/);
   const result = await resumeDocumentAnalysisWorkflow(persistence, runId, ".txt", input);
   assert.equal(result.resumed, true);
   assert.equal(result.run.state, "completed");

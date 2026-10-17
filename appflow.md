@@ -24,9 +24,11 @@ Select tested named workflow and explicit inputs -> set timezone and trigger -> 
 ## Contributions
 Add definition with schema, tools, examples and tests -> validate locally -> open GitHub PR -> reviewed checks -> merge by maintainer. No task definition can add new executable code at runtime or override permissions.
 
-## Current behavior boundary - 14 October 2026
+## Current behavior boundary - 15 October 2026
 
 The flows above describe target behavior, not the current CLI. Today commands use fixed named dispatch. `do` and `chat` expose only approved CSV/document analysis. `run agent-fix` can transfer one consented redacted source file to the selected provider, accept a single full-file replacement candidate, preview/hash it, and apply after exact approval; a separate selected Node test approval follows. It does not resolve general workflows or make multi-file diffs. The registry validates built-in declarative definitions but does not execute them. Current capability evidence and limitations are in `CAPABILITY_AUDIT.md` and `task.md`.
+
+Lifecycle is narrower than the target flow above: there is no run-id cancellation command; Ctrl+C is command-specific; only uncertain CSV/document analysis resumes after fresh path approval and byte/state-hash validation. `history list` shows up to 50 redacted summaries but neither purges nor deletes records or artifacts. See `LIFECYCLE_AUDIT.md` for exact interruption boundaries; planned universal checkpoint, pause, resume and retention behavior is not implemented.
 
 ## Approved target flows and required gates
 

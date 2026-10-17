@@ -164,13 +164,17 @@ test(
         runId: resumableDocumentId,
         version: 1,
         inputHash: createHash("sha256").update(resumableDocumentInput).digest("hex"),
-        stateHash: createHash("sha256").update("taskforge:document-analyze:v1").digest("hex"),
+        stateHash: createHash("sha256").update("taskforge:document-analyze:v2:txt").digest("hex"),
         completedStepIds: [],
         pendingStepId: "parse",
       });
       await store.updateRunState(resumableDocumentId, "uncertain");
       await assert.rejects(
         resumeDocumentAnalysisWorkflow(store, resumableDocumentId, ".txt", Buffer.from("changed document", "utf8")),
+        /checkpoint/,
+      );
+      await assert.rejects(
+        resumeDocumentAnalysisWorkflow(store, resumableDocumentId, ".md", resumableDocumentInput),
         /checkpoint/,
       );
       const resumedDocument = await resumeDocumentAnalysisWorkflow(store, resumableDocumentId, ".txt", resumableDocumentInput);

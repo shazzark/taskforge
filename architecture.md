@@ -56,11 +56,13 @@ Phase 4.14 adds an exact-file move operation for TXT, Markdown, CSV, PDF, DOCX, 
 
 `run data-specialist --input <file> --goal <question>` supports locally parsed CSV, XLSX, text PDF, DOCX, TXT, and Markdown. It previews bounded heuristically redacted evidence before separately approved transfer; local paths and filenames are excluded. The browser `--specialist` option transfers aggregate evidence only. Specialist and parent requests share budgets, use the selected provider without switching, and require parent review. Results are unverified and not persisted.
 
-At the time of this recovery note MongoDB was the only persistence implementation. The owner has since approved local persistence as the new-install default, the existing MongoDB adapter as an explicit option, guided Windows setup/distribution, evidence-based architecture analysis, and read-only GitHub/Vercel deployment tracing. They remain planned until implemented and verified. Deployment actions remain deferred. The independent developer trial remains pending.
+This recovery note predates the approved Phases 9–20. Local SQLite with explicit MongoDB selection is now implemented, with cross-backend parity and Windows durability/package acceptance still pending. Guided Windows distribution, evidence-based architecture reports, and read-only GitHub/Vercel tracing remain approved but unimplemented. Deployment actions remain deferred. The independent developer trial remains pending. See `task.md` for phase-by-phase evidence and current status.
 
 ## Current implementation update - 14 October 2026
 
 Local SQLite is now the new-install default behind the shared `TaskForgeStore`; configured or explicit MongoDB selection remains supported without automatic migration, deletion, or fallback. Natural-language `do`/`chat` currently expose only fixed CSV and document analysis tools. Phase 13.1 adds `run agent-fix`, which sends one user-approved, redacted source file to the selected provider and accepts one full-file replacement candidate, with hash-bound preview, separate write approval, and separately approved fixed Node test. This is not the approved target resolver/orchestrator, a multi-file diff workflow, or general architecture analysis. Read-only GitHub/Vercel deployment tracing remains approved future work. See `CAPABILITY_AUDIT.md` and `task.md` for verification and acceptance status.
+
+Current lifecycle is narrower than the target section above: no general run cancellation or history deletion exists; only CSV/document analysis resumes from hash-bound checkpoints; the history command lists at most 50 records while the store retains older runs indefinitely. See `LIFECYCLE_AUDIT.md` for current per-command boundaries and the document-format state hash.
 
 ## Approved target architecture - 14 October 2026
 

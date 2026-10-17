@@ -44,6 +44,22 @@ test("input validation, secret redaction, approvals, and state transitions hold"
   assert.equal(await store.revokeFolderApproval(process.cwd(), "read"), true);
 });
 
+test("history lists only the newest fifty run summaries while preserving older stored records", async t => {
+  const { store } = await fixture(t);
+  const firstRunId = "history-run-00";
+  for (let index = 0; index < 55; index += 1) {
+    await store.saveRunSummary({
+      runId: `history-run-${String(index).padStart(2, "0")}`,
+      workflowId: "synthetic-history",
+      summary: index === 54 ? "token=synthetic-history-secret" : `Synthetic history item ${index}`,
+    });
+  }
+  const visible = await store.listRunSummaries();
+  assert.equal(visible.length, 50);
+  assert.match(visible.find((run) => run.runId === "history-run-54")?.summary ?? "", /\[REDACTED\]/u);
+  assert.ok(await store.getRunSummary(firstRunId), "older history is still retained outside the 50-item list window");
+});
+
 test("two connections atomically claim one pending occurrence once", async t => {
   const { path, store } = await fixture(t);
   const second = await SqliteStore.connect({ path });

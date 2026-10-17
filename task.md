@@ -478,7 +478,7 @@ The controlled end-to-end TLS fixture demonstrated real Chromium CONNECT traffic
 
 Redacted checks found the local MongoDB Windows service running and a local Node TCP/MongoClient ping succeeding against a diagnostic-only database. The configured endpoint uses SRV discovery; resolving its `_mongodb._tcp` record timed out before any remote TCP connection or authentication attempt. No credentials, URI, or connection string were printed or modified. This does not establish a bad password or access-list failure; the configured endpoint remains unavailable pending working DNS/network access. Database workflow verification uses a separate disposable loopback database, not normal application data.
 
-**Current pending items:** The approved BookFinder discovery journey remains incomplete because the fresh unauthenticated `/discover` visit reaches `/login`; the owner's reported UI likely reflects a different session/state, but this cannot be confirmed without the owner's session context. No extra BookFinder origin was discovered or accessed, so no additional-origin approval is currently needed. Phase 6.10 implementation and controlled verification are recorded below. Phase 8 remains IN PROGRESS until another developer completes `DEVELOPER_TRIAL.md`; the approved live audit and subagent review do not replace that trial. Scope proposals remain deferred as recorded above.
+**Current pending items at this historical checkpoint:** The approved BookFinder discovery journey remained incomplete because the fresh unauthenticated `/discover` visit reached `/login`; the owner-confirmed signed-in screenshot and later manual-login flow are recorded below. Phase 8 remains IN PROGRESS until another developer completes `DEVELOPER_TRIAL.md`; agent review does not replace that trial. The owner later approved the expanded development areas in Phase 9; this earlier note does not describe their current implementation status.
 
 ### Phase 6.9 - Reconcile /discover unauthenticated inspection and hydration - VERIFIED (live journey remains pending)
 
@@ -625,15 +625,17 @@ Depends on Phase 12 and exact external-transfer consent. **Phase 14.1 — Citati
 
 **Acceptance:** Fixtures tie comparison claims to mapped retrieved passages/URLs, surface unsupported/uncited claims, source disagreement, retrieval failure, invalid URLs and escaping. Actual citations must map to returned evidence; citation mapping does not establish semantic entailment. Live synthetic retrieval is separately recorded and never inferred from fixtures.
 
-### Phase 15 — Cancellation, resume and history contract — NOT STARTED
+### Phase 15 — Cancellation, resume and history contract — IN PROGRESS
 
-Depends on Phases 10, 12 and 13. Preserve safe CSV/document resume and current schedule semantics during expansion.
+Depends on Phases 10, 12 and 13. **Phase 15.1 — Checkpoint state binding and lifecycle audit — COMPLETE.** Audited exact current signal/decline boundaries, resumable workflow set, persisted history and retention. Fixed document resume state so its workflow hash includes the normalized document format; an identical byte sequence cannot resume through a different parser mode. Existing version-1 uncertain document checkpoints without a stored format now fail the state-hash check safely and remain preserved rather than replaying under an assumed format. Added fixtures for format mismatch and local history's 50-item listing bound while older records remain stored.
 
-**Acceptance:** Per-workflow cancel/checkpoint/resume capability is documented; interruption matrix covers approval/read/mutation/check boundaries, side-effect uncertainty, state/hash and fresh-permission checks, duplicate replay prevention, DB failure and history redaction/retention/delete behavior. Unsupported general resume remains explicit.
+**Verification:** Focused document and SQLite persistence tests passed (11/11), including changed bytes, changed format, exact-format resume, newest-50 listing, redaction, and retention of an older record. The first full serial run reported 175 passed and 4 CLI subprocess timeouts (0 skipped); the affected `test/agent-session-cli.test.mjs` then passed 4/4 by itself. An unchanged clean serial retry passed **179/179, 0 failed, 0 skipped** in 148.5 seconds with `TASKFORGE_TEST_MONGODB_URI=mongodb://127.0.0.1:27017/taskforge_recovery_retry_20261017`; the MongoDB integration used its derived isolated database and cleaned it up. `npm test` ran the strict TypeScript build. No timeout/assertion was changed and no stored history is deleted. Independent read-only review found no actionable defect in the document state-hash change; SQLite document-resume workflow coverage remains a gap beyond generic SQLite checkpoint persistence.
 
-### Phase 16 — Browser and specialist end-to-end acceptance — IN PROGRESS for implementation; acceptance PENDING
+**Remaining Phase 15 acceptance:** Broader per-workflow cancellation and interruption coverage remains open, including side-effect uncertainty, duplicate replay prevention and database-failure behavior. Unsupported general resume remains explicit. A future history deletion/retention command requires a separately reviewed policy; current history is retained by the selected store with no automatic purge or CLI delete.
 
-Depends on existing browser/specialist boundaries and Phases 12, 14 and 15.
+### Phase 16 — Browser and specialist end-to-end acceptance — PARTIAL; acceptance PENDING
+
+Depends on existing browser/specialist boundaries and Phases 12, 14 and 15. The dedicated ephemeral manual-login path and controlled browser/proxy cases are implemented; no authenticated session/profile is imported. Integrated specialist-budget coverage and actual owner-operated BookFinder search/results/details/back evidence remain pending.
 
 **Acceptance:** Automated synthetic integration covers ephemeral login, separate journey approval, no session/profile import, specialist limits/shared budgets/tool denials. BookFinder search/results/details/back requires owner manual login and journey approval in the fresh ephemeral browser. It remains pending until owner-operated evidence exists; the earlier authorization remains valid.
 
