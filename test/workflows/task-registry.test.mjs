@@ -7,7 +7,7 @@ import {
   resolveTaskTools,
   validateTaskDefinition,
   validateTaskInputs,
-} from "../../dist/agent/task-registry.js";
+} from "../../dist/workflows/task-registry.js";
 
 test("built-in task definitions declare validated inputs, outputs, required tools, examples, and conformance cases", () => {
   assert.deepEqual(BUILT_IN_TASKS.map((task) => task.id), ["csv-summary", "repository-inventory", "web-research"]);

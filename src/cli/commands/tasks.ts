@@ -1,4 +1,4 @@
-import { BUILT_IN_TASKS, getBuiltInTask, TaskRegistryError, validateTaskInputs } from "../../agent/task-registry.js";
+import { BUILT_IN_TASKS, getBuiltInTask, TaskRegistryError, validateTaskInputs } from "../../workflows/task-registry.js";
 
 export function runTasksCommand(commandArgs: readonly string[]): void {
   const action = commandArgs[0];

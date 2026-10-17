@@ -53,6 +53,12 @@ Moved the bounded parser and analyzer to `src/tools/data/csv-analysis.ts`, moved
 
 **Verification:** Strict typecheck/build and focused CSV parser/export/CLI/data-specialist tests passed (20/20). Independent source review found no stale path or behavior change. No stored record or permission contract changed.
 
+### Checkpoint 10 — Place the declarative task registry under workflows: VERIFIED
+
+Moved `src/agent/task-registry.ts` and its feature test to `src/workflows/task-registry.ts` and `test/workflows/task-registry.test.mjs`. Updated current CLI/test imports, contribution map, and capability audit. The registry remains non-executable validated data; public CLI behavior and permission boundaries did not change.
+
+**Verification:** Strict typecheck/build passed, and the registry plus task CLI tests passed (6/6) under isolated local-storage settings. A first CLI-only attempt without that test environment hit its existing five-second subprocess timeout; the isolated rerun passed. Independent source review found no stale active paths or behavioral changes. `git diff --check` passed.
+
 ### Checkpoint 8 — Move document parsers and conversion under tools: VERIFIED
 
 Moved the five bounded parser/conversion modules from `src/documents/` to `src/tools/documents/` and their feature tests to `test/tools/documents/`. Updated orchestration/sampling/CLI imports and current docs; workflows remain responsible for approvals and persistence.

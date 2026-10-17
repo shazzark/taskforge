@@ -757,6 +757,12 @@ Moved PDF rendering, validated report exports, local draft rendering, and approv
 
 **Verification:** `npm run typecheck`, `npm run build`, and the combined artifact/document/data capability suite passed (49/49). Initial checks found stale relative imports from the new source/test depth; the paths were corrected and the complete suite passed. Independent review found no remaining old active paths or behavior changes. `git diff --check` passed.
 
+### Refactor checkpoint 10 — Move task registry under workflows — VERIFIED
+
+Moved the built-in declarative task registry to `src/workflows/task-registry.ts` and its feature tests to `test/workflows/`. Updated the `tasks` CLI import, test imports, contribution map, and capability audit. The definitions remain validated non-executable data and do not grant permissions; CLI behavior and registry validation are unchanged.
+
+**Verification:** `npm run typecheck` and `npm run build` passed. The combined registry and CLI task tests passed (6/6) with local storage and a dedicated temporary `LOCALAPPDATA`; the direct registry tests also passed (4/4). The first focused CLI attempt without the local-storage test environment hit the existing five-second subprocess timeout; rerunning in the isolated test environment passed. Independent review found no stale active paths or behavior changes. `git diff --check` passed.
+
 ### Phase 9 documentation checkpoint — COMPLETE
 
 Updated in this checkpoint: `prd.md`, `trd.md`, `architecture.md`, `backendschema.md`, `appflow.md`, `implementation-plan.md`, `CAPABILITY_AUDIT.md`, and README record the approved scope and distinguish target design from current behavior. Cross-document proposal/status scan and `git diff --check` passed. No code changed, so the Phase 8.8 full-suite evidence remains the latest full-suite result; no new test claim is made. Commit this verified documentation checkpoint locally before starting Phase 10.
