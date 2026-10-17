@@ -47,6 +47,12 @@ Moved deployment-trace argument parsing, terminal/config/token preflight, exact-
 
 **Verification:** Strict typecheck/build and deployment CLI/adapter tests passed (6/6). Independent source review confirmed argument validation → TTY → local environment → token check → consent → adapter order. No live Vercel call or interactive token path was exercised.
 
+### Checkpoint 7 — Move CSV analysis capability under tools: VERIFIED
+
+Moved the bounded parser and analyzer to `src/tools/data/csv-analysis.ts`, moved its core tests to `test/tools/data/`, and updated the workflow, data-specialist sample, aggregate-export and CLI test imports. Updated contribution guidance to describe the current map.
+
+**Verification:** Strict typecheck/build and focused CSV parser/export/CLI/data-specialist tests passed (20/20). Independent source review found no stale path or behavior change. No stored record or permission contract changed.
+
 **Next checkpoints:** Move feature capabilities in small dependency-aware slices and split additional CLI handlers by responsibility, retaining `dist/cli.js` as the executable entry. Run the integrated serial suite after the structural migrations. No unrelated behavior changes or new dependencies are included.
 
 Phase 4.13 wires explicitly selected numeric CSV columns into the persisted workflow and all structured report formats. Selection names affect the checkpoint hash; strict typecheck and the full isolated MongoDB suite passed (105 tests, zero skipped), and independent review found no remaining issues after prototype-key and Markdown-label fixes.

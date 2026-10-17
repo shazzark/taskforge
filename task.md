@@ -739,6 +739,12 @@ Moved deployment-trace argument handling, TTY/config/token preflight, explicit c
 
 **Verification:** `npm run typecheck`, `npm run build`, and deployment CLI/adapter tests passed (6/6). Independent review confirmed the preflight order and safe output. Interactive credential loading and affirmative live API calls remain covered by source/fixture behavior only; no live Vercel request was made. `git diff --check` passed.
 
+### Refactor checkpoint 7 — Move CSV data capability under tools — VERIFIED
+
+Moved the bounded CSV analysis/parser module to `src/tools/data/csv-analysis.ts` and its core tests to `test/tools/data/`. Updated workflow, specialist-sampling, report-export, CLI test references and the contribution/codebase map. Parser behavior, workflow semantics, approvals, and data records are unchanged.
+
+**Verification:** `npm run typecheck`, `npm run build`, and CSV analysis/export/CLI/data-specialist tests passed (20/20). Independent review found no stale import or behavior change. `git diff --check` passed.
+
 ### Phase 9 documentation checkpoint — COMPLETE
 
 Updated in this checkpoint: `prd.md`, `trd.md`, `architecture.md`, `backendschema.md`, `appflow.md`, `implementation-plan.md`, `CAPABILITY_AUDIT.md`, and README record the approved scope and distinguish target design from current behavior. Cross-document proposal/status scan and `git diff --check` passed. No code changed, so the Phase 8.8 full-suite evidence remains the latest full-suite result; no new test claim is made. Commit this verified documentation checkpoint locally before starting Phase 10.

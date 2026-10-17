@@ -1,4 +1,4 @@
-import { sampleCsv } from "../data/csv-analysis.js";
+import { sampleCsv } from "../tools/data/csv-analysis.js";
 import { parseDocxText } from "../documents/docx-parser.js";
 import { parsePdfText } from "../documents/pdf-text-parser.js";
 import { parseTextDocument } from "../documents/text-parser.js";

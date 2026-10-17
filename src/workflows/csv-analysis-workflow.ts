@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { TextDecoder } from "node:util";
-import { analyzeCsv, CsvAnalysisError, type CsvAnalysisResult } from "../data/csv-analysis.js";
+import { analyzeCsv, CsvAnalysisError, type CsvAnalysisResult } from "../tools/data/csv-analysis.js";
 import type { RunSummary } from "../storage/types.js";
 import type { TaskForgeStore } from "../storage/store.js";
 

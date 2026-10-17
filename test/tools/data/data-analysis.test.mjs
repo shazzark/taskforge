@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { analyzeCsv, CsvAnalysisError } from "../dist/data/csv-analysis.js";
+import { analyzeCsv, CsvAnalysisError } from "../../../dist/tools/data/csv-analysis.js";
 
 test("analyzes BOM, CRLF, quoted delimiters, embedded newlines and escaped quotes", () => {
   const content = "\uFEFFname,amount,notes\r\nalpha,0.10,\"contains,comma\"\r\nbeta,2.20,\"line one\r\nline two\"\r\nbeta,2.20,\"line one\r\nline two\"\r\ngamma,-0.30,\"He said \"\"hi\"\"\"\r\n";
