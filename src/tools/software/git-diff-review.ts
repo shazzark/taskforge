@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import { isAbsolute, relative, resolve, sep } from "node:path";
-import type { ApprovedRoot, WorkspacePathPolicy } from "../security/path-policy.js";
-import { redactSourceForDisplay } from "../workflows/source-review-workflow.js";
+import type { ApprovedRoot, WorkspacePathPolicy } from "../../security/path-policy.js";
+import { redactSourceForDisplay } from "../../workflows/source-review-workflow.js";
 
 const MAX_CHANGED_FILES = 20;
 const MAX_DIFF_BYTES = 48 * 1024;

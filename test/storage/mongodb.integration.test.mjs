@@ -21,7 +21,7 @@ import { parseConfiguration } from "../../dist/config/configuration.js";
 import { resumeCsvAnalysisWorkflow, runCsvAnalysisWorkflow } from "../../dist/workflows/csv-analysis-workflow.js";
 import { analyzeDocument, resumeDocumentAnalysisWorkflow } from "../../dist/workflows/document-analysis-workflow.js";
 import { inspectRepository } from "../../dist/workflows/repository-inspection-workflow.js";
-import { runReviewedCommand } from "../../dist/software/reviewed-command.js";
+import { runReviewedCommand } from "../../dist/tools/software/reviewed-command.js";
 import { WorkspacePathPolicy } from "../../dist/security/path-policy.js";
 import { runBrowserAudit } from "../../dist/workflows/browser-audit-workflow.js";
 

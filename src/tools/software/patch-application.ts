@@ -2,8 +2,8 @@ import { constants } from "node:fs";
 import { createHash } from "node:crypto";
 import { lstat, open, realpath } from "node:fs/promises";
 import { extname, isAbsolute, relative, resolve, sep } from "node:path";
-import type { ActionApprovalRegistry, ActionPreview, ApprovedAction } from "../security/approval-preview.js";
-import type { ApprovedRoot, WorkspacePathPolicy } from "../security/path-policy.js";
+import type { ActionApprovalRegistry, ActionPreview, ApprovedAction } from "../../security/approval-preview.js";
+import type { ApprovedRoot, WorkspacePathPolicy } from "../../security/path-policy.js";
 
 const MAX_PATCH_BYTES = 128 * 1024;
 const SOURCE_EXTENSIONS = new Set([".c", ".cc", ".cpp", ".cs", ".css", ".go", ".h", ".html", ".java", ".js", ".jsx", ".mjs", ".mts", ".php", ".py", ".rb", ".rs", ".scss", ".sh", ".sql", ".ts", ".tsx", ".cts", ".yaml", ".yml"]);

@@ -1,7 +1,7 @@
-import assert from "node:assert/strict";
+﻿import assert from "node:assert/strict";
 import test from "node:test";
-import { investigateSource, ModelInvestigationError } from "../dist/software/model-investigation.js";
-import { escapeTerminalControls } from "../dist/security/terminal-text.js";
+import { investigateSource, ModelInvestigationError } from "../../../dist/tools/software/model-investigation.js";
+import { escapeTerminalControls } from "../../../dist/security/terminal-text.js";
 
 test("model investigation sends only reviewed redacted excerpts and accepts bounded findings", async () => {
   let captured;
@@ -30,7 +30,7 @@ test("model investigation rejects unbounded input, tool calls, and empty output"
     { path: "large.ts", byteCount: 25 * 1024, lineCount: 1, content: "x".repeat(25 * 1024) },
   ]), ModelInvestigationError);
   await assert.rejects(investigateSource(provider, "fixture-model", [
-    { path: "unicode.ts", byteCount: 28 * 1024, lineCount: 1, content: "😀".repeat(7 * 1024) },
+    { path: "unicode.ts", byteCount: 28 * 1024, lineCount: 1, content: "ðŸ˜€".repeat(7 * 1024) },
   ]), ModelInvestigationError);
   await assert.rejects(investigateSource(provider, "fixture-model", [
     { path: "sample.ts", byteCount: 1, lineCount: 1, content: "x" },

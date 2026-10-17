@@ -1,7 +1,7 @@
-import type { ModelProvider } from "../providers/types.js";
-import { ModelProviderError } from "../providers/types.js";
-import { escapeTerminalControls } from "../security/terminal-text.js";
-import type { SourceReviewFile } from "../workflows/source-review-workflow.js";
+import type { ModelProvider } from "../../providers/types.js";
+import { ModelProviderError } from "../../providers/types.js";
+import { escapeTerminalControls } from "../../security/terminal-text.js";
+import type { SourceReviewFile } from "../../workflows/source-review-workflow.js";
 
 const MAX_FILES = 5;
 const MAX_SOURCE_BYTES = 24 * 1024;

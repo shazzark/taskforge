@@ -1,10 +1,10 @@
-import assert from "node:assert/strict";
+﻿import assert from "node:assert/strict";
 import { mkdtemp, mkdir, readFile, readdir, rename, rm, symlink, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import test from "node:test";
-import { WorkspacePathPolicy } from "../dist/security/path-policy.js";
-import { runReviewedCommand, ReviewedCommandError } from "../dist/software/reviewed-command.js";
+import { WorkspacePathPolicy } from "../../../dist/security/path-policy.js";
+import { runReviewedCommand, ReviewedCommandError } from "../../../dist/tools/software/reviewed-command.js";
 
 function createPersistenceRecorder() {
   const state = { events: [], runs: new Map() };

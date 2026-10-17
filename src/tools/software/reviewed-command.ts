@@ -2,9 +2,9 @@ import { spawn, spawnSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { lstat, mkdir, mkdtemp, readFile, realpath, rm, stat, readdir, writeFile } from "node:fs/promises";
 import { basename, extname, isAbsolute, join, relative, resolve } from "node:path";
-import type { RunSummary } from "../storage/types.js";
-import type { TaskForgeStore } from "../storage/store.js";
-import type { ApprovedRoot, WorkspacePathPolicy } from "../security/path-policy.js";
+import type { RunSummary } from "../../storage/types.js";
+import type { TaskForgeStore } from "../../storage/store.js";
+import type { ApprovedRoot, WorkspacePathPolicy } from "../../security/path-policy.js";
 
 const MAX_RUNTIME_MS = 120_000;
 const MAX_CAPTURED_OUTPUT_BYTES = 64 * 1024;

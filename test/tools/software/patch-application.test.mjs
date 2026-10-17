@@ -1,12 +1,12 @@
-import assert from "node:assert/strict";
+﻿import assert from "node:assert/strict";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { ActionApprovalRegistry, ApprovalError } from "../dist/security/approval-preview.js";
-import { WorkspacePathPolicy } from "../dist/security/path-policy.js";
-import { applyPreparedFilePatch, PatchApplicationError, prepareFilePatch, prepareGeneratedFilePatch } from "../dist/software/patch-application.js";
-import { runReviewedCommand } from "../dist/software/reviewed-command.js";
+import { ActionApprovalRegistry, ApprovalError } from "../../../dist/security/approval-preview.js";
+import { WorkspacePathPolicy } from "../../../dist/security/path-policy.js";
+import { applyPreparedFilePatch, PatchApplicationError, prepareFilePatch, prepareGeneratedFilePatch } from "../../../dist/tools/software/patch-application.js";
+import { runReviewedCommand } from "../../../dist/tools/software/reviewed-command.js";
 
 function createPersistenceRecorder() {
   const runs = new Map();

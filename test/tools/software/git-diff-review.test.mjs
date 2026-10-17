@@ -1,11 +1,11 @@
-import assert from "node:assert/strict";
+﻿import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { mkdtemp, rm, writeFile, mkdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { WorkspacePathPolicy } from "../dist/security/path-policy.js";
-import { GitDiffReviewError, listGitDiffFiles, readGitDiff } from "../dist/software/git-diff-review.js";
+import { WorkspacePathPolicy } from "../../../dist/security/path-policy.js";
+import { GitDiffReviewError, listGitDiffFiles, readGitDiff } from "../../../dist/tools/software/git-diff-review.js";
 
 function git(rootPath, args) {
   execFileSync("git", args, { cwd: rootPath, stdio: "ignore", windowsHide: true });

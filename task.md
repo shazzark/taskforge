@@ -717,7 +717,13 @@ Moved configuration loading and validation to `src/config/configuration.ts`; upd
 
 **Verification:** `npm run typecheck`, `npm run build`, and the focused config/provider/storage/CLI test command passed (43/43), including tests in nested feature directories.
 
-**Next:** Move feature capabilities in bounded slices, split more CLI command families by responsibility, then run the full serial test suite to confirm recursive test discovery and integrated behavior.
+### Refactor checkpoint 4 — Move software capabilities — VERIFIED
+
+Moved reviewed command execution, patch application, model investigation, and Git diff review from `src/software/` into `src/tools/software/`. Moved their feature tests under `test/tools/software/`; updated CLI and MongoDB integration imports. This changes file organization only; capabilities, approvals, command allowlist, and behavior remain unchanged.
+
+**Verification:** `npm run typecheck` and `npm run build` passed; `node --test --test-concurrency=1 test/tools/software/*.test.mjs` passed (15/15). `git diff --check` passed. The focused tests include generated and approved file patching, seeded failure reproduction, approved command constraints, Git diff redaction, and model finding bounds.
+
+**Next:** Move remaining feature capabilities and continue splitting CLI command families by responsibility, then run the full serial test suite to confirm recursive test discovery and integrated behavior.
 
 ### Phase 9 documentation checkpoint — COMPLETE
 

@@ -27,14 +27,14 @@ import { PathPolicyError, WorkspacePathPolicy } from "./security/path-policy.js"
 import { CsvWorkflowError, resumeCsvAnalysisWorkflow, runCsvAnalysisWorkflow, type CsvWorkflowResult } from "./workflows/csv-analysis-workflow.js";
 import { inspectRepository, RepositoryInspectionError } from "./workflows/repository-inspection-workflow.js";
 import { analyzeDocument, DocumentWorkflowError, resumeDocumentAnalysisWorkflow } from "./workflows/document-analysis-workflow.js";
-import { runReviewedCommand, validateSelectedNodeTestPath, type ReviewedCommandId, ReviewedCommandError } from "./software/reviewed-command.js";
+import { runReviewedCommand, validateSelectedNodeTestPath, type ReviewedCommandId, ReviewedCommandError } from "./tools/software/reviewed-command.js";
 import { redactSourceForDisplay, reviewSourceFiles, SourceReviewError } from "./workflows/source-review-workflow.js";
 import { ArchitectureReportError, createArchitectureReport } from "./architecture-report.js";
 import { ActionApprovalRegistry, ApprovalError } from "./security/approval-preview.js";
 import { previewPdfArtifact, PdfArtifactError, writeApprovedPdfArtifact } from "./artifacts/approved-pdf-output.js";
-import { prepareFilePatch, prepareGeneratedFilePatch, applyPreparedFilePatch, PatchApplicationError } from "./software/patch-application.js";
-import { GitDiffReviewError, listGitDiffFiles, readGitDiff } from "./software/git-diff-review.js";
-import { investigateSource, ModelInvestigationError } from "./software/model-investigation.js";
+import { prepareFilePatch, prepareGeneratedFilePatch, applyPreparedFilePatch, PatchApplicationError } from "./tools/software/patch-application.js";
+import { GitDiffReviewError, listGitDiffFiles, readGitDiff } from "./tools/software/git-diff-review.js";
+import { investigateSource, ModelInvestigationError } from "./tools/software/model-investigation.js";
 import { GitHubReadError, readPublicIssues } from "./integrations/github-public-issues.js";
 import { DraftArtifactError, parseLocalDraftInput, previewPlainTextArtifact, previewTextArtifact, writeApprovedTextArtifact } from "./artifacts/drafts.js";
 import { csvAnalysisExportFormat, CsvAnalysisExportError, renderCsvAnalysisExport, type CsvAnalysisExportFormat } from "./artifacts/csv-analysis-export.js";
