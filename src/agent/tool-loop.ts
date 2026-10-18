@@ -83,9 +83,18 @@ export class AgentToolError extends Error {
   }
 }
 
+export class AgentToolInputError extends AgentToolError {
+  constructor() {
+    super();
+    this.name = "AgentToolInputError";
+  }
+}
+
 const MAX_TOOL_RESULT_CHARACTERS = 16_000;
 const MAX_ALLOWED_MODEL_REQUESTS = 40;
 const MAX_ALLOWED_TOOL_ACTIONS = 30;
+const INVALID_TOOL_INPUT_RESULT = "The requested action was not run because required details were missing or invalid. Ask the user to clarify the exact file and requested fields, then retry only with their explicit details.";
+const INPUT_CLARIFICATION_RESPONSE = "I need the exact file and requested fields before I can safely continue. Please clarify them and try again.";
 
 export async function runToolLoop(
   provider: ModelProvider,
@@ -146,6 +155,8 @@ export async function runToolLoop(
       content: completion.content,
       toolCalls: completion.toolCalls,
     });
+    const validatedCalls: { readonly name: string; readonly tool: AgentTool; readonly argumentsValue: unknown }[] = [];
+    let inputRejected = false;
     for (const call of completion.toolCalls) {
       const tool = toolsByName.get(call.name);
       if (tool === undefined) {
@@ -154,14 +165,38 @@ export async function runToolLoop(
       let validatedArguments: unknown;
       try {
         validatedArguments = tool.validateArguments(call.arguments);
-      } catch {
+      } catch (error: unknown) {
+        if (error instanceof AgentToolInputError) {
+          inputRejected = true;
+          validatedCalls.push({ name: call.name, tool, argumentsValue: undefined });
+          continue;
+        }
         throw new AgentToolError();
       }
+      validatedCalls.push({ name: call.name, tool, argumentsValue: validatedArguments });
+    }
+    if (inputRejected) {
+      for (const call of completion.toolCalls) {
+        messages.push({ role: "tool", toolCallId: call.id, content: INVALID_TOOL_INPUT_RESULT });
+      }
+      if (modelRequests === options.maxModelRequests) {
+        return {
+          content: INPUT_CLARIFICATION_RESPONSE,
+          modelRequests,
+          toolActions,
+          toolNames: calledToolNames,
+        };
+      }
+      continue;
+    }
+    for (const [index, call] of completion.toolCalls.entries()) {
+      const validated = validatedCalls[index];
+      if (validated === undefined) throw new AgentToolError();
       let output: string;
       try {
         output = options.signal === undefined
-          ? await tool.execute(validatedArguments)
-          : await tool.execute(validatedArguments, options.signal);
+          ? await validated.tool.execute(validated.argumentsValue)
+          : await validated.tool.execute(validated.argumentsValue, options.signal);
       } catch {
         throw new AgentToolError();
       }
@@ -169,9 +204,9 @@ export async function runToolLoop(
         throw new AgentToolError();
       }
       messages.push({ role: "tool", toolCallId: call.id, content: output });
-      calledToolNames.push(call.name);
-      toolActions += 1;
     }
+    calledToolNames.push(...completion.toolCalls.map((call) => call.name));
+    toolActions += completion.toolCalls.length;
   }
   throw new AgentBudgetError();
 }

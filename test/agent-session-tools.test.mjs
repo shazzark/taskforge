@@ -58,6 +58,110 @@ test("one-shot agent uses only its host-supplied CSV tool and returns its real r
   assert.deepEqual(budget.snapshot(), { modelRequests: 2, toolActions: 1, modelRequestsRemaining: 1, toolActionsRemaining: 0 });
 });
 
+test("invalid or missing tool inputs return a safe clarification result without executing the tool", async () => {
+  let requests = 0;
+  let executions = 0;
+  const tool = createCsvAnalysisTool(async () => {
+    executions += 1;
+    return "unexpected";
+  });
+  const budget = new AgentBudgetLedger(2, 2);
+  const result = await runToolLoop({
+    async complete(request) {
+      requests += 1;
+      if (requests === 1) {
+        return { content: null, toolCalls: [{ id: "csv-missing-input", name: "analyze_csv", arguments: { numericColumns: ["amount"] } }], finishReason: "tool_calls" };
+      }
+      const feedback = request.messages.find((message) => message.role === "tool")?.content ?? "";
+      assert.match(feedback, /required details were missing or invalid/u);
+      assert.match(feedback, /exact file/u);
+      return { content: "Which exact CSV file should I analyze?", toolCalls: [], finishReason: "stop" };
+    },
+  }, "mock", [{ role: "user", content: "Analyze my sales." }], [tool], { maxModelRequests: 2, maxToolActions: 2, budget });
+  assert.equal(result.content, "Which exact CSV file should I analyze?");
+  assert.equal(result.toolActions, 0);
+  assert.deepEqual(result.toolNames, []);
+  assert.equal(budget.snapshot().toolActions, 1);
+  assert.equal(executions, 0);
+});
+
+test("a valid-first batch is entirely withheld when a later call has invalid inputs", async () => {
+  let executions = 0;
+  let requests = 0;
+  const tool = createCsvAnalysisTool(async () => {
+    executions += 1;
+    return "unexpected";
+  });
+  const result = await runToolLoop({
+    async complete(request) {
+      requests += 1;
+      if (requests === 1) {
+        return {
+          content: null,
+          toolCalls: [
+            { id: "csv-valid", name: "analyze_csv", arguments: { input: "fixtures/sales.csv" } },
+            { id: "csv-invalid", name: "analyze_csv", arguments: { numericColumns: ["amount"] } },
+          ],
+          finishReason: "tool_calls",
+        };
+      }
+      assert.equal(request.messages.filter((message) => message.role === "tool").length, 2);
+      return { content: "Please provide the exact file path.", toolCalls: [], finishReason: "stop" };
+    },
+  }, "mock", [{ role: "user", content: "Analyze a sales file." }], [tool], { maxModelRequests: 2, maxToolActions: 2 });
+  assert.equal(result.content, "Please provide the exact file path.");
+  assert.equal(result.toolActions, 0);
+  assert.equal(executions, 0);
+});
+
+test("invalid tool input at the request limit returns a clarification without exceeding the budget", async () => {
+  let executions = 0;
+  const result = await runToolLoop({
+    async complete() {
+      return { content: null, toolCalls: [{ id: "csv-missing", name: "analyze_csv", arguments: {} }], finishReason: "tool_calls" };
+    },
+  }, "mock", [{ role: "user", content: "Analyze sales." }], [createCsvAnalysisTool(async () => {
+    executions += 1;
+    return "unexpected";
+  })], { maxModelRequests: 1, maxToolActions: 1 });
+  assert.match(result.content, /need the exact file/u);
+  assert.equal(result.modelRequests, 1);
+  assert.equal(result.toolActions, 0);
+  assert.equal(executions, 0);
+});
+
+test("a later chat turn can supply the exact missing path before tool execution", async () => {
+  const conversation = [{ role: "user", content: "Analyze a CSV and total amount." }];
+  let executions = 0;
+  const tool = createCsvAnalysisTool(async (argumentsValue) => {
+    executions += 1;
+    assert.deepEqual(argumentsValue, { input: "fixtures/sales.csv", numericColumns: ["amount"] });
+    return "CSV analysis complete: 3 rows; amount=18.";
+  });
+  const provider = {
+    async complete(request) {
+      const latest = request.messages.at(-1);
+      if (latest?.role === "tool") {
+        return { content: "The CSV has three rows and amount totals 18.", toolCalls: [], finishReason: "stop" };
+      }
+      if (latest?.role === "user" && latest.content === "Analyze a CSV and total amount.") {
+        return { content: "Which exact CSV file should I analyze?", toolCalls: [], finishReason: "stop" };
+      }
+      assert.equal(latest?.content, "Use fixtures/sales.csv and total amount.");
+      return { content: null, toolCalls: [{ id: "csv-after-clarification", name: "analyze_csv", arguments: { input: "fixtures/sales.csv", numericColumns: ["amount"] } }], finishReason: "tool_calls" };
+    },
+  };
+  const first = await runToolLoop(provider, "mock", conversation, [tool], { maxModelRequests: 2, maxToolActions: 1 });
+  assert.equal(first.content, "Which exact CSV file should I analyze?");
+  assert.equal(first.toolActions, 0);
+  assert.equal(executions, 0);
+  conversation.push({ role: "assistant", content: first.content });
+  conversation.push({ role: "user", content: "Use fixtures/sales.csv and total amount." });
+  const second = await runToolLoop(provider, "mock", conversation, [tool], { maxModelRequests: 2, maxToolActions: 1 });
+  assert.equal(second.toolActions, 1);
+  assert.equal(executions, 1);
+});
+
 test("agent cannot execute an unprovided tool or run after shared tool budget is exhausted", async () => {
   let executed = 0;
   const tool = createCsvAnalysisTool(async () => { executed += 1; return "unexpected"; });

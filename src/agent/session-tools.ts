@@ -1,4 +1,4 @@
-import { AgentToolError, type AgentTool } from "./tool-loop.js";
+import { AgentToolError, AgentToolInputError, type AgentTool } from "./tool-loop.js";
 import { isRecord } from "../providers/types.js";
 
 const CSV_TOOL_ARGUMENT_KEYS = new Set(["input", "numericColumns"]);
@@ -25,33 +25,33 @@ export type DocumentAnalysisToolExecutor = (
 export type PatchProposalCapture = (replacement: string) => void;
 
 function parseCsvToolArguments(value: unknown): CsvAnalysisToolArguments {
-  if (!isRecord(value)) throw new AgentToolError();
+  if (!isRecord(value)) throw new AgentToolInputError();
   const input = value["input"];
   if (Object.keys(value).some((key) => !CSV_TOOL_ARGUMENT_KEYS.has(key)) ||
       typeof input !== "string" || input.trim().length === 0 || input.length > 2_048 || !input.toLowerCase().endsWith(".csv")) {
-    throw new AgentToolError();
+    throw new AgentToolInputError();
   }
   const numericColumnsValue = value["numericColumns"];
-  if (numericColumnsValue !== undefined && !Array.isArray(numericColumnsValue)) throw new AgentToolError();
+  if (numericColumnsValue !== undefined && !Array.isArray(numericColumnsValue)) throw new AgentToolInputError();
   const numericColumns: string[] = [];
   if (Array.isArray(numericColumnsValue)) {
-    if (numericColumnsValue.length > 16) throw new AgentToolError();
+    if (numericColumnsValue.length > 16) throw new AgentToolInputError();
     for (const column of numericColumnsValue) {
-      if (typeof column !== "string" || column.trim().length === 0 || column.length > 256) throw new AgentToolError();
+      if (typeof column !== "string" || column.trim().length === 0 || column.length > 256) throw new AgentToolInputError();
       numericColumns.push(column);
     }
   }
-  if (new Set(numericColumns).size !== numericColumns.length) throw new AgentToolError();
+  if (new Set(numericColumns).size !== numericColumns.length) throw new AgentToolInputError();
   return { input, numericColumns };
 }
 
 function parseDocumentToolArguments(value: unknown): DocumentAnalysisToolArguments {
-  if (!isRecord(value)) throw new AgentToolError();
+  if (!isRecord(value)) throw new AgentToolInputError();
   const input = value["input"];
   if (Object.keys(value).some((key) => key !== "input") ||
       typeof input !== "string" || input.trim().length === 0 || input.length > 2_048 ||
       ![".txt", ".md", ".markdown", ".pdf", ".docx", ".xlsx"].some((suffix) => input.toLowerCase().endsWith(suffix))) {
-    throw new AgentToolError();
+    throw new AgentToolInputError();
   }
   return { input };
 }
