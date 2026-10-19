@@ -2,7 +2,7 @@ import { createInterface } from "node:readline/promises";
 import { ConfigurationError, loadProviderConfiguration } from "../../config/configuration.js";
 import { AgentBudgetLedger, runToolLoop } from "../../agent/tool-loop.js";
 import { createCsvAnalysisTool, createDocumentAnalysisTool, TASKFORGE_AGENT_SYSTEM_MESSAGE } from "../../agent/session-tools.js";
-import { createInstalledCsvTaskTool } from "../../agent/installed-task-tool.js";
+import { createInstalledTaskTool } from "../../agent/installed-task-tool.js";
 import type { TaskForgeStore } from "../../storage/store.js";
 import { createModelProvider } from "../../providers/create-provider.js";
 import { ModelProviderError, type ProviderMessage } from "../../providers/types.js";
@@ -80,17 +80,20 @@ function createCliDocumentAnalysisTool(question: ApprovalQuestion, dependencies:
   });
 }
 
-function createCliAgentTools(
+export function createCliAgentTools(
   question: ApprovalQuestion,
   dependencies: AgentSessionCommandDependencies,
   definitions: Awaited<ReturnType<typeof loadLocalTaskRegistry>>["definitions"],
 ): AgentTool[] {
   const csvTool = createCliCsvAnalysisTool(question, dependencies);
-  const installedTaskTool = createInstalledCsvTaskTool(definitions, async (argumentsValue, signal) =>
-    csvTool.execute({ input: argumentsValue.input, numericColumns: argumentsValue.numericColumns }, signal));
+  const documentTool = createCliDocumentAnalysisTool(question, dependencies);
+  const installedTaskTool = createInstalledTaskTool(definitions, async (argumentsValue, signal) =>
+    argumentsValue.workflow === "csv"
+      ? csvTool.execute({ input: argumentsValue.input, numericColumns: argumentsValue.numericColumns }, signal)
+      : documentTool.execute({ input: argumentsValue.input }, signal));
   return [
     csvTool,
-    createCliDocumentAnalysisTool(question, dependencies),
+    documentTool,
     ...(installedTaskTool === undefined ? [] : [installedTaskTool]),
   ];
 }

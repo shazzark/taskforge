@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { AgentToolInputError, runToolLoop } from "../dist/agent/tool-loop.js";
-import { createInstalledCsvTaskTool } from "../dist/agent/installed-task-tool.js";
+import { createInstalledTaskTool } from "../dist/agent/installed-task-tool.js";
+import { createCliAgentTools } from "../dist/cli/commands/agent-session.js";
 import { BUILT_IN_TASKS, validateTaskDefinition } from "../dist/workflows/task-registry.js";
 
 function localCsvTask(overrides = {}) {
@@ -23,12 +24,28 @@ function localCsvTask(overrides = {}) {
   });
 }
 
+function localDocumentTask(overrides = {}) {
+  return validateTaskDefinition({
+    id: "document-counts",
+    version: 1,
+    name: "Document counts",
+    description: "Count words and lines in one approved document.",
+    instructions: "Only report aggregate counts.",
+    inputs: [{ name: "input", type: "file", required: true, description: "Exact supported document path." }],
+    outputs: [{ name: "summary", type: "text", description: "Aggregate document counts." }],
+    requiredTools: ["document.analyze"],
+    examples: [{ prompt: "Count words in this document.", inputs: { input: "fixture.txt" }, expectedResult: "A count summary." }],
+    tests: [{ name: "document", inputs: { input: "fixture.txt" }, expectedOutputNames: ["summary"] }],
+    ...overrides,
+  });
+}
+
 test("installed CSV tasks use validated declared inputs and the fixed host executor", async () => {
   const task = localCsvTask();
   let calls = 0;
-  const tool = createInstalledCsvTaskTool([task], async (args) => {
+  const tool = createInstalledTaskTool([task], async (args) => {
     calls += 1;
-    assert.deepEqual(args, { taskId: "monthly-summary", input: "fixtures/month.csv", numericColumns: ["total"] });
+    assert.deepEqual(args, { taskId: "monthly-summary", input: "fixtures/month.csv", workflow: "csv", numericColumns: ["total"] });
     return "CSV analysis complete: 2 rows; total=9.";
   });
   assert.ok(tool);
@@ -38,7 +55,7 @@ test("installed CSV tasks use validated declared inputs and the fixed host execu
   assert.doesNotMatch(tool.definition.description, /Ignore host policy/u);
   assert.doesNotMatch(tool.definition.description, /Summarize a CSV\./u);
   const args = { taskId: "monthly-summary", inputs: { input: "fixtures/month.csv", numericColumn: "total" } };
-  assert.deepEqual(tool.validateArguments(args), { taskId: "monthly-summary", input: "fixtures/month.csv", numericColumns: ["total"] });
+  assert.deepEqual(tool.validateArguments(args), { taskId: "monthly-summary", input: "fixtures/month.csv", workflow: "csv", numericColumns: ["total"] });
   assert.equal(await tool.execute(args), "CSV analysis complete: 2 rows; total=9.");
   assert.equal(calls, 1);
 });
@@ -46,7 +63,7 @@ test("installed CSV tasks use validated declared inputs and the fixed host execu
 test("missing, unknown, extra, or invalid task inputs fail before workflow execution", () => {
   const task = localCsvTask();
   let calls = 0;
-  const tool = createInstalledCsvTaskTool([task], async () => { calls += 1; return "unexpected"; });
+  const tool = createInstalledTaskTool([task], async () => { calls += 1; return "unexpected"; });
   assert.ok(tool);
   for (const args of [
     { taskId: "monthly-summary" },
@@ -70,7 +87,8 @@ test("task eligibility requires every declared capability and the supported CSV 
   const noCsv = BUILT_IN_TASKS.find((task) => task.id === "repository-inventory");
   assert.ok(noCsv);
   let calls = 0;
-  const tool = createInstalledCsvTaskTool([partial, unsupportedOutput, noCsv], async () => { calls += 1; return "unexpected"; });
+  const unsupportedDocument = localDocumentTask({ requiredTools: ["document.analyze", "web.search"] });
+  const tool = createInstalledTaskTool([partial, unsupportedOutput, noCsv, unsupportedDocument], async () => { calls += 1; return "unexpected"; });
   assert.equal(tool, undefined);
   assert.equal(calls, 0);
   assert.deepEqual(csv.requiredTools, ["csv.analyze"]);
@@ -84,7 +102,7 @@ test("ambiguous task intent is clarified without invoking the installed task too
     name: "Quarterly summary",
   });
   let executed = 0;
-  const tool = createInstalledCsvTaskTool([first, second], async () => { executed += 1; return "unexpected"; });
+  const tool = createInstalledTaskTool([first, second], async () => { executed += 1; return "unexpected"; });
   assert.ok(tool);
   let requests = 0;
   const result = await runToolLoop({
@@ -101,4 +119,76 @@ test("ambiguous task intent is clarified without invoking the installed task too
   assert.match(result.content, /monthly-summary or quarterly-summary/u);
   assert.equal(requests, 1);
   assert.equal(executed, 0);
+});
+
+test("installed document tasks use the fixed host document workflow and reject unsupported paths", async () => {
+  const task = localDocumentTask();
+  let calls = 0;
+  const tool = createInstalledTaskTool([task], async (args) => {
+    calls += 1;
+    assert.deepEqual(args, { taskId: "document-counts", input: "fixtures/report.PDF", workflow: "document" });
+    return "Document analysis complete: pdf; 2 words; 1 lines; 24 bytes.";
+  });
+  assert.ok(tool);
+  assert.match(tool.definition.description, /fixed, host-approved CSV or supported-document/u);
+  const args = { taskId: "document-counts", inputs: { input: "fixtures/report.PDF" } };
+  assert.deepEqual(tool.validateArguments(args), { taskId: "document-counts", input: "fixtures/report.PDF", workflow: "document" });
+  assert.match(await tool.execute(args), /2 words/u);
+  for (const invalid of [
+    { taskId: "document-counts", inputs: { input: "fixtures/report.exe" } },
+    { taskId: "document-counts", inputs: { input: "fixtures/report.txt", numericColumn: "count" } },
+    { taskId: "document-counts", inputs: { input: "fixtures/report.txt", permissions: ["read"] } },
+  ]) assert.throws(() => tool.validateArguments(invalid), AgentToolInputError);
+  assert.equal(calls, 1);
+});
+
+test("natural-language installed document task routes through the existing approved document tool", async () => {
+  const task = localDocumentTask();
+  const runs = new Map();
+  const checkpoints = new Map();
+  const events = [];
+  const store = {
+    async saveRunSummary(value) {
+      const run = { ...value, state: "created", createdAt: new Date() };
+      runs.set(value.runId, run);
+      return run;
+    },
+    async updateRunState(runId, state) {
+      const run = { ...runs.get(runId), state };
+      runs.set(runId, run);
+      return run;
+    },
+    async appendRunEvent(value) {
+      events.push(value);
+      return { ...value, sequence: events.length, createdAt: new Date() };
+    },
+    async updateRunSummary(runId, summary) {
+      const run = { ...runs.get(runId), summary };
+      runs.set(runId, run);
+      return run;
+    },
+    async saveRunCheckpoint(value) {
+      checkpoints.set(value.runId, value);
+      return { ...value, updatedAt: new Date() };
+    },
+  };
+  const source = Buffer.from("private-document-marker has four words", "utf8");
+  let readCount = 0;
+  const tools = createCliAgentTools(async () => "y", {
+    withStore: async (action) => action(store),
+    readApprovedInputFile: async (path, askQuestion, signal) => {
+      assert.equal(path, "fixtures/report.txt");
+      assert.equal(await askQuestion("Exact file approval?", signal), "y");
+      readCount += 1;
+      return source;
+    },
+  }, [task]);
+  const installed = tools.find((tool) => tool.definition.name === "run_installed_task");
+  assert.ok(installed);
+  const result = await installed.execute({ taskId: task.id, inputs: { input: "fixtures/report.txt" } });
+  assert.match(result, /4 words/u);
+  assert.equal(result.includes("private-document-marker"), false);
+  assert.equal(readCount, 1);
+  assert.equal([...runs.values()][0]?.state, "completed");
+  assert.equal(events.some((event) => event.type === "run_finished"), true);
 });
