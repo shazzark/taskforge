@@ -626,6 +626,8 @@ Extended the synthetic SQLite/MongoDB contract to cover run-summary redaction on
 
 **Verification:** `npm run typecheck`, `npm run build`, and `node --test --test-concurrency=1 test/storage/store-contract.test.mjs` passed (3/3) with both adapters enabled and isolated. The integrated serial `npm test` passed 223/223, 0 failed, 0 skipped in 204.6 seconds with disposable local storage and dedicated loopback MongoDB. Independent read-only review found no actionable defect. Phase 10 remains IN PROGRESS for backup/restore, Windows ACL/privacy, power-loss durability, and complete workflow parity.
 
+**Next checkpoint:** Verify MongoDB backup/restore against a disposable loopback database with MongoDB Database Tools. `mongodump` and `mongorestore` are not installed in this environment; do not substitute a simulated adapter export for that evidence.
+
 ### Phase 11 — Validated declarative task registry — COMPLETE
 
 Depends on Phase 9 and Phase 10 interfaces. Definitions include bounded instructions, validated inputs/outputs, fixed tool names, examples and tests; no arbitrary executable code. The verified registry includes the built-in catalog and safely installed local definitions. Registry definition execution remains outside this phase; routing and task execution are tracked under Phase 12.
