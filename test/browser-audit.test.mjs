@@ -153,6 +153,23 @@ test("browser fixture audit blocks external/unsafe requests and persists aggrega
     assert.match(specialistRequests[0].messages[1].content, /missingAltCount/u);
     assert.doesNotMatch(specialistRequests[0].messages[1].content, /127\.0\.0\.1|Private page text|fixture console problem/u);
     assert.doesNotMatch(specialistRequests[0].messages[1].content, /Private fixture title|Private page text|screenshot|pageDiagnostics/u);
+
+    const limitedRequests = [];
+    const limitedSpecialist = await runSpecialistReview({
+      async complete(request) {
+        limitedRequests.push(request);
+        return { content: "One bounded browser finding.", toolCalls: [], finishReason: "stop" };
+      },
+    }, "fixture", "Review this local fixture report.", JSON.stringify({ findings: specialistMetrics }), [
+      { role: "browser-specialist", goal: "Interpret aggregate browser findings." },
+    ], new AgentBudgetLedger(1, 0));
+    assert.equal(limitedSpecialist.workers[0]?.status, "complete");
+    assert.equal(limitedSpecialist.parentReviewStatus, "budget-exhausted");
+    assert.equal(limitedRequests.length, 1);
+    assert.equal(limitedRequests[0]?.tools?.length, 0);
+    assert.deepEqual(limitedSpecialist.budget, {
+      modelRequests: 1, toolActions: 0, modelRequestsRemaining: 0, toolActionsRemaining: 0,
+    });
   } finally {
     await new Promise((resolve, reject) => fixture.server.close((error) => error === undefined ? resolve() : reject(error)));
   }
@@ -342,6 +359,7 @@ test("Chromium traverses the actual egress proxy for an explicitly bounded GET s
     const approvals = [];
     let manualBrowserClosed = false;
     let manualPage;
+    let manualContextInitialCookies;
     let notifyAuthPostPrompted;
     let notifyAuthPostApproved;
     const authPostPrompted = new Promise((resolve) => { notifyAuthPostPrompted = resolve; });
@@ -367,6 +385,7 @@ test("Chromium traverses the actual egress proxy for an explicitly bounded GET s
       ignoreHTTPSErrors: true,
       onBrowserClosed: () => { manualBrowserClosed = true; },
       onManualLoginReady: async (page) => {
+        manualContextInitialCookies = await page.context().cookies();
         const queryPostWasBlocked = await page.evaluate(async () => {
           try {
             await fetch("/api/auth/login?intent=delete", { method: "POST" });
@@ -435,6 +454,7 @@ test("Chromium traverses the actual egress proxy for an explicitly bounded GET s
     assert.equal(manualMetrics.pageDiagnostics.snapshots.length, 0);
     assert.equal(manualMetrics.pageDiagnostics.screenshots.length, 0);
     assert.equal(manualBrowserClosed, true);
+    assert.deepEqual(manualContextInitialCookies, [], "manual login starts without imported browser session cookies");
     assert.deepEqual(manualMetrics.designObservations, []);
     assert.ok(manualMetrics.journeyEvidence.every((evidence) => evidence === "A read-only journey step completed."));
     assert.doesNotMatch(JSON.stringify(manualMetrics), /synthetic|fixture_session|Password|Sign in|Results for Harry Potter/u);
