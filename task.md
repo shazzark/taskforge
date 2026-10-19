@@ -620,6 +620,12 @@ Added an isolated storage test that writes a synthetic run, event, checkpoint, a
 
 **Verification:** `node --test --test-concurrency=1 test/storage/sqlite-store.test.mjs` passed 13/13, including backup/restore. The integrated serial `npm test` passed 223/223, 0 failed, 0 skipped in 163.4 seconds with isolated local storage and a dedicated loopback MongoDB test database. The first integrated run hit two existing five-second agent-session CLI subprocess timeouts; the affected CLI file passed 4/4 alone, then the unchanged full retry passed. This demonstrates a closed-store file-copy procedure on a disposable local database only. It does not verify MongoDB dump/restore, automated backups, open-file copying, power-loss durability, production ACLs, or a user-facing backup command. Full Phase 10 parity remains open.
 
+#### Phase 10.10 - Shared adapter contract coverage - VERIFIED (selected public methods)
+
+Extended the synthetic SQLite/MongoDB contract to cover run-summary redaction on update, run listing and missing lookup, stale-run transition/idempotency, active/revoked approval listing, and pending schedule-occurrence listing before and after completion. The contract uses isolated temporary SQLite files and a unique disposable loopback MongoDB database. No adapter behavior or production data changed. This closes selected public-method gaps only; it does not establish complete workflow parity or backup, ACL, and power-loss guarantees.
+
+**Verification:** `npm run typecheck`, `npm run build`, and `node --test --test-concurrency=1 test/storage/store-contract.test.mjs` passed (3/3) with both adapters enabled and isolated. The integrated serial `npm test` passed 223/223, 0 failed, 0 skipped in 204.6 seconds with disposable local storage and dedicated loopback MongoDB. Independent read-only review found no actionable defect. Phase 10 remains IN PROGRESS for backup/restore, Windows ACL/privacy, power-loss durability, and complete workflow parity.
+
 ### Phase 11 — Validated declarative task registry — COMPLETE
 
 Depends on Phase 9 and Phase 10 interfaces. Definitions include bounded instructions, validated inputs/outputs, fixed tool names, examples and tests; no arbitrary executable code. The verified registry includes the built-in catalog and safely installed local definitions. Registry definition execution remains outside this phase; routing and task execution are tracked under Phase 12.

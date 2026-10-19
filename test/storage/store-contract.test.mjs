@@ -34,6 +34,10 @@ async function exerciseCommonContract(store, scopePath, prefix) {
   const run = await store.saveRunSummary({ runId, workflowId: "document-analyze", summary: "api_key=adapter-contract-secret" });
   assert.equal(run.state, "created");
   assert.match(run.summary, /\[REDACTED\]/u);
+  const updatedRun = await store.updateRunSummary(runId, "Updated token=adapter-contract-secret summary.");
+  assert.match(updatedRun.summary, /\[REDACTED\]/u);
+  assert.equal((await store.listRunSummaries()).some((summary) => summary.runId === runId), true);
+  assert.equal(await store.getRunSummary(`${prefix}-missing-run`), null);
   await store.updateRunState(runId, "running");
   await store.appendRunEvent({ runId, eventId: "start", type: "run_started" });
   const idempotentEventInput = { runId, eventId: "idempotent", type: "run_paused" };
@@ -52,6 +56,13 @@ async function exerciseCommonContract(store, scopePath, prefix) {
   await assert.rejects(store.loadRunCheckpoint(runId, "3".repeat(64), stateHash), /stale/u);
   await store.updateRunState(runId, "completed");
 
+  const staleRunId = `${prefix}-stale-run`;
+  await store.saveRunSummary({ runId: staleRunId, workflowId: "csv-analyze", summary: "Synthetic interrupted run." });
+  await store.updateRunState(staleRunId, "running");
+  assert.equal(await store.recoverStaleRun(staleRunId, new Date(Date.now() + 60_000)), true);
+  assert.equal((await store.getRunSummary(staleRunId))?.state, "uncertain");
+  assert.equal(await store.recoverStaleRun(staleRunId, new Date(Date.now() + 60_000)), false);
+
   const artifact = await store.saveArtifactReference({
     artifactId: `${prefix}-artifact`, runId, relativePath: "reports/summary.txt", type: "document-plain-text",
     sha256: "a".repeat(64), bytes: 128,
@@ -61,8 +72,11 @@ async function exerciseCommonContract(store, scopePath, prefix) {
   await store.grantFolderApproval(scopePath, "read");
   assert.equal(await store.hasFolderApproval(join(scopePath, "child"), "read"), true);
   assert.equal(await store.hasFolderApproval(scopePath, "write"), false);
+  assert.equal((await store.listFolderApprovals()).some((approval) => approval.path === scopePath && approval.access === "read" && approval.status === "active"), true);
   assert.equal(await store.revokeFolderApproval(scopePath, "read"), true);
   assert.equal(await store.hasFolderApproval(scopePath, "read"), false);
+  assert.equal((await store.listFolderApprovals()).some((approval) => approval.path === scopePath), false);
+  assert.equal((await store.listFolderApprovals(true)).some((approval) => approval.path === scopePath && approval.status === "revoked"), true);
 
   const nextRunAt = new Date(Date.now() + 60_000);
   await store.createSchedule({ scheduleId: `${prefix}-schedule`, workflowId: "csv-analyze", inputPath: resolve(scopePath, "input.csv"), nextRunAt });
@@ -93,6 +107,7 @@ async function exerciseCommonContract(store, scopePath, prefix) {
   assert.equal(due.length, 1);
   assert.equal(due[0]?.schedule.scheduleId, recurringScheduleId);
   assert.equal(due[0]?.occurrence.status, "awaiting_approval");
+  assert.deepEqual((await store.listPendingScheduleOccurrences()).map(({ schedule, occurrence }) => [schedule.scheduleId, occurrence.status]), [[recurringScheduleId, "awaiting_approval"]]);
   assert.equal((await store.getRunSummary(due[0].occurrence.runId))?.state, "awaiting_approval");
   const dispatch = await store.claimPendingScheduleOccurrences(`${prefix}-worker`);
   assert.equal(dispatch.length, 1);
@@ -105,6 +120,7 @@ async function exerciseCommonContract(store, scopePath, prefix) {
   const finishedSchedule = (await store.listSchedules()).find((schedule) => schedule.scheduleId === recurringScheduleId);
   assert.equal(finishedSchedule?.pendingOccurrence, undefined);
   assert.equal(finishedSchedule?.occurrences.some((occurrence) => occurrence.status === "failed"), true);
+  assert.deepEqual(await store.listPendingScheduleOccurrences(), []);
 
   assert.equal((await store.getRunSummary(runId))?.state, "completed");
 
