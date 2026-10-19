@@ -4,3 +4,10 @@ export class PersistentFolderApprovalError extends Error {
     this.name = "PersistentFolderApprovalError";
   }
 }
+
+export class TaskForgeStorageUnavailableError extends Error {
+  constructor() {
+    super("The selected TaskForge storage is unavailable.");
+    this.name = "TaskForgeStorageUnavailableError";
+  }
+}

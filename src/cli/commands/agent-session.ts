@@ -14,7 +14,7 @@ import { loadLocalTaskRegistry } from "../../workflows/local-task-registry.js";
 import type { AgentTool } from "../../agent/tool-loop.js";
 
 type ApprovalQuestion = (prompt: string, signal?: AbortSignal) => Promise<string>;
-type InputReadFailure = "cancelled" | "denied";
+export type AgentInputReadFailure = "cancelled" | "denied" | "storage-unavailable";
 
 export interface AgentSessionCommandDependencies {
   readonly withStore: <T>(action: (store: TaskForgeStore) => Promise<T>) => Promise<T | undefined>;
@@ -22,7 +22,7 @@ export interface AgentSessionCommandDependencies {
     pathValue: string,
     askQuestion?: ApprovalQuestion,
     signal?: AbortSignal,
-    reportFailure?: (failure: InputReadFailure) => void,
+    reportFailure?: (failure: AgentInputReadFailure) => void,
   ) => Promise<Uint8Array | undefined>;
 }
 
@@ -33,7 +33,7 @@ function isSignalAborted(signal: AbortSignal | undefined): boolean {
 function createCliCsvAnalysisTool(question: ApprovalQuestion, dependencies: AgentSessionCommandDependencies) {
   return createCsvAnalysisTool(async (argumentsValue, signal) => {
     process.stdout.write(`Proposed action: analyze one CSV file${argumentsValue.numericColumns.length > 0 ? `; numeric columns: ${argumentsValue.numericColumns.join(", ")}` : ""}.\n`);
-    let readFailure: InputReadFailure | undefined;
+    let readFailure: AgentInputReadFailure | undefined;
     const input = await dependencies.readApprovedInputFile(argumentsValue.input, question, signal, (failure) => {
       readFailure = failure;
     });
@@ -42,10 +42,19 @@ function createCliCsvAnalysisTool(question: ApprovalQuestion, dependencies: Agen
         process.stdout.write("CSV analysis cancelled before reading the file.\n");
         return "CSV analysis was cancelled before the file was read.";
       }
+      if (readFailure === "storage-unavailable") {
+        const message = "CSV analysis did not start because the selected storage is unavailable; the file was not read.";
+        process.stdout.write(`${message}\n`);
+        return message;
+      }
       throw new Error("CSV file access was denied or unavailable.");
     }
     const result = await dependencies.withStore((store) => runCsvAnalysisWorkflow(store, input, undefined, argumentsValue.numericColumns));
-    if (result === undefined) throw new Error("CSV analysis could not open configured storage.");
+    if (result === undefined) {
+      const message = "CSV analysis could not be recorded because the selected storage became unavailable after file access.";
+      process.stdout.write(`${message}\n`);
+      return message;
+    }
     const missingCellCount = Object.values(result.analysis.missingValues).reduce((total, count) => total + count, 0);
     const totals = Object.entries(result.analysis.numericTotals).map(([column, total]) => `${escapeTerminalControls(column)}=${total}`);
     const summary = `CSV analysis complete: ${result.analysis.rowCount} rows; ${result.analysis.duplicateRowCount} duplicate rows; ${missingCellCount} missing cells.${totals.length === 0 ? "" : ` Numeric totals: ${totals.join(", ")}.`}`;
@@ -57,7 +66,7 @@ function createCliCsvAnalysisTool(question: ApprovalQuestion, dependencies: Agen
 function createCliDocumentAnalysisTool(question: ApprovalQuestion, dependencies: AgentSessionCommandDependencies) {
   return createDocumentAnalysisTool(async (argumentsValue, signal) => {
     process.stdout.write("Proposed action: analyze one supported document; only format and aggregate counts are sent back to the model.\n");
-    let readFailure: InputReadFailure | undefined;
+    let readFailure: AgentInputReadFailure | undefined;
     const input = await dependencies.readApprovedInputFile(argumentsValue.input, question, signal, (failure) => {
       readFailure = failure;
     });
@@ -66,11 +75,20 @@ function createCliDocumentAnalysisTool(question: ApprovalQuestion, dependencies:
         process.stdout.write("Document analysis cancelled before reading the file.\n");
         return "Document analysis was cancelled before the file was read.";
       }
+      if (readFailure === "storage-unavailable") {
+        const message = "Document analysis did not start because the selected storage is unavailable; the file was not read.";
+        process.stdout.write(`${message}\n`);
+        return message;
+      }
       throw new Error("Document file access was denied or unavailable.");
     }
     const extension = extname(argumentsValue.input).toLowerCase();
     const result = await dependencies.withStore((store) => analyzeDocument(store, extension, input));
-    if (result === undefined) throw new Error("Document analysis could not open configured storage.");
+    if (result === undefined) {
+      const message = "Document analysis could not be recorded because the selected storage became unavailable after file access.";
+      process.stdout.write(`${message}\n`);
+      return message;
+    }
     const analysis = result.analysis;
     const summary = analysis.format === "xlsx"
       ? `Document analysis complete: XLSX; ${analysis.sheetCount ?? 0} sheets; ${analysis.rowCount ?? 0} rows; ${analysis.cellCount ?? 0} scalar cells.`

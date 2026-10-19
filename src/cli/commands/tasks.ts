@@ -9,7 +9,7 @@ import {
 import { escapeTerminalControls } from "../../security/terminal-text.js";
 
 type ApprovalQuestion = (prompt: string, signal?: AbortSignal) => Promise<string>;
-type InputReadFailure = "cancelled" | "denied";
+type InputReadFailure = "cancelled" | "denied" | "storage-unavailable";
 
 function escapeTaskDisplay(value: string): string {
   return escapeTerminalControls(value).replace(/\p{Cf}/gu, (character) => {

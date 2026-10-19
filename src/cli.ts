@@ -5,7 +5,7 @@ import { randomUUID } from "node:crypto";
 import { open, realpath, stat, writeFile } from "node:fs/promises";
 import { basename, dirname, extname, join, resolve } from "node:path";
 import { createInterface } from "node:readline/promises";
-import { ConfigurationError, formatStoreConfigurationSummary, loadLocalEnvironmentFile, loadProviderConfiguration, loadStoreConfiguration } from "./config/configuration.js";
+import { ConfigurationError, formatStoreConfigurationSummary, loadLocalEnvironmentFile, loadProviderConfiguration, loadStoreConfiguration, type StoreConfiguration } from "./config/configuration.js";
 import { AgentBudgetLedger, AgentToolError, runToolLoop } from "./agent/tool-loop.js";
 import { runTasksCommand } from "./cli/commands/tasks.js";
 import { runGitHubIssuesCommand } from "./cli/commands/github-issues.js";
@@ -17,9 +17,10 @@ import { resumeWorkflowCommand, runCsvWorkflowCommand, runDocumentAnalysisComman
 import { runDraftCommand, runPdfReportCommand } from "./cli/commands/artifacts.js";
 import { runBrowserAuditCommand } from "./cli/commands/browser-audit.js";
 import { runPermissionsCommand } from "./cli/commands/permissions.js";
-import { runChat, runNaturalLanguageInstruction } from "./cli/commands/agent-session.js";
+import { runChat, runNaturalLanguageInstruction, type AgentInputReadFailure } from "./cli/commands/agent-session.js";
 import { runAgentFixCommand, runFileMoveCommand, runFilePatchCommand, runGitDiffCommand, runSoftwareCheckCommand } from "./cli/commands/software-workflows.js";
-import { PersistentFolderApprovalError } from "./cli/command-errors.js";
+import { PersistentFolderApprovalError, TaskForgeStorageUnavailableError } from "./cli/command-errors.js";
+import { requirePersistentFolderApproval as checkPersistentFolderApproval } from "./cli/folder-approval.js";
 import { runSpecialistReview, type SpecialistTask, SpecialistReviewError } from "./agent/specialist-review.js";
 import {
   DatabasePersistenceError,
@@ -85,8 +86,6 @@ function inputPathArgument(commandArgs: readonly string[]): string | undefined {
 }
 
 type ApprovalQuestion = (prompt: string, signal?: AbortSignal) => Promise<string>;
-type InputReadFailure = "cancelled" | "denied";
-
 function isSignalAborted(signal: AbortSignal | undefined): boolean {
   return signal?.aborted === true;
 }
@@ -95,7 +94,7 @@ async function readApprovedInputFile(
   pathValue: string,
   askQuestion?: ApprovalQuestion,
   signal?: AbortSignal,
-  reportFailure?: (failure: InputReadFailure) => void,
+  reportFailure?: (failure: AgentInputReadFailure) => void,
   maxBytes = 8 * 1024 * 1024,
 ): Promise<Uint8Array | undefined> {
   if (!process.stdin.isTTY || !process.stdout.isTTY) {
@@ -183,6 +182,10 @@ async function readApprovedInputFile(
       await file.close();
     }
   } catch (error: unknown) {
+    if (error instanceof TaskForgeStorageUnavailableError) {
+      reportFailure?.("storage-unavailable");
+      return undefined;
+    }
     const message = error instanceof PathPolicyError ? error.message : "The approved file could not be read safely.";
     process.stderr.write(`File read denied: ${message}\n`);
     process.exitCode = 2;
@@ -193,10 +196,19 @@ async function readApprovedInputFile(
 
 async function withStore<T>(action: (store: TaskForgeStore) => Promise<T>): Promise<T | undefined> {
   let store: TaskForgeStore;
+  let configuration: StoreConfiguration | undefined;
   try {
-    store = await connectTaskForgeStore(loadStoreConfiguration());
-  } catch {
-    process.stderr.write("Unable to open the configured TaskForge storage. Check configuration and availability.\n");
+    configuration = loadStoreConfiguration();
+    store = await connectTaskForgeStore(configuration);
+  } catch (error: unknown) {
+    const message = error instanceof ConfigurationError
+      ? `TaskForge storage configuration is invalid: ${error.message}`
+      : configuration?.kind === "mongodb"
+        ? "Configured MongoDB storage is unavailable. Check MongoDB service, network/DNS, and credentials. No backend switch occurred. To deliberately use local SQLite for this PowerShell session, set $env:TASKFORGE_STORAGE='local'; the MongoDB configuration remains unchanged."
+        : configuration?.kind === "local"
+          ? "Configured local SQLite storage is unavailable. Check local data-directory access and database compatibility. No backend switch occurred."
+          : "The selected TaskForge storage could not be resolved safely. No backend switch occurred.";
+    process.stderr.write(`${message}\n`);
     process.exitCode = 2;
     return undefined;
   }
@@ -208,14 +220,7 @@ async function withStore<T>(action: (store: TaskForgeStore) => Promise<T>): Prom
 }
 
 async function requirePersistentFolderApproval(pathValue: string, access: "read" | "write"): Promise<void> {
-  let canonicalPath: string;
-  try {
-    canonicalPath = await realpath(resolve(pathValue));
-  } catch {
-    throw new PersistentFolderApprovalError();
-  }
-  const approved = await withStore((store) => store.hasFolderApproval(canonicalPath, access));
-  if (approved !== true) throw new PersistentFolderApprovalError();
+  return checkPersistentFolderApproval(pathValue, access, withStore);
 }
 
 async function listRunHistory(): Promise<void> {
