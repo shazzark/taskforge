@@ -38,6 +38,7 @@ interface StoredRunSummary extends Document {
   readonly updatedAt?: Date;
   readonly eventCount?: number;
   readonly eventBytes?: number;
+  eventLog: StoredRunEvent[];
 }
 
 interface StoredRunEvent extends Document {
@@ -456,6 +457,26 @@ function parseStoredRunEvent(value: unknown): RunEvent {
   return { ...event, sequence, createdAt };
 }
 
+function parseEmbeddedRunEvents(run: StoredRunSummary): readonly RunEvent[] {
+  const storedEvents = run["eventLog"];
+  if (storedEvents === undefined) return [];
+  if (!Array.isArray(storedEvents) || storedEvents.length > MAX_EVENTS_PER_RUN) throw new DatabasePersistenceError();
+  const events = storedEvents.map((event) => parseStoredRunEvent(event));
+  if (events.some((event) => event.runId !== run.runId) ||
+      new Set(events.map((event) => event.eventId)).size !== events.length ||
+      new Set(events.map((event) => event.sequence)).size !== events.length) {
+    throw new DatabasePersistenceError();
+  }
+  return events;
+}
+
+function assertSameRunEvent(existing: RunEvent, input: RunEventInput): RunEvent {
+  if (existing.type !== input.type || existing.stepId !== input.stepId || existing.toolName !== input.toolName) {
+    throw new PersistenceInputError("Run event id was already used for different event data.");
+  }
+  return existing;
+}
+
 function parseStoredRunCheckpoint(value: unknown): RunCheckpoint {
   if (!isRecord(value)) {
     throw new DatabasePersistenceError();
@@ -566,6 +587,7 @@ export class MongoStore {
       createdAt: new Date(),
       eventCount: 0,
       eventBytes: 0,
+      eventLog: [],
     };
 
     try {
@@ -716,55 +738,60 @@ export class MongoStore {
   async appendRunEvent(value: unknown): Promise<RunEvent> {
     const input = parseRunEventInput(value);
     const eventId = `${input.runId}:${input.eventId}`;
-    const baseEvent = { ...input, createdAt: new Date() };
-    const eventBytes = Buffer.byteLength(JSON.stringify({ _id: eventId, ...baseEvent, sequence: MAX_EVENTS_PER_RUN }));
-    if (eventBytes > MAX_EVENT_BYTES) {
-      throw new PersistenceInputError("Run event exceeds the supported size limit.");
-    }
-
     try {
-      const existing = await this.events.findOne({ _id: eventId });
-      if (existing !== null) {
-        const parsedExisting = parseStoredRunEvent(existing);
-        if (
-          parsedExisting.type !== input.type ||
-          parsedExisting.stepId !== input.stepId ||
-          parsedExisting.toolName !== input.toolName
-        ) {
-          throw new PersistenceInputError("Run event id was already used for different event data.");
+      const legacyEvent = await this.events.findOne({ _id: eventId });
+      if (legacyEvent !== null) return assertSameRunEvent(parseStoredRunEvent(legacyEvent), input);
+
+      const createdAt = new Date();
+      const maxAttempts = 32;
+      for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+        const run = await this.runs.findOne({ _id: input.runId });
+        if (run === null) throw new PersistenceInputError("Run event budget is exhausted or the run does not exist.");
+        const priorEvents = parseEmbeddedRunEvents(run);
+        const priorEvent = priorEvents.find((event) => event.eventId === input.eventId);
+        if (priorEvent !== undefined) return assertSameRunEvent(priorEvent, input);
+
+        const eventCount = run.eventCount ?? 0;
+        const eventBytes = run.eventBytes ?? 0;
+        if (!Number.isSafeInteger(eventCount) || eventCount < 0 || !Number.isSafeInteger(eventBytes) || eventBytes < 0) {
+          throw new DatabasePersistenceError();
         }
-        return parsedExisting;
-      }
-      const reservation = await this.runs.findOneAndUpdate(
-        {
-          _id: input.runId,
-          $expr: {
-            $and: [
-              { $lt: [{ $ifNull: ["$eventCount", 0] }, MAX_EVENTS_PER_RUN] },
-              {
-                $lte: [
-                  { $add: [{ $ifNull: ["$eventBytes", 0] }, eventBytes] },
-                  MAX_EVENT_BYTES_PER_RUN,
-                ],
-              },
-            ],
+        if (eventCount < priorEvents.length) throw new DatabasePersistenceError();
+        if (eventCount >= MAX_EVENTS_PER_RUN || priorEvents.length >= MAX_EVENTS_PER_RUN) {
+          throw new PersistenceInputError("Run event budget is exhausted or the run does not exist.");
+        }
+        const storedEvent: StoredRunEvent = {
+          _id: eventId,
+          ...input,
+          sequence: eventCount + 1,
+          createdAt,
+        };
+        const addedBytes = Buffer.byteLength(JSON.stringify(storedEvent));
+        if (addedBytes > MAX_EVENT_BYTES) throw new PersistenceInputError("Run event exceeds the supported size limit.");
+        if (eventBytes + addedBytes > MAX_EVENT_BYTES_PER_RUN) throw new PersistenceInputError("Run event budget is exhausted or the run does not exist.");
+
+        const update = await this.runs.updateOne(
+          {
+            _id: input.runId,
+            $expr: {
+              $and: [
+                { $eq: [{ $ifNull: ["$eventCount", 0] }, eventCount] },
+                { $eq: [{ $ifNull: ["$eventBytes", 0] }, eventBytes] },
+              ],
+            },
+            eventLog: { $not: { $elemMatch: { _id: eventId } } },
           },
-        },
-        { $inc: { eventCount: 1, eventBytes } },
-        { returnDocument: "after" },
-      );
-      if (reservation === null || typeof reservation["eventCount"] !== "number") {
-        throw new PersistenceInputError("Run event budget is exhausted or the run does not exist.");
+          [{
+            $set: {
+              eventLog: { $concatArrays: [{ $ifNull: ["$eventLog", []] }, [{ $literal: storedEvent }]] },
+              eventCount: { $add: [{ $ifNull: ["$eventCount", 0] }, 1] },
+              eventBytes: { $add: [{ $ifNull: ["$eventBytes", 0] }, addedBytes] },
+            },
+          }],
+        );
+        if (update.matchedCount === 1) return parseStoredRunEvent(storedEvent);
       }
-      const sequence = reservation["eventCount"];
-      const storedEvent: StoredRunEvent = {
-        _id: eventId,
-        ...input,
-        sequence,
-        createdAt: baseEvent.createdAt,
-      };
-      await this.events.insertOne(storedEvent);
-      return parseStoredRunEvent(storedEvent);
+      throw new DatabasePersistenceError();
     } catch (error) {
       if (error instanceof PersistenceInputError) {
         throw error;
@@ -776,12 +803,22 @@ export class MongoStore {
   async getRunEvents(runIdValue: unknown): Promise<readonly RunEvent[]> {
     const runId = parseIdentifier(runIdValue, "Run id");
     try {
-      const documents = await this.events
-        .find({ runId })
-        .sort({ sequence: 1 })
-        .limit(MAX_EVENTS_PER_RUN)
-        .toArray();
-      return documents.map((document) => parseStoredRunEvent(document));
+      const [legacyDocuments, run] = await Promise.all([
+        this.events.find({ runId }).sort({ sequence: 1 }).limit(MAX_EVENTS_PER_RUN).toArray(),
+        this.runs.findOne({ _id: runId }, { projection: { runId: 1, eventLog: 1 } }),
+      ]);
+      const legacyEvents = legacyDocuments.map((document) => parseStoredRunEvent(document));
+      const embeddedEvents = run === null ? [] : parseEmbeddedRunEvents(run);
+      const eventsById = new Map(legacyEvents.map((event) => [event.eventId, event]));
+      for (const event of embeddedEvents) {
+        const legacyEvent = eventsById.get(event.eventId);
+        if (legacyEvent !== undefined && (
+          legacyEvent.sequence !== event.sequence || legacyEvent.type !== event.type ||
+          legacyEvent.stepId !== event.stepId || legacyEvent.toolName !== event.toolName
+        )) throw new DatabasePersistenceError();
+        if (legacyEvent === undefined) eventsById.set(event.eventId, event);
+      }
+      return [...eventsById.values()].sort((left, right) => left.sequence - right.sequence).slice(0, MAX_EVENTS_PER_RUN);
     } catch {
       throw new DatabasePersistenceError();
     }

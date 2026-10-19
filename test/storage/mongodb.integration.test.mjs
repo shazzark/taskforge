@@ -245,6 +245,45 @@ test(
       assert.equal(loaded?.runId, runId);
       assert.equal(loaded?.summary, "Disposable persistence integration check with token=[REDACTED].");
 
+      const legacyEventRunId = randomUUID();
+      await store.saveRunSummary({ runId: legacyEventRunId, workflowId: "legacy-event-fixture", summary: "Legacy event compatibility fixture." });
+      const legacyEventId = "legacy-start";
+      await rawClient.db().collection("runs").updateOne({ _id: legacyEventRunId }, { $set: { eventCount: 1, eventBytes: 0 } });
+      await rawClient.db().collection("run_events").insertOne({
+        _id: `${legacyEventRunId}:${legacyEventId}`,
+        runId: legacyEventRunId,
+        eventId: legacyEventId,
+        type: "run_started",
+        sequence: 1,
+        createdAt: new Date(),
+      });
+      const legacyContinuation = await store.appendRunEvent({ runId: legacyEventRunId, eventId: "legacy-finish", type: "run_finished" });
+      assert.equal(legacyContinuation.sequence, 2);
+      assert.deepEqual((await store.getRunEvents(legacyEventRunId)).map((event) => event.eventId), [legacyEventId, "legacy-finish"]);
+      await rawClient.db().collection("run_events").insertOne({
+        _id: `${legacyEventRunId}:legacy-finish`,
+        runId: legacyEventRunId,
+        eventId: "legacy-finish",
+        type: "run_finished",
+        sequence: 3,
+        createdAt: new Date(),
+      });
+      await assert.rejects(store.getRunEvents(legacyEventRunId), DatabasePersistenceError);
+
+      const concurrentEventRunId = randomUUID();
+      await store.saveRunSummary({ runId: concurrentEventRunId, workflowId: "event-concurrency-fixture", summary: "Concurrent event fixture." });
+      const uniqueEvents = await Promise.all(Array.from({ length: 12 }, (_value, index) =>
+        store.appendRunEvent({ runId: concurrentEventRunId, eventId: `parallel-${index}`, type: "step_finished", stepId: `step-${index}` })));
+      assert.deepEqual(uniqueEvents.map((event) => event.sequence).sort((left, right) => left - right), Array.from({ length: 12 }, (_value, index) => index + 1));
+      const sameEventInput = { runId: concurrentEventRunId, eventId: "same-parallel-event", type: "run_paused" };
+      const duplicateAppends = await Promise.all(Array.from({ length: 8 }, () => store.appendRunEvent(sameEventInput)));
+      assert.equal(new Set(duplicateAppends.map((event) => event.sequence)).size, 1);
+      assert.equal((await store.getRunEvents(concurrentEventRunId)).length, 13);
+      await assert.rejects(
+        store.appendRunEvent({ ...sameEventInput, type: "run_resumed" }),
+        PersistenceInputError,
+      );
+
       const running = await store.updateRunState(runId, "running");
       assert.equal(running.state, "running");
       const firstEventId = randomUUID();
