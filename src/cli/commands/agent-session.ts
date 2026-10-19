@@ -12,6 +12,7 @@ import { extname } from "node:path";
 import { escapeTerminalControls } from "../../security/terminal-text.js";
 import { loadLocalTaskRegistry } from "../../workflows/local-task-registry.js";
 import type { AgentTool } from "../../agent/tool-loop.js";
+import { isIncompleteOneShotResult, shouldRequireAnalysisTool } from "../../agent/natural-language-policy.js";
 
 type ApprovalQuestion = (prompt: string, signal?: AbortSignal) => Promise<string>;
 export type AgentInputReadFailure = "cancelled" | "denied" | "storage-unavailable";
@@ -151,18 +152,34 @@ export async function runNaturalLanguageInstruction(instruction: string, depende
     const question: ApprovalQuestion = (prompt, signal) => signal === undefined
       ? terminal.question(prompt)
       : terminal.question(prompt, { signal });
+    const requiresAnalysisTool = shouldRequireAnalysisTool(instruction);
+    const systemMessage = requiresAnalysisTool
+      ? `${TASKFORGE_AGENT_SYSTEM_MESSAGE}\nFor this explicit supported-file analysis request, call the matching provided TaskForge analysis tool using the supplied path and fields. Do not ask for file permission in text: TaskForge itself will request exact-file approval before reading. Do not claim completion without the host tool result.`
+      : TASKFORGE_AGENT_SYSTEM_MESSAGE;
     try {
       process.stdout.write("TaskForge is interpreting one instruction. Approved CSV or supported-document analysis are the currently enabled agent actions.\n");
       const result = await runToolLoop(
         selected.provider,
         selected.model,
         [
-          { role: "system", content: TASKFORGE_AGENT_SYSTEM_MESSAGE },
+          { role: "system", content: systemMessage },
           { role: "user", content: instruction },
         ],
         createCliAgentTools(question, dependencies, taskRegistry.definitions),
-        { maxModelRequests: 8, maxToolActions: 2, signal: controller.signal },
+        {
+          maxModelRequests: 8,
+          maxToolActions: 2,
+          signal: controller.signal,
+        },
       );
+      if (isIncompleteOneShotResult(result.content, result.toolActions, requiresAnalysisTool)) {
+        const detail = result.toolActions === 0
+          ? "No TaskForge tool ran. Model text asking for file approval is not permission, and no file was read."
+          : "The provider asked for further approval or clarification after a tool action, so the one-shot request is not complete.";
+        process.stderr.write(`Instruction incomplete: ${detail} Retry the request or use chat to clarify missing details.\n`);
+        process.exitCode = 3;
+        return;
+      }
       if (result.content.length > 0) process.stdout.write(`TaskForge> ${result.content}\n`);
     } catch (error: unknown) {
       if (controller.signal.aborted || (error instanceof ModelProviderError && error.kind === "cancelled")) {
