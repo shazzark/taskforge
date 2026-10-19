@@ -10,11 +10,22 @@ function setupOutput(environment) {
 
 test("setup guide explains fresh local setup without contacting providers or writing configuration", () => {
   const output = setupOutput({});
+  assert.match(output, /Node\.js: v22\.13\.0 \(supported; requires >=22\.13\.0\)/u);
   assert.match(output, /local SQLite database \(path redacted\)/u);
   assert.match(output, /Model provider: not configured or invalid; provider was not contacted/u);
   assert.match(output, /TASKFORGE_PROVIDER=groq/u);
   assert.match(output, /npx playwright install chromium/u);
   assert.match(output, /never writes configuration or downloads software/u);
+});
+
+test("setup guide identifies unsupported and unverifiable Node.js versions", () => {
+  const lines = [];
+  runSetupGuide({ environment: {}, nodeVersion: "v22.12.9", writeLine: (line) => lines.push(line) });
+  assert.match(lines.join("\n"), /Node\.js: v22\.12\.9 \(below the required >=22\.13\.0\)/u);
+
+  const unknownLines = [];
+  runSetupGuide({ environment: {}, nodeVersion: "v22.13.0-nightly", writeLine: (line) => unknownLines.push(line) });
+  assert.match(unknownLines.join("\n"), /Node\.js: version could not be verified \(reported value: v22\.13\.0-nightly\)/u);
 });
 
 test("setup guide reports configured providers without exposing secrets or contacting them", () => {

@@ -782,6 +782,14 @@ Depends on Phase 10 and stable CLI/integrations. Evaluate licensing, architectur
 
 **Next subphase:** Finish applicable Phase 10 Windows/storage and compatibility gates, then choose and verify the browser binary strategy and Node runtime compatibility for Windows distribution. The production-only package dependency/import check is already verified above. After those prerequisites, implement the bundle mechanism, integrity/SBOM, clean-machine, upgrade and uninstall-retention acceptance. No owner decision blocks local diagnostics; a clean Windows operator/machine is needed for final acceptance.
 
+#### Phase 19.4 - Guided setup Node.js compatibility diagnostic - VERIFIED (focused)
+
+The read-only setup guide now compares its reported Node.js version with the documented `>=22.13.0` requirement. It reports supported, below-minimum, or unverifiable versions; this is a diagnostic only and does not install or switch runtimes.
+
+**Verification:** Strict `npm run typecheck`, `npm run build`, and `node --test --test-concurrency=1 test/cli/setup-guide.test.mjs` passed (4/4). Fixtures cover the minimum supported version, the immediately lower minor version, and an unverifiable prerelease string. Independent read-only review confirmed the comparison matches the declared Node engine requirement and found no actionable issue. No full suite was repeated for this isolated setup display change. Windows bundling, browser binary installation, clean-machine, upgrade, uninstall, storage ACL and true power-loss acceptance remain open.
+
+**Next checkpoint:** Continue bounded cancellation coverage at the next unimplemented direct workflow boundary, starting with optional output/export prompts; separately assess interrupted resume and actual console Ctrl+C on Windows. Keep Phase 10 storage durability claims limited to process-crash evidence until real power-loss testing is performed. BookFinder login, Vercel access, and the independent developer trial still require owner/operator participation.
+
 **Acceptance:** Clean Windows machine without preinstalled Node launches documented workflows with bundled runtime; package excludes credentials/session/private artifacts; integrity, license, data preservation, upgrade/side-by-side and uninstall-retention checks pass. No service provisioning or model download.
 
 ### Phase 20 — Owner and independent developer acceptance — PENDING EXTERNAL TRIAL
