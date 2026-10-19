@@ -23,6 +23,7 @@
   "scripts": {
     "typecheck": "tsc --noEmit",
     "build": "node scripts/clean-dist.mjs && tsc",
+    "package:audit": "npm run build && node scripts/package-audit.mjs",
     "test": "npm run build && node --test --test-concurrency=1"
   },
   "devDependencies": {

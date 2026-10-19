@@ -14,6 +14,8 @@ test("setup guide explains fresh local setup without contacting providers or wri
   assert.match(output, /local SQLite database \(path redacted\)/u);
   assert.match(output, /Model provider: not configured or invalid; provider was not contacted/u);
   assert.match(output, /TASKFORGE_PROVIDER=groq/u);
+  assert.match(output, /requires Node\.js >=22\.13\.0 and does not bundle a Node\.js runtime/u);
+  assert.match(output, /Browser binaries are not bundled/u);
   assert.match(output, /npx playwright install chromium/u);
   assert.match(output, /never writes configuration or downloads software/u);
 });

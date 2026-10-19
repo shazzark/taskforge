@@ -56,8 +56,9 @@ export function runSetupGuide(dependencies: SetupGuideDependencies = {}): void {
   }
 
   writeLine("Next steps:");
+  writeLine("- This npm package requires Node.js >=22.13.0 and does not bundle a Node.js runtime.");
   writeLine("- Run `taskforge doctor` to check the selected storage connection.");
   writeLine("- Set TASKFORGE_PROVIDER=groq and TASKFORGE_GROQ_API_KEY for Groq, or configure the installed loopback Ollama model.");
-  writeLine("- Install the pinned Chromium browser with `npx playwright install chromium` only if you need browser workflows.");
+  writeLine("- Browser binaries are not bundled; install the pinned Chromium browser with `npx playwright install chromium` only if you need browser workflows.");
   writeLine("- Keep local environment files private and uncommitted; this guide never writes configuration or downloads software.");
 }
