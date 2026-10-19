@@ -12,6 +12,7 @@ import { runGitHubIssuesCommand } from "./cli/commands/github-issues.js";
 import { runDeploymentTraceCommand } from "./cli/commands/deployment-trace.js";
 import { runArchitectureReportCommand, runRepositoryInspectionCommand, runSourceReviewCommand } from "./cli/commands/repository-inspection.js";
 import { runScheduleCommand } from "./cli/commands/scheduling.js";
+import { runSetupGuide } from "./cli/commands/setup.js";
 import { resumeWorkflowCommand, runCsvWorkflowCommand, runDocumentAnalysisCommand, runDocumentConversionCommand } from "./cli/commands/data-documents.js";
 import { runDraftCommand, runPdfReportCommand } from "./cli/commands/artifacts.js";
 import { runBrowserAuditCommand } from "./cli/commands/browser-audit.js";
@@ -39,9 +40,10 @@ import { DataSpecialistEvidenceError, prepareDataSpecialistEvidence } from "./wo
 
 const helpText = `TaskForge ${packageJson.version} (early development)
 
-Usage: taskforge [--help | --version | config | doctor | model-check | do <instruction> | chat | tasks list | tasks inspect <task-id> | tasks validate <task-id> --inputs-json <object> | tasks validate-definition --file <definition.json> | tasks install --file <definition.json> | permissions approve/list/revoke | run architecture-report --root <directory> --file <relative-path>... | run deployment-trace --repository <owner/name> --project-id <prj_id> [--team-id <team_id>] | run csv-analyze --input <path> [--numeric-column <header>]... [--output <new.json|csv|md>] | run document-analyze --input <path> [--output <new.json|csv|md>] | run agent-fix --root <directory> --target <relative-source> --goal <instruction> --test <relative-test.mjs> | run data-specialist --input <path> --goal <question> | run browser-audit --url <url> [--journey <json-array>] [--origin <https-origin>]... [--specialist] | run document-convert --input <path> --output <new.txt> | run file-move --source <file> --target <new-file> | run ... | resume <run-id> --input <path> [--numeric-column <header>]... | history list | schedule ...]
+Usage: taskforge [--help | --version | setup | config | doctor | model-check | do <instruction> | chat | tasks list | tasks inspect <task-id> | tasks validate <task-id> --inputs-json <object> | tasks validate-definition --file <definition.json> | tasks install --file <definition.json> | permissions approve/list/revoke | run architecture-report --root <directory> --file <relative-path>... | run deployment-trace --repository <owner/name> --project-id <prj_id> [--team-id <team_id>] | run csv-analyze --input <path> [--numeric-column <header>]... [--output <new.json|csv|md>] | run document-analyze --input <path> [--output <new.json|csv|md>] | run agent-fix --root <directory> --target <relative-source> --goal <instruction> --test <relative-test.mjs> | run data-specialist --input <path> --goal <question> | run browser-audit --url <url> [--journey <json-array>] [--origin <https-origin>]... [--specialist] | run document-convert --input <path> --output <new.txt> | run file-move --source <file> --target <new-file> | run ... | resume <run-id> --input <path> [--numeric-column <header>]... | history list | schedule ...]
 
 The config command validates local settings and prints a redacted summary.
+The setup command reports configuration status and manual prerequisites without writing files, contacting providers, or downloading software.
 The doctor command checks the selected local SQLite or MongoDB storage and reports available setup areas.
 The model-check command makes a synthetic read-only tool call through the selected model provider.
 The chat command opens a bounded interactive conversation with the selected provider.
@@ -772,6 +774,8 @@ if (args.length === 0 || (args.length === 1 && (args[0] === "--help" || args[0] 
   process.stdout.write(helpText);
 } else if (args.length === 1 && (args[0] === "--version" || args[0] === "-V")) {
   process.stdout.write(`${packageJson.version}\n`);
+} else if (args.length === 1 && args[0] === "setup") {
+  runSetupGuide();
 } else if (args.length === 1 && args[0] === "config") {
   try {
     const configuration = loadStoreConfiguration();

@@ -21,7 +21,7 @@ These are comparison candidates, not a selected product decision. Do not introdu
 
 ## Dependency ordering and next work
 
-Phase 19.1 inventory and 19.2 runtime dependency packaging are COMPLETE. Phase 19 remains IN PROGRESS; no bundled runtime, guided setup or installer implementation has started. Before those changes, complete the applicable Phase 10 cross-backend, Windows ACL/durability, recovery/backup, and runtime compatibility gates. Then compare payload sizes, target architectures, license notices, integrity/SBOM scanning, data preservation, upgrade and side-by-side behavior, and uninstall retention. Clean-machine acceptance needs a Windows operator/machine but not for these package checks.
+Phase 19.1 inventory, 19.2 runtime dependency packaging, and 19.3 read-only setup guide are verified. `taskforge setup` reports redacted storage/provider configuration status and manual prerequisites. It does not connect to providers, write configuration, or install Node, browser binaries, or models. Phase 19 remains IN PROGRESS; no bundled runtime or installer implementation has started. Before those changes, complete the applicable Phase 10 cross-backend, Windows ACL/durability, recovery/backup, and runtime compatibility gates. Then compare payload sizes, target architectures, license notices, integrity/SBOM scanning, data preservation, upgrade and side-by-side behavior, and uninstall retention. Clean-machine acceptance needs a Windows operator/machine but not for these package checks.
 
 ## Primary references checked
 
