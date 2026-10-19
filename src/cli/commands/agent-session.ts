@@ -2,6 +2,7 @@ import { createInterface } from "node:readline/promises";
 import { ConfigurationError, loadProviderConfiguration } from "../../config/configuration.js";
 import { AgentBudgetLedger, runToolLoop } from "../../agent/tool-loop.js";
 import { createCsvAnalysisTool, createDocumentAnalysisTool, TASKFORGE_AGENT_SYSTEM_MESSAGE } from "../../agent/session-tools.js";
+import { createInstalledCsvTaskTool } from "../../agent/installed-task-tool.js";
 import type { TaskForgeStore } from "../../storage/store.js";
 import { createModelProvider } from "../../providers/create-provider.js";
 import { ModelProviderError, type ProviderMessage } from "../../providers/types.js";
@@ -9,6 +10,8 @@ import { runCsvAnalysisWorkflow } from "../../workflows/csv-analysis-workflow.js
 import { analyzeDocument } from "../../workflows/document-analysis-workflow.js";
 import { extname } from "node:path";
 import { escapeTerminalControls } from "../../security/terminal-text.js";
+import { loadLocalTaskRegistry } from "../../workflows/local-task-registry.js";
+import type { AgentTool } from "../../agent/tool-loop.js";
 
 type ApprovalQuestion = (prompt: string, signal?: AbortSignal) => Promise<string>;
 type InputReadFailure = "cancelled" | "denied";
@@ -77,6 +80,21 @@ function createCliDocumentAnalysisTool(question: ApprovalQuestion, dependencies:
   });
 }
 
+function createCliAgentTools(
+  question: ApprovalQuestion,
+  dependencies: AgentSessionCommandDependencies,
+  definitions: Awaited<ReturnType<typeof loadLocalTaskRegistry>>["definitions"],
+): AgentTool[] {
+  const csvTool = createCliCsvAnalysisTool(question, dependencies);
+  const installedTaskTool = createInstalledCsvTaskTool(definitions, async (argumentsValue, signal) =>
+    csvTool.execute({ input: argumentsValue.input, numericColumns: argumentsValue.numericColumns }, signal));
+  return [
+    csvTool,
+    createCliDocumentAnalysisTool(question, dependencies),
+    ...(installedTaskTool === undefined ? [] : [installedTaskTool]),
+  ];
+}
+
 export async function runNaturalLanguageInstruction(instruction: string, dependencies: AgentSessionCommandDependencies): Promise<void> {
   if (!process.stdin.isTTY || !process.stdout.isTTY) {
     process.stderr.write("Natural-language execution requires an interactive terminal.\n");
@@ -89,6 +107,7 @@ export async function runNaturalLanguageInstruction(instruction: string, depende
     return;
   }
   try {
+    const taskRegistry = await loadLocalTaskRegistry();
     const providerConfiguration = loadProviderConfiguration();
     const selected = createModelProvider(providerConfiguration);
     if (providerConfiguration.kind === "groq") {
@@ -120,7 +139,7 @@ export async function runNaturalLanguageInstruction(instruction: string, depende
           { role: "system", content: TASKFORGE_AGENT_SYSTEM_MESSAGE },
           { role: "user", content: instruction },
         ],
-        [createCliCsvAnalysisTool(question, dependencies), createCliDocumentAnalysisTool(question, dependencies)],
+        createCliAgentTools(question, dependencies, taskRegistry.definitions),
         { maxModelRequests: 8, maxToolActions: 2, signal: controller.signal },
       );
       if (result.content.length > 0) process.stdout.write(`TaskForge> ${result.content}\n`);
@@ -152,6 +171,7 @@ export async function runChat(dependencies: AgentSessionCommandDependencies): Pr
     return;
   }
   try {
+    const taskRegistry = await loadLocalTaskRegistry();
     const providerConfiguration = loadProviderConfiguration();
     const selected = createModelProvider(providerConfiguration);
     if (providerConfiguration.kind === "groq") {
@@ -172,7 +192,7 @@ export async function runChat(dependencies: AgentSessionCommandDependencies): Pr
     const question: ApprovalQuestion = (prompt, signal) => signal === undefined
       ? terminal.question(prompt)
       : terminal.question(prompt, { signal });
-    const tools = [createCliCsvAnalysisTool(question, dependencies), createCliDocumentAnalysisTool(question, dependencies)];
+    const tools = createCliAgentTools(question, dependencies, taskRegistry.definitions);
     let activeController: AbortController | undefined;
     let stopRequested = false;
     terminal.on("SIGINT", () => {

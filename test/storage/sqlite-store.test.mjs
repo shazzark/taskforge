@@ -1,9 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { SqliteStore } from "../../dist/storage/sqlite-store.js";
 
@@ -15,6 +15,18 @@ async function fixture(t) {
   return { path, store };
 }
 const hash = "a".repeat(64);
+
+function runSqliteChild(source, args) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, ["--input-type=module", "-e", source, ...args], { stdio: ["ignore", "pipe", "pipe"] });
+    let stdout = "";
+    let stderr = "";
+    child.stdout.setEncoding("utf8").on("data", (chunk) => { stdout += chunk; });
+    child.stderr.setEncoding("utf8").on("data", (chunk) => { stderr += chunk; });
+    child.once("error", reject);
+    child.once("close", (code) => code === 0 ? resolve(stdout.trim()) : reject(new Error(`SQLite child exited ${code}: ${stderr}`)));
+  });
+}
 
 test("run records, transitions, bounded events, and checkpoints persist across restart", async t => {
   const { path, store } = await fixture(t);
@@ -104,6 +116,50 @@ test("two connections atomically claim one pending occurrence once", async t => 
   await store.finishScheduleOccurrence("schedule-a", at, "completed", "owner-a");
   assert.equal((await store.listPendingScheduleOccurrences()).length, 0);
   await second.close();
+});
+
+test("separate SQLite processes contend safely for one schedule claim", async t => {
+  const { path, store } = await fixture(t);
+  const dueAt = new Date(Date.now() - 5_000);
+  await store.createSchedule({ scheduleId: "cross-process-schedule", workflowId: "csv-analyze", inputPath: join(process.cwd(), "synthetic.csv"), nextRunAt: dueAt });
+  const moduleUrl = new URL("../../dist/storage/sqlite-store.js", import.meta.url).href;
+  const source = [
+    `const { SqliteStore } = await import(${JSON.stringify(moduleUrl)});`,
+    "const store = await SqliteStore.connect({ path: process.argv[1] });",
+    "const claims = await store.claimDueSchedules(new Date(Number(process.argv[2])), 30000);",
+    "process.stdout.write(String(claims.length));",
+    "await store.close();",
+  ].join("\n");
+  const results = await Promise.all([
+    runSqliteChild(source, [path, String(dueAt.getTime())]),
+    runSqliteChild(source, [path, String(dueAt.getTime())]),
+  ]);
+  assert.deepEqual(results.map(Number).sort(), [0, 1]);
+  assert.equal((await store.listPendingScheduleOccurrences()).length, 1);
+});
+
+test("separate processes can initialize a new SQLite database without losing writes", async t => {
+  const { path, store } = await fixture(t);
+  await store.close();
+  const freshPath = join(dirname(path), "concurrent-first-open.sqlite3");
+  const moduleUrl = new URL("../../dist/storage/sqlite-store.js", import.meta.url).href;
+  const source = [
+    `const { SqliteStore } = await import(${JSON.stringify(moduleUrl)});`,
+    "const store = await SqliteStore.connect({ path: process.argv[1] });",
+    "await store.saveRunSummary({ runId: process.argv[2], workflowId: 'cross-process-init', summary: 'saved' });",
+    "await store.close();",
+  ].join("\n");
+  await Promise.all([
+    runSqliteChild(source, [freshPath, "concurrent-init-a"]),
+    runSqliteChild(source, [freshPath, "concurrent-init-b"]),
+  ]);
+  const reopened = await SqliteStore.connect({ path: freshPath });
+  try {
+    assert.equal((await reopened.getRunSummary("concurrent-init-a"))?.summary, "saved");
+    assert.equal((await reopened.getRunSummary("concurrent-init-b"))?.summary, "saved");
+  } finally {
+    await reopened.close();
+  }
 });
 
 test("missed repeated occurrences preserve a pending approval and failed completion is recorded", async t => {

@@ -31,7 +31,6 @@
     "@types/yauzl": "^3.4.0",
     "exceljs": "^4.4.0",
     "jszip": "^3.10.2",
-    "playwright": "^1.64.0",
     "typescript": "5.8.3"
   },
   "dependencies": {
@@ -41,6 +40,7 @@
     "mongodb": "7.6.0",
     "pdfjs-dist": "^6.4.299",
     "pdfkit": "^0.20.2",
+    "playwright": "1.64.0",
     "yauzl": "^3.4.0"
   },
   "overrides": {

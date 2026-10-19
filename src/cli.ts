@@ -46,7 +46,7 @@ The doctor command checks the selected local SQLite or MongoDB storage and repor
 The model-check command makes a synthetic read-only tool call through the selected model provider.
 The chat command opens a bounded interactive conversation with the selected provider.
 The do command sends one natural-language instruction to the selected provider. Agent-directed CSV and supported-document analysis require explicit file and stored-folder read approval.
-The tasks command lists or inspects built-in validated declarative task definitions; validate checks one definition's JSON inputs. These definitions cannot grant permissions or execute code, and tasks are not yet executable.
+The tasks command lists, inspects, validates, and installs declarative task definitions. Eligible CSV definitions can be selected by natural-language execution and are routed through the fixed approved CSV workflow; unsupported task capabilities remain non-executable. Definitions cannot grant permissions or execute code.
 The csv-analyze workflow reads one explicitly approved CSV file, stores redacted run metadata, and can calculate exact selected-column decimal totals with --numeric-column.
 The repo-inspect workflow inventories one explicitly approved repository root without reading file contents or running commands.
 The source-review workflow reads only explicitly selected source files and displays bounded, locally redacted content; it does not send or persist source.
