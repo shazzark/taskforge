@@ -608,6 +608,12 @@ MongoDB now assigns each new non-deleted schedule a unique bounded capacity slot
 
 **Verification:** Strict typecheck/build passed; `node --test test/storage/mongodb.integration.test.mjs` passed 3/3. Its isolated loopback Mongo fixture includes a legacy paused schedule without a slot, races two inserts at 499 active schedules, verifies exactly one succeeds and the count remains 500, then verifies deletion allows one replacement. The integrated serial `npm test` passed **218/218, 0 failed, 0 skipped** in 169.6 seconds with a disposable `LOCALAPPDATA` and dedicated loopback Mongo database. This verifies the cap and same-version insert race; it does not establish power-loss durability, backup/restore, production ACLs, or full workflow parity. Phase 10 remains IN PROGRESS.
 
+#### Phase 10.8 — Shared adapter contract extension — VERIFIED
+
+Expanded the SQLite/Mongo shared persistence contract to verify idempotent event retries, rejection when an event ID is reused with different contents, and deleted-schedule listing/identity behavior. The methods now have an additional common cross-backend regression check; the contract still does not exercise every adapter operation or every failure mode.
+
+**Verification:** `npm run typecheck`, `npm run build`, and `node --test test/storage/store-contract.test.mjs` passed; the focused contract passed 3/3 with both SQLite and isolated loopback Mongo enabled. The integrated serial `npm test` passed **221/221, 0 failed, 0 skipped** in 175.6 seconds with disposable local storage and dedicated loopback MongoDB. Backup/restore procedure, power-loss durability, production ACLs, and complete workflow parity remain open. Phase 10 remains IN PROGRESS.
+
 ### Phase 11 — Validated declarative task registry — COMPLETE
 
 Depends on Phase 9 and Phase 10 interfaces. Definitions include bounded instructions, validated inputs/outputs, fixed tool names, examples and tests; no arbitrary executable code. The verified registry includes the built-in catalog and safely installed local definitions. Registry definition execution remains outside this phase; routing and task execution are tracked under Phase 12.

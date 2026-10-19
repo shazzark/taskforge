@@ -36,9 +36,18 @@ async function exerciseCommonContract(store, scopePath, prefix) {
   assert.match(run.summary, /\[REDACTED\]/u);
   await store.updateRunState(runId, "running");
   await store.appendRunEvent({ runId, eventId: "start", type: "run_started" });
+  const idempotentEventInput = { runId, eventId: "idempotent", type: "run_paused" };
+  const originalEvent = await store.appendRunEvent(idempotentEventInput);
+  const repeatedEvent = await store.appendRunEvent(idempotentEventInput);
+  assert.equal(repeatedEvent.sequence, originalEvent.sequence);
+  assert.equal((await store.getRunEvents(runId)).length, 2);
+  await assert.rejects(
+    store.appendRunEvent({ ...idempotentEventInput, type: "run_resumed" }),
+    /already used|reused/u,
+  );
   await store.saveRunCheckpoint({ runId, version: 1, inputHash, stateHash, completedStepIds: ["parse"] });
   assert.equal((await store.getRunSummary(runId))?.state, "running");
-  assert.deepEqual((await store.getRunEvents(runId)).map((event) => [event.sequence, event.type]), [[1, "run_started"]]);
+  assert.deepEqual((await store.getRunEvents(runId)).map((event) => [event.sequence, event.type]), [[1, "run_started"], [2, "run_paused"]]);
   assert.deepEqual((await store.loadRunCheckpoint(runId, inputHash, stateHash))?.completedStepIds, ["parse"]);
   await assert.rejects(store.loadRunCheckpoint(runId, "3".repeat(64), stateHash), /stale/u);
   await store.updateRunState(runId, "completed");
@@ -60,6 +69,16 @@ async function exerciseCommonContract(store, scopePath, prefix) {
   assert.equal((await store.listSchedules())[0]?.status, "active");
   assert.equal((await store.setScheduleStatus(`${prefix}-schedule`, "paused"))?.status, "paused");
   assert.equal((await store.listSchedules())[0]?.status, "paused");
+
+  const deletedScheduleId = `${prefix}-deleted-schedule`;
+  await store.createSchedule({ scheduleId: deletedScheduleId, workflowId: "csv-analyze", inputPath: resolve(scopePath, "deleted.csv"), nextRunAt });
+  await store.setScheduleStatus(deletedScheduleId, "deleted");
+  assert.equal((await store.listSchedules()).some((schedule) => schedule.scheduleId === deletedScheduleId), false);
+  assert.equal((await store.listSchedules(true)).find((schedule) => schedule.scheduleId === deletedScheduleId)?.status, "deleted");
+  await assert.rejects(
+    store.createSchedule({ scheduleId: deletedScheduleId, workflowId: "csv-analyze", inputPath: resolve(scopePath, "deleted.csv"), nextRunAt }),
+    /already exists|id already exists/u,
+  );
 
   const dueAt = new Date();
   const recurringScheduleId = `${prefix}-recurring-schedule`;
