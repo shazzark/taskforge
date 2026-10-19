@@ -6,6 +6,7 @@ import test from "node:test";
 import { PersistentFolderApprovalError, TaskForgeStorageUnavailableError } from "../../dist/cli/command-errors.js";
 import { requirePersistentFolderApproval } from "../../dist/cli/folder-approval.js";
 import { DatabasePersistenceError, DatabaseShutdownError } from "../../dist/storage/types.js";
+import { PathPolicyError } from "../../dist/security/path-policy.js";
 
 async function withTemporaryDirectory(run) {
   const directory = mkdtempSync(join(tmpdir(), "taskforge-folder-approval-"));
@@ -25,6 +26,15 @@ test("storage connection failure remains distinct from a denied folder approval"
   });
 });
 
+test("unresolvable folder paths are not classified as missing grants", async () => {
+  await withTemporaryDirectory(async (directory) => {
+    await assert.rejects(
+      requirePersistentFolderApproval(join(directory, "missing"), "read", async () => false),
+      (error) => error instanceof PathPolicyError && error.kind === "path_unavailable",
+    );
+  });
+});
+
 test("storage failures during the approval lookup are not classified as file denials", async () => {
   await withTemporaryDirectory(async (directory) => {
     for (const failure of [new DatabasePersistenceError("database query failed"), new DatabaseShutdownError()]) {
@@ -40,7 +50,20 @@ test("an available store with no matching grant is reported as an approval denia
   await withTemporaryDirectory(async (directory) => {
     await assert.rejects(
       requirePersistentFolderApproval(directory, "read", async () => false),
-      PersistentFolderApprovalError,
+      (error) => error instanceof PersistentFolderApprovalError &&
+        /exact-file prompt is one-time approval/u.test(error.message) &&
+        /permissions approve --root/u.test(error.message),
+    );
+  });
+});
+
+test("write grant denial remains distinct from read grant guidance", async () => {
+  await withTemporaryDirectory(async (directory) => {
+    await assert.rejects(
+      requirePersistentFolderApproval(directory, "write", async () => false),
+      (error) => error instanceof PersistentFolderApprovalError &&
+        /saved write approval/u.test(error.message) &&
+        !/exact-file prompt/u.test(error.message),
     );
   });
 });

@@ -21,6 +21,7 @@ import { runChat, runNaturalLanguageInstruction, type AgentInputReadFailure } fr
 import { runAgentFixCommand, runFileMoveCommand, runFilePatchCommand, runGitDiffCommand, runSoftwareCheckCommand } from "./cli/commands/software-workflows.js";
 import { PersistentFolderApprovalError, TaskForgeStorageUnavailableError } from "./cli/command-errors.js";
 import { requirePersistentFolderApproval as checkPersistentFolderApproval } from "./cli/folder-approval.js";
+import { formatApprovedFileReadError } from "./cli/file-read-errors.js";
 import { runSpecialistReview, type SpecialistTask, SpecialistReviewError } from "./agent/specialist-review.js";
 import {
   DatabasePersistenceError,
@@ -186,7 +187,7 @@ async function readApprovedInputFile(
       reportFailure?.("storage-unavailable");
       return undefined;
     }
-    const message = error instanceof PathPolicyError ? error.message : "The approved file could not be read safely.";
+    const message = formatApprovedFileReadError(error);
     process.stderr.write(`File read denied: ${message}\n`);
     process.exitCode = 2;
     reportFailure?.("denied");

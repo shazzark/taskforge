@@ -3,6 +3,7 @@ import { resolve } from "node:path";
 import { PersistentFolderApprovalError, TaskForgeStorageUnavailableError } from "./command-errors.js";
 import type { TaskForgeStore } from "../storage/store.js";
 import { DatabasePersistenceError, DatabaseShutdownError } from "../storage/types.js";
+import { PathPolicyError } from "../security/path-policy.js";
 
 export type WithTaskForgeStore = <T>(action: (store: TaskForgeStore) => Promise<T>) => Promise<T | undefined>;
 
@@ -15,7 +16,7 @@ export async function requirePersistentFolderApproval(
   try {
     canonicalPath = await realpath(resolve(pathValue));
   } catch {
-    throw new PersistentFolderApprovalError();
+    throw new PathPolicyError("path_unavailable");
   }
 
   let approved: boolean | undefined;
@@ -28,5 +29,5 @@ export async function requirePersistentFolderApproval(
     throw error;
   }
   if (approved === undefined) throw new TaskForgeStorageUnavailableError();
-  if (!approved) throw new PersistentFolderApprovalError();
+  if (!approved) throw new PersistentFolderApprovalError(access);
 }
