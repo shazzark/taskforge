@@ -19,6 +19,7 @@ export interface DataDocumentCommandDependencies {
   readonly readApprovedInputFile: (pathValue: string, signal?: AbortSignal) => Promise<Uint8Array | undefined>;
   readonly requirePersistentFolderApproval: (pathValue: string, access: "read" | "write") => Promise<void>;
   readonly registerInterrupt?: (handler: () => void) => () => void;
+  readonly askExportConsent?: (question: string, signal: AbortSignal) => Promise<string | undefined>;
 }
 
 function registerInterrupt(dependencies: DataDocumentCommandDependencies, controller: AbortController): () => void {
@@ -26,6 +27,25 @@ function registerInterrupt(dependencies: DataDocumentCommandDependencies, contro
   if (dependencies.registerInterrupt !== undefined) return dependencies.registerInterrupt(handler);
   process.once("SIGINT", handler);
   return () => process.removeListener("SIGINT", handler);
+}
+
+async function askExportConsent(question: string, signal: AbortSignal): Promise<string | undefined> {
+  const consent = createInterface({ input: process.stdin, output: process.stdout });
+  const forwardInterrupt = (): void => { process.emit("SIGINT"); };
+  consent.on("SIGINT", forwardInterrupt);
+  try {
+    return await consent.question(question, { signal });
+  } catch (error: unknown) {
+    if (signal.aborted && error instanceof Error && error.name === "AbortError") return undefined;
+    throw error;
+  } finally {
+    consent.removeListener("SIGINT", forwardInterrupt);
+    consent.close();
+  }
+}
+
+function isExportApproved(answer: string | undefined, signal: AbortSignal): boolean {
+  return !signal.aborted && answer?.trim().toLowerCase() === "y";
 }
 
 interface ParsedCsvCommandArguments {
@@ -77,7 +97,7 @@ async function runCsvWorkflowCommandInner(commandArgs: readonly string[], depend
   let result: CsvWorkflowResult | undefined;
   try {
     result = await dependencies.withStore((store) => runCsvAnalysisWorkflow(store, input, undefined, numericColumns, signal));
-    stopListening();
+    if (outputPath === undefined) stopListening();
   } catch (error: unknown) {
     if (error instanceof CsvWorkflowCancelledError) {
       process.stderr.write(`${error.message}\n`);
@@ -103,14 +123,20 @@ async function runCsvWorkflowCommandInner(commandArgs: readonly string[], depend
     const content = renderCsvAnalysisExport(result.analysis, exportFormat);
     const pending = await previewPlainTextArtifact(content, requestedOutput, outputRoot, policy, approvals);
     process.stdout.write(`\n--- CSV AGGREGATE EXPORT PREVIEW ---\n${escapeTerminalControls(pending.content)}\n`);
-    const consent = createInterface({ input: process.stdin, output: process.stdout });
-    let answer: string;
+    let answer: string | undefined;
     try {
-      answer = await consent.question(`Create this new ${exportFormat} aggregate report?\nPath: ${escapeTerminalControls(pending.preview.targetPath)}\nBytes: ${Buffer.byteLength(pending.content, "utf8")}\nSHA-256: ${pending.digest}\nUnselected headers and source cell values are excluded; selected column labels and totals are included. [y/N] `);
+      const question = `Create this new ${exportFormat} aggregate report?\nPath: ${escapeTerminalControls(pending.preview.targetPath)}\nBytes: ${Buffer.byteLength(pending.content, "utf8")}\nSHA-256: ${pending.digest}\nUnselected headers and source cell values are excluded; selected column labels and totals are included. [y/N] `;
+      answer = await (dependencies.askExportConsent ?? askExportConsent)(question, signal);
     } finally {
-      consent.close();
+      stopListening();
     }
-    if (answer.trim().toLowerCase() !== "y") {
+    if (signal.aborted) {
+      approvals.discard(pending.preview.previewId);
+      process.stderr.write("CSV export prompt cancelled; analysis completed and no report was written.\n");
+      process.exitCode = 130;
+      return;
+    }
+    if (!isExportApproved(answer, signal)) {
       approvals.discard(pending.preview.previewId);
       process.stdout.write("CSV analysis completed; export cancelled before writing.\n");
       return;
@@ -156,7 +182,7 @@ export async function runCsvWorkflowCommand(commandArgs: readonly string[], depe
   }
 }
 
-export async function resumeWorkflowCommand(runId: string, commandArgs: readonly string[], dependencies: DataDocumentCommandDependencies): Promise<void> {
+async function resumeWorkflowCommandInner(runId: string, commandArgs: readonly string[], dependencies: DataDocumentCommandDependencies, signal: AbortSignal): Promise<void> {
   const inputPath = commandArgs.length >= 2 && commandArgs[0] === "--input" ? commandArgs[1] : undefined;
   const numericColumns: string[] = [];
   for (let index = 2; index < commandArgs.length; index += 2) {
@@ -172,19 +198,22 @@ export async function resumeWorkflowCommand(runId: string, commandArgs: readonly
     process.exitCode = 1;
     return;
   }
-  const input = await dependencies.readApprovedInputFile(inputPath);
-  if (input === undefined) return;
+  const input = await dependencies.readApprovedInputFile(inputPath, signal);
+  if (input === undefined) {
+    if (signal.aborted) process.exitCode = 130;
+    return;
+  }
   try {
     const result = await dependencies.withStore(async (store) => {
       const existing = await store.getRunSummary(runId);
       if (existing?.workflowId === "csv-analyze") {
-        return { kind: "csv" as const, value: await resumeCsvAnalysisWorkflow(store, runId, input, numericColumns) };
+        return { kind: "csv" as const, value: await resumeCsvAnalysisWorkflow(store, runId, input, numericColumns, signal) };
       }
       if (existing?.workflowId === "document-analyze") {
         if (numericColumns.length > 0) throw new Error("Numeric column options apply only to CSV runs.");
         return {
           kind: "document" as const,
-          value: await resumeDocumentAnalysisWorkflow(store, runId, extname(inputPath).toLowerCase(), input),
+          value: await resumeDocumentAnalysisWorkflow(store, runId, extname(inputPath).toLowerCase(), input, signal),
         };
       }
       throw new Error("This run type cannot be resumed by the current CLI.");
@@ -200,11 +229,26 @@ export async function resumeWorkflowCommand(runId: string, commandArgs: readonly
       process.stdout.write(`Run ${result.value.run.runId} resumed: ${analysis.format}, ${analysis.byteCount} bytes, ${analysis.wordCount} words.\n`);
     }
   } catch (error: unknown) {
+    if (error instanceof CsvWorkflowCancelledError || error instanceof DocumentWorkflowCancelledError) {
+      process.stderr.write(`${error.message}\n`);
+      process.exitCode = 130;
+      return;
+    }
     const message = error instanceof CsvWorkflowError || error instanceof DocumentWorkflowError
       ? error.message
       : "Resume failed; run state was preserved where possible.";
     process.stderr.write(`Resume failed: ${message}\n`);
     process.exitCode = 3;
+  }
+}
+
+export async function resumeWorkflowCommand(runId: string, commandArgs: readonly string[], dependencies: DataDocumentCommandDependencies): Promise<void> {
+  const controller = new AbortController();
+  const removeInterrupt = registerInterrupt(dependencies, controller);
+  try {
+    await resumeWorkflowCommandInner(runId, commandArgs, dependencies, controller.signal);
+  } finally {
+    removeInterrupt();
   }
 }
 
@@ -236,7 +280,7 @@ async function runDocumentAnalysisCommandInner(commandArgs: readonly string[], d
   try {
     const extension = extname(inputPath).toLowerCase();
     const result = await dependencies.withStore((store) => analyzeDocument(store, extension, input, undefined, signal));
-    stopListening();
+    if (outputPath === undefined || exportFormat === undefined) stopListening();
     if (result !== undefined) {
       const analysis = result.analysis;
       process.stdout.write(
@@ -255,12 +299,18 @@ async function runDocumentAnalysisCommandInner(commandArgs: readonly string[], d
         const approvals = new ActionApprovalRegistry(policy);
         const pending = await previewPlainTextArtifact(content, requestedOutput, outputRoot, policy, approvals);
         process.stdout.write(`\n--- DOCUMENT AGGREGATE EXPORT PREVIEW ---\n${escapeTerminalControls(pending.content)}\n`);
-        const consent = createInterface({ input: process.stdin, output: process.stdout });
-        let answer: string;
+        let answer: string | undefined;
         try {
-          answer = await consent.question(`Create this new ${exportFormat} aggregate report?\nPath: ${escapeTerminalControls(pending.preview.targetPath)}\nBytes: ${Buffer.byteLength(content, "utf8")}\nSHA-256: ${pending.digest}\nDocument text, file paths, sheet names, and cell values are excluded. [y/N] `);
-        } finally { consent.close(); }
-        if (answer.trim().toLowerCase() !== "y") {
+          const question = `Create this new ${exportFormat} aggregate report?\nPath: ${escapeTerminalControls(pending.preview.targetPath)}\nBytes: ${Buffer.byteLength(content, "utf8")}\nSHA-256: ${pending.digest}\nDocument text, file paths, sheet names, and cell values are excluded. [y/N] `;
+          answer = await (dependencies.askExportConsent ?? askExportConsent)(question, signal);
+        } finally { stopListening(); }
+        if (signal.aborted) {
+          approvals.discard(pending.preview.previewId);
+          process.stderr.write("Document export prompt cancelled; analysis completed and no report was written.\n");
+          process.exitCode = 130;
+          return;
+        }
+        if (!isExportApproved(answer, signal)) {
           approvals.discard(pending.preview.previewId);
           process.stdout.write("Document analysis completed; aggregate export cancelled before writing.\n");
           return;

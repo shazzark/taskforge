@@ -120,6 +120,8 @@ async function readApprovedInputFile(
     }
   } else {
     const consent = createInterface({ input: process.stdin, output: process.stdout });
+    const forwardInterrupt = signal === undefined ? undefined : (): void => { process.emit("SIGINT"); };
+    if (forwardInterrupt !== undefined) consent.on("SIGINT", forwardInterrupt);
     try {
       answer = signal === undefined
         ? await consent.question(`Allow TaskForge to read this exact file? ${absolutePath} [y/N] `)
@@ -131,6 +133,7 @@ async function readApprovedInputFile(
       }
       throw error;
     } finally {
+      if (forwardInterrupt !== undefined) consent.removeListener("SIGINT", forwardInterrupt);
       consent.close();
     }
   }
@@ -865,7 +868,7 @@ if (args.length === 0 || (args.length === 1 && (args[0] === "--help" || args[0] 
   } else {
     await resumeWorkflowCommand(runId, args.slice(2), {
       withStore,
-      readApprovedInputFile: (pathValue) => readApprovedInputFile(pathValue),
+      readApprovedInputFile: (pathValue, signal) => readApprovedInputFile(pathValue, undefined, signal),
       requirePersistentFolderApproval,
     });
   }
