@@ -628,6 +628,14 @@ Extended the synthetic SQLite/MongoDB contract to cover run-summary redaction on
 
 **Next checkpoint:** Verify MongoDB backup/restore against a disposable loopback database with MongoDB Database Tools. `mongodump` and `mongorestore` are unavailable on `PATH` and absent from the inspected `C:\Program Files\MongoDB` tree; do not substitute a simulated adapter export for that evidence.
 
+#### Phase 10.11 - MongoDB Database Tools backup and restore - VERIFIED (disposable loopback only)
+
+Checked MongoDB's official Windows ZIP installation instructions and installed Database Tools 100.19.1 under a TaskForge-specific folder in the user's temporary directory. Verified tool versions, then created two synthetic records in a uniquely named database on `127.0.0.1:27017`, dumped only that database, and restored it under a second unique database name using namespace remapping. The restored count and values matched. Both synthetic databases and the dump directory were removed. The archive executables report `NotSigned`; installation was performed directly from MongoDB's official HTTPS distribution endpoint, without adding PATH entries or accessing credentials or application databases.
+
+**Verification:** `mongodump` and namespace-remapped `mongorestore` each completed successfully; the restored collection contained the two expected synthetic records. This verifies the tools and one bounded procedure against the local MongoDB 8.2.0 loopback server. It is not a production backup/restore rehearsal, power-loss test, or full storage parity result. SQLite's earlier interrupted-transaction test remains process-crash evidence only; neither test simulates machine or disk power loss. Phase 10 remains IN PROGRESS for Windows ACL/privacy, actual power-loss durability, complete workflow parity, and broader backup/restore acceptance.
+
+**Next checkpoint:** Add direct CSV/document CLI cancellation and persisted interruption-state coverage. Continue unrelated natural-language execution and Windows distribution work in later bounded subphases; BookFinder manual login, Vercel access, and independent developer trial remain owner/operator gates.
+
 ### Phase 11 — Validated declarative task registry — COMPLETE
 
 Depends on Phase 9 and Phase 10 interfaces. Definitions include bounded instructions, validated inputs/outputs, fixed tool names, examples and tests; no arbitrary executable code. The verified registry includes the built-in catalog and safely installed local definitions. Registry definition execution remains outside this phase; routing and task execution are tracked under Phase 12.
