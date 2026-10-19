@@ -1,7 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { mkdtemp, rm } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { copyFile, mkdtemp, readFile, rename, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -42,6 +43,48 @@ test("run records, transitions, bounded events, and checkpoints persist across r
   assert.equal((await reopened.getRunEvents(run.runId)).length, 1);
   assert.deepEqual((await reopened.loadRunCheckpoint(run.runId, hash, hash))?.completedStepIds, ["step-1"]);
   await reopened.close();
+});
+
+test("a closed disposable SQLite store can be backed up and restored with run, event, checkpoint, and grant data", async t => {
+  const directory = await mkdtemp(join(tmpdir(), "taskforge-sqlite-backup-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const path = join(directory, "source.db");
+  const backupPath = join(directory, "source.db.backup");
+  const displacedPath = join(directory, "source.db.before-restore");
+  const runId = "backup-restore-run";
+  const store = await SqliteStore.connect({ path });
+  await store.saveRunSummary({ runId, workflowId: "synthetic-backup", summary: "synthetic data" });
+  await store.updateRunState(runId, "running");
+  await store.appendRunEvent({ runId, eventId: "backup-event", type: "run_started" });
+  await store.saveRunCheckpoint({ runId, version: 1, inputHash: hash, stateHash: hash, completedStepIds: ["backup-step"] });
+  assert.equal((await store.grantFolderApproval(directory, "read")).status, "active");
+  await store.close();
+
+  // A raw SQLite file copy is used only after all store handles close and WAL data is checkpointed.
+  const checkpoint = new DatabaseSync(path);
+  try { checkpoint.exec("PRAGMA wal_checkpoint(TRUNCATE)"); } finally { checkpoint.close(); }
+  await copyFile(path, backupPath);
+  const backupDigest = createHash("sha256").update(await readFile(backupPath)).digest("hex");
+
+  const changed = await SqliteStore.connect({ path });
+  await changed.saveRunSummary({ runId: "created-after-backup", workflowId: "synthetic-backup", summary: "must disappear after restore" });
+  await changed.close();
+  await rename(path, displacedPath);
+  await copyFile(backupPath, path);
+  assert.equal(createHash("sha256").update(await readFile(path)).digest("hex"), backupDigest);
+
+  const integrity = new DatabaseSync(path);
+  try { assert.equal(integrity.prepare("PRAGMA integrity_check").get().integrity_check, "ok"); }
+  finally { integrity.close(); }
+
+  const restored = await SqliteStore.connect({ path });
+  try {
+    assert.equal((await restored.getRunSummary(runId))?.state, "running");
+    assert.equal((await restored.getRunEvents(runId))[0]?.eventId, "backup-event");
+    assert.deepEqual((await restored.loadRunCheckpoint(runId, hash, hash))?.completedStepIds, ["backup-step"]);
+    assert.equal(await restored.hasFolderApproval(directory, "read"), true);
+    assert.equal(await restored.getRunSummary("created-after-backup"), null);
+  } finally { await restored.close(); }
 });
 
 test("SQLite recovers committed data and rolls back an interrupted transaction after process exit", async t => {

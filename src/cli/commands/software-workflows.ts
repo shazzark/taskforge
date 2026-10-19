@@ -65,7 +65,7 @@ export interface SoftwareCommandDependencies {
     const commandConsent = createInterface({ input: process.stdin, output: process.stdout });
     let commandAnswer: string;
     try {
-      commandAnswer = await commandConsent.question(`Run ${commandLabel} in the approved root? [y/N] `);
+      commandAnswer = await commandConsent.question(`Run ${commandLabel} in the approved root? This executes repository code that may read or write files or cause side effects; no OS sandbox is provided. [y/N] `);
     } finally {
       commandConsent.close();
     }
@@ -217,7 +217,7 @@ export async function runAgentFixCommand(commandArgs: readonly string[], depende
   const consent = createInterface({ input: process.stdin, output: process.stdout });
   let answer: string;
   try {
-    answer = await consent.question(`Read this exact target and check path in the approved root?\nRoot: ${escapeTerminalControls(rootPath)}\nTarget: ${escapeTerminalControls(target)}\nGoal: ${escapeTerminalControls(goal)}\nVerification test: ${escapeTerminalControls(testFile)}\nOnly a locally heuristically redacted target excerpt may be sent to the selected provider. [y/N] `);
+    answer = await consent.question(`Investigate this project using the selected evidence?\nRoot: ${escapeTerminalControls(rootPath)}\nSource evidence: ${escapeTerminalControls(target)}\nGoal: ${escapeTerminalControls(goal)}\nRelated test evidence: ${escapeTerminalControls(testFile)}\nTaskForge collects only these two files as model evidence. Approving either test run executes repository code that may read or write other files or cause side effects; no OS sandbox is provided. The selected source and test may be sent after a separate provider-transfer approval. [y/N] `);
   } finally {
     consent.close();
   }
@@ -240,19 +240,41 @@ export async function runAgentFixCommand(commandArgs: readonly string[], depende
       ? targetPath.toLowerCase() === selectedTest.canonicalPath.toLowerCase()
       : targetPath === selectedTest.canonicalPath;
     if (targetIsTest) throw new ReviewedCommandError("The patch target and verification test must be different files.");
-    const files = await reviewSourceFiles(root, policy, [target]);
-    const file = files[0];
-    if (file === undefined || file.content.includes("[REDACTED:")) {
-      throw new SourceReviewError("The selected source contains redacted credential-like text; full-file generated replacement is refused to avoid copying or deleting hidden material.");
+    const baselineConsent = createInterface({ input: process.stdin, output: process.stdout });
+    let baselineAnswer: string;
+    try {
+      baselineAnswer = await baselineConsent.question(`Run this exact selected test as baseline investigation evidence? ${escapeTerminalControls(testFile)}. It may execute repository code; output will not be displayed or persisted. [y/N] `);
+    } finally {
+      baselineConsent.close();
     }
-    const transferText = `${file.path}\n${file.content}\n\nGoal: ${goal}`;
-    if (Buffer.byteLength(transferText, "utf8") > 24 * 1024) throw new SourceReviewError("The target and goal exceed the 24 KiB model-input limit.");
-    process.stdout.write(`\n--- REDACTED SOURCE ${file.path} (${file.byteCount} bytes, ${file.lineCount} lines) ---\n${escapeTerminalControls(file.content)}\n`);
+    if (baselineAnswer.trim().toLowerCase() !== "y") {
+      process.stdout.write("Agent investigation cancelled before test execution.\n");
+      return;
+    }
+    const baseline = await dependencies.withStore((store) =>
+      runReviewedCommand(store, root, policy, "node-test", testFile, controller.signal),
+    );
+    if (baseline === undefined) return;
+    process.stdout.write(
+      `Baseline evidence: selected test ${baseline.status}; exit=${baseline.exitCode === null ? "unavailable" : baseline.exitCode}; ` +
+      `observed output bytes=${baseline.observedOutputBytes}${baseline.outputTruncated ? " (capture limit reached)" : ""}. Output was not displayed or persisted.\n`,
+    );
+    const files = await reviewSourceFiles(root, policy, [target, testFile]);
+    const file = files[0];
+    const testEvidence = files[1];
+    if (file === undefined || testEvidence === undefined || file.content.includes("[REDACTED:") || testEvidence.content.includes("[REDACTED:")) {
+      throw new SourceReviewError("The selected source or test contains redacted credential-like text; generated replacement is refused to avoid copying or relying on hidden material.");
+    }
+    const baselineText = `Selected test baseline status: ${baseline.status}; exit code: ${baseline.exitCode === null ? "unavailable" : baseline.exitCode}; observed output bytes: ${baseline.observedOutputBytes}; output text withheld.`;
+    const transferText = `${file.path}\n${file.content}\n\nRelated test evidence: ${testEvidence.path}\n${testEvidence.content}\n\n${baselineText}\n\nGoal: ${goal}`;
+    if (Buffer.byteLength(transferText, "utf8") > 24 * 1024) throw new SourceReviewError("The selected source, test evidence, and goal exceed the 24 KiB model-input limit.");
+    process.stdout.write(`\n--- REDACTED SOURCE ${escapeTerminalControls(file.path)} (${file.byteCount} bytes, ${file.lineCount} lines) ---\n${escapeTerminalControls(file.content)}\n`);
+    process.stdout.write(`\n--- REDACTED TEST EVIDENCE ${escapeTerminalControls(testEvidence.path)} (${testEvidence.byteCount} bytes, ${testEvidence.lineCount} lines) ---\n${escapeTerminalControls(testEvidence.content)}\n`);
     const provider = createModelProvider(providerConfiguration);
     const transferConsent = createInterface({ input: process.stdin, output: process.stdout });
     let transferAnswer: string;
     try {
-      transferAnswer = await transferConsent.question(`Send this exact redacted source and goal to ${providerConfiguration.kind} (${provider.model}) to generate a full-file replacement? Redaction can miss secrets. The model has only a replacement-proposal tool; it cannot read files, run commands, or write. [y/N] `);
+      transferAnswer = await transferConsent.question(`Send these exact redacted source and test excerpts plus the baseline test status and goal to ${providerConfiguration.kind} (${provider.model}) to investigate and generate a full-file replacement? Redaction can miss secrets. The model has only a replacement-proposal tool; it cannot read files, run commands, or write. [y/N] `);
     } finally {
       transferConsent.close();
     }
@@ -266,8 +288,8 @@ export async function runAgentFixCommand(commandArgs: readonly string[], depende
       provider.provider,
       provider.model,
       [
-        { role: "system", content: "You are TaskForge's code change proposer. You may only call propose_replacement with a complete replacement for the single supplied source file. Do not claim changes were applied or tests run. If the request is unclear, explain the ambiguity without calling the tool. Preserve unrelated behavior and avoid adding dependencies or permission expansion." },
-        { role: "user", content: `Target: ${file.path}\nGoal: ${goal}\nCurrent redacted source:\n${file.content}` },
+        { role: "system", content: "You are TaskForge's code investigator and change proposer. Use only the explicitly selected source and test excerpts and the bounded baseline status as evidence. You may only call propose_replacement with a complete replacement for the single supplied source file. Do not claim changes were applied or tests run. If the evidence is insufficient or the request is unclear, explain the limitation without calling the tool. Preserve unrelated behavior and avoid adding dependencies or permission expansion." },
+        { role: "user", content: `Target: ${file.path}\nGoal: ${goal}\nCurrent redacted source:\n${file.content}\n\nSelected test evidence: ${testEvidence.path}\n${testEvidence.content}\n\n${baselineText}` },
       ],
       [createPatchProposalTool((value) => { replacement = value; })],
       { maxModelRequests: 8, maxToolActions: 1, signal: controller.signal },

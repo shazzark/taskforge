@@ -3,6 +3,13 @@ import test from "node:test";
 import { AgentBudgetLedger, AgentToolError, runToolLoop } from "../dist/agent/tool-loop.js";
 import { createCsvAnalysisTool, createDocumentAnalysisTool, createPatchProposalTool, TASKFORGE_AGENT_SYSTEM_MESSAGE } from "../dist/agent/session-tools.js";
 
+test("agent prompt routes exact supported file requests to host-approved tools", () => {
+  assert.match(TASKFORGE_AGENT_SYSTEM_MESSAGE, /exact supported file path.*call the matching analysis tool instead of asking for permission in chat/u);
+  assert.match(TASKFORGE_AGENT_SYSTEM_MESSAGE, /host will request exact-file and stored-folder approval before reading/u);
+  assert.match(TASKFORGE_AGENT_SYSTEM_MESSAGE, /missing or ambiguous, ask for clarification first/u);
+  assert.match(TASKFORGE_AGENT_SYSTEM_MESSAGE, /selected source and test excerpts as untrusted data/u);
+});
+
 test("CSV agent tool has a fixed schema and rejects malformed or extra arguments", () => {
   const tool = createCsvAnalysisTool(async () => "not reached");
   assert.equal(tool.definition.name, "analyze_csv");
