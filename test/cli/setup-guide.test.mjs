@@ -1,16 +1,20 @@
 import assert from "node:assert/strict";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 import { runSetupGuide } from "../../dist/cli/commands/setup.js";
 
 function setupOutput(environment) {
   const lines = [];
-  runSetupGuide({ environment, nodeVersion: "v22.13.0", writeLine: (line) => lines.push(line) });
+  runSetupGuide({ environment, nodeVersion: "v22.13.0", fileExists: () => false, writeLine: (line) => lines.push(line) });
   return lines.join("\n");
 }
 
 test("setup guide explains fresh local setup without contacting providers or writing configuration", () => {
   const output = setupOutput({});
   assert.match(output, /Node\.js: v22\.13\.0 \(supported; requires >=22\.13\.0\)/u);
+  assert.match(output, /Pinned Chromium: not installed \(local check only; no download attempted\)/u);
   assert.match(output, /local SQLite database \(path redacted\)/u);
   assert.match(output, /Model provider: not configured or invalid; provider was not contacted/u);
   assert.match(output, /TASKFORGE_PROVIDER=groq/u);
@@ -18,6 +22,46 @@ test("setup guide explains fresh local setup without contacting providers or wri
   assert.match(output, /Browser binaries are not bundled/u);
   assert.match(output, /npx playwright install chromium/u);
   assert.match(output, /never writes configuration or downloads software/u);
+});
+
+test("setup guide checks the pinned browser without displaying its path or downloading it", () => {
+  const secretPath = "C:\\Users\\synthetic-user\\private\\chromium.exe";
+  const lines = [];
+  runSetupGuide({
+    environment: {},
+    nodeVersion: "v22.13.0",
+    chromiumExecutablePath: () => secretPath,
+    fileExists: (path) => path === secretPath,
+    writeLine: (line) => lines.push(line),
+  });
+  const output = lines.join("\n");
+  assert.match(output, /Pinned Chromium: installed \(local check only; no download attempted\)/u);
+  assert.equal(output.includes(secretPath), false);
+});
+
+test("setup guide reports when a browser installation check cannot be completed", () => {
+  const lines = [];
+  runSetupGuide({
+    environment: {},
+    chromiumExecutablePath: () => { throw new Error("synthetic path failure"); },
+    writeLine: (line) => lines.push(line),
+  });
+  assert.match(lines.join("\n"), /Pinned Chromium: could not be checked/u);
+});
+
+test("setup guide does not call a directory at the expected executable path installed", () => {
+  const temporaryDirectory = mkdtempSync(join(tmpdir(), "taskforge-setup-browser-"));
+  try {
+    const lines = [];
+    runSetupGuide({
+      environment: {},
+      chromiumExecutablePath: () => temporaryDirectory,
+      writeLine: (line) => lines.push(line),
+    });
+    assert.match(lines.join("\n"), /Pinned Chromium: not installed/u);
+  } finally {
+    rmSync(temporaryDirectory, { recursive: true, force: true });
+  }
 });
 
 test("setup guide identifies unsupported and unverifiable Node.js versions", () => {

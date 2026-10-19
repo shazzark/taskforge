@@ -1,14 +1,38 @@
+import { statSync } from "node:fs";
 import {
   ConfigurationError,
   formatStoreConfigurationSummary,
   loadProviderConfiguration,
   loadStoreConfiguration,
 } from "../../config/configuration.js";
+import { chromium } from "playwright";
 
 export interface SetupGuideDependencies {
   readonly environment?: Readonly<Record<string, string | undefined>>;
+  readonly chromiumExecutablePath?: () => string;
+  readonly fileExists?: (path: string) => boolean;
   readonly nodeVersion?: string;
   readonly writeLine?: (line: string) => void;
+}
+
+function checkChromium(dependencies: SetupGuideDependencies): "installed" | "not installed" | "could not be checked" {
+  try {
+    const executablePath = dependencies.chromiumExecutablePath?.() ?? chromium.executablePath();
+    if (dependencies.fileExists !== undefined) {
+      return dependencies.fileExists(executablePath) ? "installed" : "not installed";
+    }
+    try {
+      return statSync(executablePath).isFile() ? "installed" : "not installed";
+    } catch (error: unknown) {
+      if (typeof error === "object" && error !== null && "code" in error) {
+        const code = error.code;
+        if (code === "ENOENT" || code === "ENOTDIR") return "not installed";
+      }
+      return "could not be checked";
+    }
+  } catch {
+    return "could not be checked";
+  }
 }
 
 function checkNodeVersion(version: string): "supported" | "unsupported" | "unknown" {
@@ -36,6 +60,7 @@ export function runSetupGuide(dependencies: SetupGuideDependencies = {}): void {
     : nodeStatus === "unsupported"
       ? `Node.js: ${nodeVersion} (below the required >=22.13.0)`
       : `Node.js: version could not be verified (reported value: ${nodeVersion})`);
+  writeLine(`Pinned Chromium: ${checkChromium(dependencies)} (local check only; no download attempted)`);
 
   try {
     writeLine(formatStoreConfigurationSummary(loadStoreConfiguration(environment)));
