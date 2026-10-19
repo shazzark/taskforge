@@ -454,6 +454,78 @@ test(
       assert.equal((await store.listSchedules()).some((entry) => entry.scheduleId === scheduleId), false);
       assert.equal((await store.listSchedules(true)).some((entry) => entry.scheduleId === scheduleId), true);
 
+      const scheduleCollection = rawClient.db().collection("schedules");
+      const legacyScheduleId = "legacy-capacity-fixture";
+      const legacyScheduleCreatedAt = new Date();
+      await scheduleCollection.insertOne({
+        _id: legacyScheduleId,
+        scheduleId: legacyScheduleId,
+        workflowId: "csv-analyze",
+        inputPath: join(softwareFixturePath, "fixture.csv"),
+        nextRunAt: new Date("2040-01-01T00:00:00.000Z"),
+        status: "paused",
+        createdAt: legacyScheduleCreatedAt,
+        updatedAt: legacyScheduleCreatedAt,
+        occurrences: [],
+      });
+      const activeScheduleCount = await scheduleCollection.countDocuments({ status: { $ne: "deleted" } });
+      const occupiedSlotDocuments = await scheduleCollection.find(
+        { status: { $ne: "deleted" }, capacitySlot: { $exists: true } },
+        { projection: { capacitySlot: 1 } },
+      ).toArray();
+      const occupiedSlots = new Set(occupiedSlotDocuments.map((schedule) => schedule.capacitySlot));
+      const fixtureSchedulesNeeded = 499 - activeScheduleCount;
+      assert.ok(fixtureSchedulesNeeded >= 0);
+      const fixtureSchedules = [];
+      for (let slot = 0; slot < 500 && fixtureSchedules.length < fixtureSchedulesNeeded; slot += 1) {
+        if (occupiedSlots.has(slot)) continue;
+        const fixtureId = `capacity-fixture-${slot}`;
+        const now = new Date();
+        fixtureSchedules.push({
+          _id: fixtureId,
+          scheduleId: fixtureId,
+          workflowId: "csv-analyze",
+          inputPath: join(softwareFixturePath, "fixture.csv"),
+          nextRunAt: new Date("2040-01-01T00:00:00.000Z"),
+          status: "active",
+          createdAt: now,
+          updatedAt: now,
+          occurrences: [],
+          capacitySlot: slot,
+        });
+      }
+      assert.equal(fixtureSchedules.length, fixtureSchedulesNeeded);
+      if (fixtureSchedules.length > 0) await scheduleCollection.insertMany(fixtureSchedules);
+      const capacityCandidates = await Promise.allSettled([
+        store.createSchedule({
+          scheduleId: "capacity-race-a",
+          workflowId: "csv-analyze",
+          inputPath: join(softwareFixturePath, "fixture.csv"),
+          nextRunAt: new Date("2040-01-02T00:00:00.000Z"),
+        }),
+        store.createSchedule({
+          scheduleId: "capacity-race-b",
+          workflowId: "csv-analyze",
+          inputPath: join(softwareFixturePath, "fixture.csv"),
+          nextRunAt: new Date("2040-01-03T00:00:00.000Z"),
+        }),
+      ]);
+      const createdAtCapacity = capacityCandidates.filter((result) => result.status === "fulfilled");
+      const rejectedAtCapacity = capacityCandidates.filter((result) => result.status === "rejected");
+      assert.equal(createdAtCapacity.length, 1);
+      assert.equal(rejectedAtCapacity.length, 1);
+      assert.ok(rejectedAtCapacity[0].reason instanceof PersistenceInputError);
+      assert.equal(await scheduleCollection.countDocuments({ status: { $ne: "deleted" } }), 500);
+      const capacityWinner = createdAtCapacity[0].value;
+      await store.setScheduleStatus(capacityWinner.scheduleId, "deleted");
+      await store.createSchedule({
+        scheduleId: "capacity-after-delete",
+        workflowId: "csv-analyze",
+        inputPath: join(softwareFixturePath, "fixture.csv"),
+        nextRunAt: new Date("2040-01-04T00:00:00.000Z"),
+      });
+      assert.equal(await scheduleCollection.countDocuments({ status: { $ne: "deleted" } }), 500);
+
       const historyEnvironment = {};
       for (const key of ["PATH", "SystemRoot", "WINDIR", "TEMP", "TMP"]) {
         const value = process.env[key];

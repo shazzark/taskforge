@@ -77,6 +77,7 @@ interface StoredSchedule extends Document {
   readonly pendingOccurrence?: ScheduleOccurrence;
   readonly dispatchOwner?: string;
   readonly dispatchStartedAt?: Date;
+  readonly capacitySlot?: number;
 }
 
 interface StoredFolderApproval extends Document {
@@ -140,6 +141,10 @@ export class DatabaseConnectionError extends Error {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isMongoDuplicateKeyError(value: unknown): boolean {
+  return isRecord(value) && value["code"] === 11000;
 }
 
 function parseRunSummaryInput(value: unknown): RunSummaryInput {
@@ -565,6 +570,10 @@ export class MongoStore {
       });
       await client.connect();
       await client.db().command({ ping: 1 });
+      await client.db().collection("schedules").createIndex(
+        { capacitySlot: 1 },
+        { unique: true, partialFilterExpression: { capacitySlot: { $exists: true } }, name: "uniq_schedule_capacity_slot" },
+      );
       return new MongoStore(client);
     } catch {
       if (client !== undefined) {
@@ -899,27 +908,48 @@ export class MongoStore {
 
   async createSchedule(value: unknown): Promise<ScheduleRecord> {
     const definition = parseScheduleDefinition(value);
-    let count: number;
     try {
-      count = await this.schedules.countDocuments({ status: { $ne: "deleted" } }, { limit: MAX_SCHEDULES });
-    } catch {
+      for (let attempt = 0; attempt < MAX_SCHEDULES; attempt += 1) {
+        const count = await this.schedules.countDocuments({ status: { $ne: "deleted" } }, { limit: MAX_SCHEDULES });
+        if (count >= MAX_SCHEDULES) throw new PersistenceInputError("The active schedule limit has been reached.");
+        const occupiedDocuments = await this.schedules
+          .find({ status: { $ne: "deleted" }, capacitySlot: { $exists: true } }, { projection: { capacitySlot: 1 } })
+          .toArray();
+        const occupiedSlots = new Set<number>();
+        for (const schedule of occupiedDocuments) {
+          const slot = schedule.capacitySlot;
+          if (typeof slot !== "number" || !Number.isInteger(slot) || slot < 0 || slot >= MAX_SCHEDULES) {
+            throw new DatabasePersistenceError();
+          }
+          occupiedSlots.add(slot);
+        }
+        let capacitySlot = 0;
+        while (capacitySlot < MAX_SCHEDULES && occupiedSlots.has(capacitySlot)) capacitySlot += 1;
+        if (capacitySlot >= MAX_SCHEDULES) throw new DatabasePersistenceError();
+
+        const now = new Date();
+        const document: StoredSchedule = {
+          _id: definition.scheduleId,
+          ...definition,
+          status: "active",
+          createdAt: now,
+          updatedAt: now,
+          occurrences: [],
+          capacitySlot,
+        };
+        try {
+          await this.schedules.insertOne(document);
+          return parseStoredSchedule(document);
+        } catch (error: unknown) {
+          if (!isMongoDuplicateKeyError(error)) throw error;
+          if (await this.schedules.findOne({ _id: definition.scheduleId }) !== null) {
+            throw new PersistenceInputError("Schedule id already exists.");
+          }
+        }
+      }
       throw new DatabasePersistenceError();
-    }
-    if (count >= MAX_SCHEDULES) throw new PersistenceInputError("The active schedule limit has been reached.");
-    const now = new Date();
-    const document: StoredSchedule = {
-      _id: definition.scheduleId,
-      ...definition,
-      status: "active",
-      createdAt: now,
-      updatedAt: now,
-      occurrences: [],
-    };
-    try {
-      await this.schedules.insertOne(document);
-      return parseStoredSchedule(document);
     } catch (error: unknown) {
-      if (error instanceof PersistenceInputError) throw error;
+      if (error instanceof PersistenceInputError || error instanceof DatabasePersistenceError) throw error;
       throw new DatabasePersistenceError();
     }
   }
@@ -1014,7 +1044,9 @@ export class MongoStore {
       if (!allowed) throw new PersistenceInputError("Schedule status transition is not allowed.");
       const updated = await this.schedules.findOneAndUpdate(
         { _id: scheduleId, status: schedule.status, dispatchOwner: { $exists: false } },
-        { $set: { status: nextStatusValue, updatedAt: new Date() } },
+        nextStatusValue === "deleted"
+          ? { $set: { status: nextStatusValue, updatedAt: new Date() }, $unset: { capacitySlot: "" } }
+          : { $set: { status: nextStatusValue, updatedAt: new Date() } },
         { returnDocument: "after" },
       );
       if (updated === null) throw new PersistenceInputError("Schedule changed concurrently; reload it first.");
