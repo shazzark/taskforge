@@ -4,7 +4,7 @@ Audit date: 2026-10-17. This records implemented behavior, not the broader lifec
 
 ## Cancellation and interruption
 
-There is no `cancel <run-id>` command. Interactive `N`/decline stops the specific operation before the access or effect guarded by that prompt. Ctrl+C is handled by signal-aware active paths in `do`, `chat`, `agent-fix`, `model-investigate`, `specialist-review`, `research`, browser audit, software checks, `model-check`, and the foreground scheduler. It stops further work where the active dependency honors cancellation; it cannot undo completed effects. CSV and document named commands do not install their own active-run SIGINT handler. A process exit during their asynchronous work can leave a `running` record until stale recovery is eligible.
+There is no `cancel <run-id>` command. Interactive `N`/decline stops the specific operation before the access or effect guarded by that prompt. Ctrl+C is handled by signal-aware active paths in `do`, `chat`, `agent-fix`, `model-investigate`, `specialist-review`, `research`, browser audit, software checks, `model-check`, the foreground scheduler, and direct CSV/document analysis commands. Direct CSV/document commands pass the signal through exact-file approval and persist an uncertain checkpointed run when interrupted before completion; the listener is removed after analysis, before optional export prompts. These new paths have in-process AbortSignal injection tests; Windows console Ctrl+C remains unverified. Export-prompt and in-progress-resume cancellation remain open. Cancellation cannot undo completed effects.
 
 | Operation boundary | Current result and persisted state | Limitation |
 |---|---|---|

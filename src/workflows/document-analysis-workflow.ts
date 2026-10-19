@@ -47,6 +47,17 @@ export class DocumentWorkflowError extends Error {
   }
 }
 
+export class DocumentWorkflowCancelledError extends Error {
+  constructor() {
+    super("Document analysis was cancelled; its run is uncertain and can be resumed with the same input.");
+    this.name = "DocumentWorkflowCancelledError";
+  }
+}
+
+function throwIfAborted(signal: AbortSignal | undefined): void {
+  if (signal?.aborted === true) throw new DocumentWorkflowCancelledError();
+}
+
 function parseFormat(value: unknown): SupportedDocumentFormat {
   if (value === ".txt") return "txt";
   if (value === ".md" || value === ".markdown") return "markdown";
@@ -145,7 +156,9 @@ export async function analyzeDocument(
   extension: unknown,
   input: Uint8Array,
   scheduledRunId?: string,
+  signal?: AbortSignal,
 ): Promise<DocumentAnalysisResult> {
+  throwIfAborted(signal);
   const format = parseFormat(extension);
   const inputHash = createHash("sha256").update(input).digest("hex");
   const runId = scheduledRunId ?? randomUUID();
@@ -159,7 +172,7 @@ export async function analyzeDocument(
   }
   await store.updateRunState(runId, "running");
   await store.appendRunEvent({ runId, eventId: randomUUID(), type: "run_started" });
-  return executeAnalysis(store, run, format, input, inputHash, false);
+  return executeAnalysis(store, run, format, input, inputHash, false, signal);
 }
 
 async function executeAnalysis(
@@ -169,8 +182,10 @@ async function executeAnalysis(
   input: Uint8Array,
   inputHash: string,
   resumed: boolean,
+  signal?: AbortSignal,
 ): Promise<DocumentAnalysisResult> {
   try {
+    throwIfAborted(signal);
     await store.saveRunCheckpoint({
       runId: run.runId,
       version: 1,
@@ -179,8 +194,11 @@ async function executeAnalysis(
       completedStepIds: [],
       pendingStepId: STEP_ID,
     });
+    throwIfAborted(signal);
     await store.appendRunEvent({ runId: run.runId, eventId: randomUUID(), type: "step_started", stepId: STEP_ID });
+    throwIfAborted(signal);
     const analysis = await analyzeBytes(format, input);
+    throwIfAborted(signal);
     await store.saveRunCheckpoint({
       runId: run.runId,
       version: 1,
@@ -188,12 +206,24 @@ async function executeAnalysis(
       stateHash: workflowStateHash(format),
       completedStepIds: [STEP_ID],
     });
+    throwIfAborted(signal);
     await store.appendRunEvent({ runId: run.runId, eventId: randomUUID(), type: "step_finished", stepId: STEP_ID });
+    throwIfAborted(signal);
     await store.updateRunSummary(run.runId, summarize(analysis));
+    throwIfAborted(signal);
     const completed = await store.updateRunState(run.runId, "completed");
     await store.appendRunEvent({ runId: run.runId, eventId: randomUUID(), type: "run_finished" });
     return { run: completed, analysis, resumed };
   } catch (error: unknown) {
+    if (signal?.aborted === true) {
+      try {
+        await store.updateRunState(run.runId, "uncertain");
+        await store.appendRunEvent({ runId: run.runId, eventId: randomUUID(), type: "run_paused" });
+      } catch {
+        // Preserve cancellation if the store is unavailable while recording it.
+      }
+      throw new DocumentWorkflowCancelledError();
+    }
     if (error instanceof DocumentWorkflowError) {
       await store.updateRunSummary(run.runId, "Document parsing failed validation; input content was not persisted.");
       await store.updateRunState(run.runId, "failed");
@@ -215,7 +245,9 @@ export async function resumeDocumentAnalysisWorkflow(
   runId: unknown,
   extension: unknown,
   input: Uint8Array,
+  signal?: AbortSignal,
 ): Promise<DocumentAnalysisResult> {
+  throwIfAborted(signal);
   if (typeof runId !== "string") throw new DocumentWorkflowError("A run id is required to resume document analysis.");
   const format = parseFormat(extension);
   let existing = await store.getRunSummary(runId);
@@ -239,5 +271,5 @@ export async function resumeDocumentAnalysisWorkflow(
   }
   const resumed = await store.updateRunState(runId, "running");
   await store.appendRunEvent({ runId, eventId: randomUUID(), type: "run_resumed" });
-  return executeAnalysis(store, resumed, format, input, inputHash, true);
+  return executeAnalysis(store, resumed, format, input, inputHash, true, signal);
 }

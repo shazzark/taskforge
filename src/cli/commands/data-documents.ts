@@ -1,8 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { basename, dirname, extname, resolve } from "node:path";
 import { createInterface } from "node:readline/promises";
-import { CsvWorkflowError, resumeCsvAnalysisWorkflow, runCsvAnalysisWorkflow, type CsvWorkflowResult } from "../../workflows/csv-analysis-workflow.js";
-import { analyzeDocument, DocumentWorkflowError, resumeDocumentAnalysisWorkflow } from "../../workflows/document-analysis-workflow.js";
+import { CsvWorkflowCancelledError, CsvWorkflowError, resumeCsvAnalysisWorkflow, runCsvAnalysisWorkflow, type CsvWorkflowResult } from "../../workflows/csv-analysis-workflow.js";
+import { analyzeDocument, DocumentWorkflowCancelledError, DocumentWorkflowError, resumeDocumentAnalysisWorkflow } from "../../workflows/document-analysis-workflow.js";
 import { csvAnalysisExportFormat, CsvAnalysisExportError, renderCsvAnalysisExport, type CsvAnalysisExportFormat } from "../../tools/artifacts/csv-analysis-export.js";
 import { documentAnalysisExportFormat, DocumentAnalysisExportError, renderDocumentAnalysisExport, type DocumentAnalysisExportFormat } from "../../tools/artifacts/document-analysis-export.js";
 import { convertDocumentToPlainText, DocumentConversionError } from "../../tools/documents/plain-text-conversion.js";
@@ -16,8 +16,16 @@ import { PersistentFolderApprovalError } from "../command-errors.js";
 
 export interface DataDocumentCommandDependencies {
   readonly withStore: <T>(action: (store: TaskForgeStore) => Promise<T>) => Promise<T | undefined>;
-  readonly readApprovedInputFile: (pathValue: string) => Promise<Uint8Array | undefined>;
+  readonly readApprovedInputFile: (pathValue: string, signal?: AbortSignal) => Promise<Uint8Array | undefined>;
   readonly requirePersistentFolderApproval: (pathValue: string, access: "read" | "write") => Promise<void>;
+  readonly registerInterrupt?: (handler: () => void) => () => void;
+}
+
+function registerInterrupt(dependencies: DataDocumentCommandDependencies, controller: AbortController): () => void {
+  const handler = (): void => controller.abort();
+  if (dependencies.registerInterrupt !== undefined) return dependencies.registerInterrupt(handler);
+  process.once("SIGINT", handler);
+  return () => process.removeListener("SIGINT", handler);
 }
 
 interface ParsedCsvCommandArguments {
@@ -43,7 +51,7 @@ function parseCsvCommandArguments(commandArgs: readonly string[]): ParsedCsvComm
   return { inputPath, ...(outputPath === undefined ? {} : { outputPath }), numericColumns };
 }
 
-export async function runCsvWorkflowCommand(commandArgs: readonly string[], dependencies: DataDocumentCommandDependencies): Promise<void> {
+async function runCsvWorkflowCommandInner(commandArgs: readonly string[], dependencies: DataDocumentCommandDependencies, signal: AbortSignal, stopListening: () => void): Promise<void> {
   const parsed = parseCsvCommandArguments(commandArgs);
   if (parsed === undefined) {
     process.stderr.write("Expected --input <path> [--numeric-column <header>]... [--output <new.json|new.csv|new.md>].\n");
@@ -61,14 +69,21 @@ export async function runCsvWorkflowCommand(commandArgs: readonly string[], depe
       return;
     }
   }
-  const input = await dependencies.readApprovedInputFile(inputPath);
+  const input = await dependencies.readApprovedInputFile(inputPath, signal);
   if (input === undefined) {
+    if (signal.aborted) process.exitCode = 130;
     return;
   }
   let result: CsvWorkflowResult | undefined;
   try {
-    result = await dependencies.withStore((store) => runCsvAnalysisWorkflow(store, input, undefined, numericColumns));
+    result = await dependencies.withStore((store) => runCsvAnalysisWorkflow(store, input, undefined, numericColumns, signal));
+    stopListening();
   } catch (error: unknown) {
+    if (error instanceof CsvWorkflowCancelledError) {
+      process.stderr.write(`${error.message}\n`);
+      process.exitCode = 130;
+      return;
+    }
     process.stderr.write(error instanceof CsvWorkflowError ? `CSV workflow failed: ${error.message}\n` : "CSV workflow failed; run state was preserved where possible.\n");
     process.exitCode = 3;
     return;
@@ -131,6 +146,16 @@ export async function runCsvWorkflowCommand(commandArgs: readonly string[], depe
   }
 }
 
+export async function runCsvWorkflowCommand(commandArgs: readonly string[], dependencies: DataDocumentCommandDependencies): Promise<void> {
+  const controller = new AbortController();
+  const removeInterrupt = registerInterrupt(dependencies, controller);
+  try {
+    await runCsvWorkflowCommandInner(commandArgs, dependencies, controller.signal, removeInterrupt);
+  } finally {
+    removeInterrupt();
+  }
+}
+
 export async function resumeWorkflowCommand(runId: string, commandArgs: readonly string[], dependencies: DataDocumentCommandDependencies): Promise<void> {
   const inputPath = commandArgs.length >= 2 && commandArgs[0] === "--input" ? commandArgs[1] : undefined;
   const numericColumns: string[] = [];
@@ -183,7 +208,7 @@ export async function resumeWorkflowCommand(runId: string, commandArgs: readonly
   }
 }
 
-export async function runDocumentAnalysisCommand(commandArgs: readonly string[], dependencies: DataDocumentCommandDependencies): Promise<void> {
+async function runDocumentAnalysisCommandInner(commandArgs: readonly string[], dependencies: DataDocumentCommandDependencies, signal: AbortSignal, stopListening: () => void): Promise<void> {
   const parsed = parseCsvCommandArguments(commandArgs);
   if (parsed === undefined || parsed.numericColumns.length > 0) {
     process.stderr.write("Expected --input <path> [--output <new.json|new.csv|new.md>].\n");
@@ -201,13 +226,17 @@ export async function runDocumentAnalysisCommand(commandArgs: readonly string[],
       return;
     }
   }
-  const input = await dependencies.readApprovedInputFile(inputPath);
-  if (input === undefined) return;
+  const input = await dependencies.readApprovedInputFile(inputPath, signal);
+  if (input === undefined) {
+    if (signal.aborted) process.exitCode = 130;
+    return;
+  }
   let createdArtifact: { readonly path: string; readonly byteCount: number; readonly sha256: string } | undefined;
   let attemptedOutputPath: string | undefined;
   try {
     const extension = extname(inputPath).toLowerCase();
-    const result = await dependencies.withStore((store) => analyzeDocument(store, extension, input));
+    const result = await dependencies.withStore((store) => analyzeDocument(store, extension, input, undefined, signal));
+    stopListening();
     if (result !== undefined) {
       const analysis = result.analysis;
       process.stdout.write(
@@ -253,6 +282,11 @@ export async function runDocumentAnalysisCommand(commandArgs: readonly string[],
       }
     }
   } catch (error: unknown) {
+    if (error instanceof DocumentWorkflowCancelledError) {
+      process.stderr.write(`${error.message}\n`);
+      process.exitCode = 130;
+      return;
+    }
     if (createdArtifact !== undefined) {
       process.stderr.write(`Aggregate report exists at ${escapeTerminalControls(createdArtifact.path)}, but its database reference could not be saved.\n`);
       process.exitCode = 3;
@@ -267,6 +301,16 @@ export async function runDocumentAnalysisCommand(commandArgs: readonly string[],
       ? error.message : "Document analysis failed safely.";
     process.stderr.write(`Document analysis failed: ${message}\n`);
     process.exitCode = 3;
+  }
+}
+
+export async function runDocumentAnalysisCommand(commandArgs: readonly string[], dependencies: DataDocumentCommandDependencies): Promise<void> {
+  const controller = new AbortController();
+  const removeInterrupt = registerInterrupt(dependencies, controller);
+  try {
+    await runDocumentAnalysisCommandInner(commandArgs, dependencies, controller.signal, removeInterrupt);
+  } finally {
+    removeInterrupt();
   }
 }
 

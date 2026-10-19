@@ -121,7 +121,15 @@ async function readApprovedInputFile(
   } else {
     const consent = createInterface({ input: process.stdin, output: process.stdout });
     try {
-      answer = await consent.question(`Allow TaskForge to read this exact file? ${absolutePath} [y/N] `);
+      answer = signal === undefined
+        ? await consent.question(`Allow TaskForge to read this exact file? ${absolutePath} [y/N] `)
+        : await consent.question(`Allow TaskForge to read this exact file? ${absolutePath} [y/N] `, { signal });
+    } catch (error: unknown) {
+      if (isSignalAborted(signal)) {
+        reportFailure?.("cancelled");
+        return undefined;
+      }
+      throw error;
     } finally {
       consent.close();
     }
@@ -798,13 +806,25 @@ if (args.length === 0 || (args.length === 1 && (args[0] === "--help" || args[0] 
 } else if (args.length >= 1 && args[0] === "permissions") {
   await runPermissionsCommand(args.slice(1), { withStore });
 } else if (args.length >= 2 && args[0] === "run" && args[1] === "csv-analyze") {
-  await runCsvWorkflowCommand(args.slice(2), { withStore, readApprovedInputFile, requirePersistentFolderApproval });
+  await runCsvWorkflowCommand(args.slice(2), {
+    withStore,
+    readApprovedInputFile: (pathValue, signal) => readApprovedInputFile(pathValue, undefined, signal),
+    requirePersistentFolderApproval,
+  });
 } else if (args.length >= 2 && args[0] === "run" && args[1] === "repo-inspect") {
   await runRepositoryInspectionCommand(args.slice(2), { withStore, requirePersistentFolderApproval });
 } else if (args.length >= 2 && args[0] === "run" && args[1] === "document-analyze") {
-  await runDocumentAnalysisCommand(args.slice(2), { withStore, readApprovedInputFile, requirePersistentFolderApproval });
+  await runDocumentAnalysisCommand(args.slice(2), {
+    withStore,
+    readApprovedInputFile: (pathValue, signal) => readApprovedInputFile(pathValue, undefined, signal),
+    requirePersistentFolderApproval,
+  });
 } else if (args.length >= 2 && args[0] === "run" && args[1] === "document-convert") {
-  await runDocumentConversionCommand(args.slice(2), { withStore, readApprovedInputFile, requirePersistentFolderApproval });
+  await runDocumentConversionCommand(args.slice(2), {
+    withStore,
+    readApprovedInputFile: (pathValue) => readApprovedInputFile(pathValue),
+    requirePersistentFolderApproval,
+  });
 } else if (args.length >= 2 && args[0] === "run" && args[1] === "software-check") {
   await runSoftwareCheckCommand(args.slice(2), { withStore, requirePersistentFolderApproval });
 } else if (args.length >= 2 && args[0] === "run" && args[1] === "source-review") {
@@ -843,7 +863,11 @@ if (args.length === 0 || (args.length === 1 && (args[0] === "--help" || args[0] 
     process.stderr.write("Expected resume <run-id> --input <path>.\n");
     process.exitCode = 1;
   } else {
-    await resumeWorkflowCommand(runId, args.slice(2), { withStore, readApprovedInputFile, requirePersistentFolderApproval });
+    await resumeWorkflowCommand(runId, args.slice(2), {
+      withStore,
+      readApprovedInputFile: (pathValue) => readApprovedInputFile(pathValue),
+      requirePersistentFolderApproval,
+    });
   }
 } else if (args.length === 2 && args[0] === "history" && args[1] === "list") {
   await listRunHistory();

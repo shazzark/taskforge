@@ -20,6 +20,17 @@ export class CsvWorkflowError extends Error {
   }
 }
 
+export class CsvWorkflowCancelledError extends Error {
+  constructor() {
+    super("CSV analysis was cancelled; its run is uncertain and can be resumed with the same input.");
+    this.name = "CsvWorkflowCancelledError";
+  }
+}
+
+function throwIfAborted(signal: AbortSignal | undefined): void {
+  if (signal?.aborted === true) throw new CsvWorkflowCancelledError();
+}
+
 export interface CsvWorkflowResult {
   readonly run: RunSummary;
   readonly analysis: CsvAnalysisResult;
@@ -51,8 +62,10 @@ async function executeAnalysis(
   input: Uint8Array,
   numericColumns: readonly string[],
   resumed: boolean,
+  signal?: AbortSignal,
 ): Promise<CsvWorkflowResult> {
   try {
+    throwIfAborted(signal);
     await store.saveRunCheckpoint({
       runId: run.runId,
       version: 1,
@@ -61,13 +74,16 @@ async function executeAnalysis(
       completedStepIds: [],
       pendingStepId: ANALYSIS_STEP_ID,
     });
+    throwIfAborted(signal);
     await store.appendRunEvent({
       runId: run.runId,
       eventId: randomUUID(),
       type: "step_started",
       stepId: ANALYSIS_STEP_ID,
     });
+    throwIfAborted(signal);
     const analysis = analyzeBytes(input, numericColumns);
+    throwIfAborted(signal);
     await store.saveRunCheckpoint({
       runId: run.runId,
       version: 1,
@@ -75,13 +91,16 @@ async function executeAnalysis(
       stateHash: workflowStateHash(numericColumns),
       completedStepIds: [ANALYSIS_STEP_ID],
     });
+    throwIfAborted(signal);
     await store.appendRunEvent({
       runId: run.runId,
       eventId: randomUUID(),
       type: "step_finished",
       stepId: ANALYSIS_STEP_ID,
     });
+    throwIfAborted(signal);
     await store.updateRunSummary(run.runId, summarize(analysis));
+    throwIfAborted(signal);
     const completed = await store.updateRunState(run.runId, "completed");
     await store.appendRunEvent({
       runId: run.runId,
@@ -90,6 +109,15 @@ async function executeAnalysis(
     });
     return { run: completed, analysis, resumed };
   } catch (error: unknown) {
+    if (signal?.aborted === true) {
+      try {
+        await store.updateRunState(run.runId, "uncertain");
+        await store.appendRunEvent({ runId: run.runId, eventId: randomUUID(), type: "run_paused" });
+      } catch {
+        // Preserve cancellation if the store is unavailable while recording it.
+      }
+      throw new CsvWorkflowCancelledError();
+    }
     if (error instanceof CsvAnalysisError || error instanceof CsvWorkflowError) {
       await store.updateRunSummary(run.runId, "CSV analysis failed validation; input content was not persisted.");
       await store.updateRunState(run.runId, "failed");
@@ -111,7 +139,9 @@ export async function runCsvAnalysisWorkflow(
   input: Uint8Array,
   scheduledRunId?: string,
   numericColumns: readonly string[] = [],
+  signal?: AbortSignal,
 ): Promise<CsvWorkflowResult> {
+  throwIfAborted(signal);
   const inputHash = createHash("sha256").update(input).digest("hex");
   const runId = scheduledRunId ?? randomUUID();
   const existing = scheduledRunId === undefined ? null : await store.getRunSummary(runId);
@@ -123,7 +153,7 @@ export async function runCsvAnalysisWorkflow(
   }
   await store.updateRunState(runId, "running");
   await store.appendRunEvent({ runId, eventId: randomUUID(), type: "run_started" });
-  return executeAnalysis(store, run, inputHash, input, numericColumns, false);
+  return executeAnalysis(store, run, inputHash, input, numericColumns, false, signal);
 }
 
 export async function resumeCsvAnalysisWorkflow(
@@ -131,7 +161,9 @@ export async function resumeCsvAnalysisWorkflow(
   runId: unknown,
   input: Uint8Array,
   numericColumns: readonly string[] = [],
+  signal?: AbortSignal,
 ): Promise<CsvWorkflowResult> {
+  throwIfAborted(signal);
   if (typeof runId !== "string") {
     throw new CsvWorkflowError("A run id is required to resume CSV analysis.");
   }
@@ -159,5 +191,5 @@ export async function resumeCsvAnalysisWorkflow(
   }
   const resumed = await store.updateRunState(runId, "running");
   await store.appendRunEvent({ runId, eventId: randomUUID(), type: "run_resumed" });
-  return executeAnalysis(store, resumed, inputHash, input, numericColumns, true);
+  return executeAnalysis(store, resumed, inputHash, input, numericColumns, true, signal);
 }
