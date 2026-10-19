@@ -126,6 +126,29 @@ test("Groq adapter submits a constrained function tool and parses its call", asy
   assert.deepEqual(result.toolCalls[0].arguments, { record_id: "fixture-001" });
 });
 
+test("explicit file-analysis tool requirements reach Groq once, then return to automatic choice", async () => {
+  const choices = [];
+  const provider = new GroqProvider(
+    { kind: "groq", apiKey: "synthetic-key-for-test", model: "openai/gpt-oss-20b" },
+    async (request) => {
+      choices.push(request.tool_choice);
+      return choices.length === 1
+        ? toolCompletion([{ name: "read_fixture_status", arguments: { record_id: "fixture-001" } }])
+        : finalCompletion("The fixture is ready.");
+    },
+  );
+  const result = await runToolLoop(provider, "openai/gpt-oss-20b", [
+    { role: "user", content: "Analyze the approved fixture." },
+  ], [fixtureToolImplementation()], {
+    maxModelRequests: 2,
+    maxToolActions: 1,
+    requireToolOnFirstRequest: true,
+  });
+  assert.deepEqual(choices, ["required", "auto"]);
+  assert.equal(result.toolActions, 1);
+  assert.equal(result.content, "The fixture is ready.");
+});
+
 test("Groq adapter classifies auth, quota and invalid provider responses", async () => {
   const createRejectingProvider = (status) => new GroqProvider(
     { kind: "groq", apiKey: "synthetic-key-for-test", model: "openai/gpt-oss-20b" },
@@ -205,6 +228,7 @@ test("Ollama adapter reports unsupported tools and malformed response without le
     async () => new Response("private server detail", { status: 400 }),
   );
   await assert.rejects(unsupported.complete(request), (error) => error.kind === "unsupported_tool");
+  await assert.rejects(unsupported.complete({ ...request, toolChoice: "required" }), (error) => error.kind === "unsupported_tool");
   const malformed = new OllamaProvider(
     { kind: "ollama", baseUrl: "http://127.0.0.1:11434", model: "qwen3:4b-q4_K_M", contextLength: 4096 },
     async () => new Response(JSON.stringify({ unexpected: "shape" }), { status: 200 }),

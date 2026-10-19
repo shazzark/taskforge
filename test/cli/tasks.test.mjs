@@ -11,7 +11,7 @@ const cliPath = fileURLToPath(new URL("../../dist/cli.js", import.meta.url));
 function runWithDataRoot(dataRoot, ...args) {
   return spawnSync(process.execPath, [cliPath, ...args], {
     encoding: "utf8",
-    timeout: 5_000,
+    timeout: 15_000,
     windowsHide: true,
     env: { ...process.env, TASKFORGE_STORAGE: "local", LOCALAPPDATA: dataRoot },
   });

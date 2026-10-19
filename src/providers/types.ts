@@ -25,6 +25,7 @@ export interface ProviderRequest {
   readonly model: string;
   readonly messages: readonly ProviderMessage[];
   readonly tools: readonly FunctionToolDefinition[];
+  readonly toolChoice?: "auto" | "required";
 }
 
 export interface ProviderCompletion {

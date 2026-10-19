@@ -16,6 +16,7 @@ export interface AgentRunOptions {
   readonly maxToolActions: number;
   readonly budget?: AgentBudgetLedger;
   readonly signal?: AbortSignal;
+  readonly requireToolOnFirstRequest?: boolean;
 }
 
 export interface AgentBudgetSnapshot {
@@ -133,6 +134,9 @@ export async function runToolLoop(
       model,
       messages,
       tools: definitions,
+      ...(options.requireToolOnFirstRequest === true
+        ? { toolChoice: modelRequests === 1 ? "required" as const : "auto" as const }
+        : {}),
     };
     if (!budget.consumeModelRequest()) throw new AgentBudgetError();
     const completion = options.signal === undefined

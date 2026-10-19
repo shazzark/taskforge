@@ -78,6 +78,7 @@ export class OllamaProvider implements ModelProvider {
 
   async complete(request: ProviderRequest, signal?: AbortSignal) {
     if (signal?.aborted === true) throw new ModelProviderError("cancelled");
+    if (request.toolChoice === "required") throw new ModelProviderError("unsupported_tool");
     const body = {
       model: this.configuration.model,
       messages: toOllamaMessages(request.messages),

@@ -169,6 +169,7 @@ export async function runNaturalLanguageInstruction(instruction: string, depende
         {
           maxModelRequests: 8,
           maxToolActions: 2,
+          requireToolOnFirstRequest: requiresAnalysisTool,
           signal: controller.signal,
         },
       );

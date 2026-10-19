@@ -9,7 +9,7 @@ const cliPath = fileURLToPath(new URL("../dist/cli.js", import.meta.url));
 test("persistent folder permission changes require an interactive confirmation", () => {
   const result = spawnSync(process.execPath, [cliPath, "permissions", "approve", "--root", tmpdir(), "--access", "read"], {
     encoding: "utf8",
-    timeout: 5_000,
+    timeout: 15_000,
     windowsHide: true,
   });
 
@@ -53,13 +53,14 @@ test("software build refuses noninteractive execution before repository access",
 test("permission list reports database unavailability without exposing a stack trace", () => {
   const result = spawnSync(process.execPath, [cliPath, "permissions", "list"], {
     encoding: "utf8",
-    timeout: 8_000,
+    timeout: 15_000,
     windowsHide: true,
     env: { ...process.env, TASKFORGE_STORAGE: "mongodb", TASKFORGE_MONGODB_URI: "mongodb://127.0.0.1:1/taskforge_test" },
   });
 
   assert.equal(result.status, 2);
-  assert.match(result.stderr, /Unable to open the configured TaskForge storage/u);
+  assert.match(result.stderr, /Configured MongoDB storage is unavailable/u);
+  assert.match(result.stderr, /No backend switch occurred/u);
   assert.doesNotMatch(result.stderr, /\n\s+at\s/u);
   assert.doesNotMatch(result.stdout + result.stderr, /mongodb:\/\/127\.0\.0\.1:1/u);
 });

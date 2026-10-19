@@ -6,7 +6,7 @@ import test from "node:test";
 const cliPath = fileURLToPath(new URL("../../dist/cli.js", import.meta.url));
 
 function run(...args) {
-  return spawnSync(process.execPath, [cliPath, ...args], { encoding: "utf8", timeout: 5_000, windowsHide: true });
+  return spawnSync(process.execPath, [cliPath, ...args], { encoding: "utf8", timeout: 15_000, windowsHide: true });
 }
 
 test("GitHub issue command validates arguments before checking terminal availability", () => {

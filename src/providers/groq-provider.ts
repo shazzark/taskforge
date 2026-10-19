@@ -106,7 +106,7 @@ export class GroqProvider implements ModelProvider {
         model: this.model,
         messages: toGroqMessages(request.messages),
         tools: toGroqTools(request.tools),
-        tool_choice: request.tools.length === 0 ? "none" : "auto",
+        tool_choice: request.tools.length === 0 ? "none" : request.toolChoice ?? "auto",
         max_completion_tokens: 512,
       };
       const response = await this.transport(params, signal);
