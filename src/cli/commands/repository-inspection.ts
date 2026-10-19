@@ -54,8 +54,12 @@ export async function runRepositoryInspectionCommand(
       const inventory = result.inventory;
       process.stdout.write(
         `Run ${result.run.runId} completed: ${inventory.fileCount} files, ` +
-        `${inventory.sourceFileCount} source files, ${inventory.testFileCount} test-named files; ` +
-        `${inventory.skippedLinkCount} links skipped, ${inventory.deniedPathCount} secret paths skipped.\n`,
+        `${inventory.directoryCount} directories inspected, ${inventory.sourceFileCount} source files, ` +
+        `${inventory.testFileCount} test-named files.\n` +
+        `Coverage limits: ${inventory.excludedDirectoryCount} directories excluded before descent` +
+        `${inventory.excludedDirectoryCategories.length === 0 ? "" : ` (${inventory.excludedDirectoryCategories.join(", ")})`}; ` +
+        `their contents were not inspected; ${inventory.skippedLinkCount} symbolic links and ` +
+        `${inventory.deniedPathCount} secret paths skipped.\n`,
       );
     }
   } catch (error: unknown) {

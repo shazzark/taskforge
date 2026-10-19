@@ -18,6 +18,8 @@ const SOURCE_EXTENSIONS = new Set([
 const EXCLUDED_DIRECTORIES = new Set([
   ".git", ".hg", ".svn", "node_modules", "dist", "build", "coverage", ".next", ".venv", "venv", "target",
 ]);
+// Reviewed TypeScript checks create these isolated outputs; preserve them but omit their generated subtrees.
+const EXCLUDED_GENERATED_DIRECTORY_PREFIXES = [".taskforge-build-"] as const;
 
 export class RepositoryInspectionError extends Error {
   constructor(message: string) {
@@ -33,6 +35,8 @@ export interface RepositoryInventory {
   readonly testFileCount: number;
   readonly skippedLinkCount: number;
   readonly deniedPathCount: number;
+  readonly excludedDirectoryCount: number;
+  readonly excludedDirectoryCategories: readonly string[];
   readonly filesByExtension: Readonly<Record<string, number>>;
 }
 
@@ -61,6 +65,14 @@ function fileExtension(path: string): string {
   return /^\.[a-z0-9]{1,10}$/u.test(extension) ? extension : "[other]";
 }
 
+function excludedDirectoryCategory(name: string): string | undefined {
+  const normalizedName = name.toLowerCase();
+  if (EXCLUDED_DIRECTORIES.has(normalizedName)) return normalizedName;
+  return EXCLUDED_GENERATED_DIRECTORY_PREFIXES.find((prefix) => normalizedName.startsWith(prefix)) === undefined
+    ? undefined
+    : ".taskforge-build-*";
+}
+
 async function collectInventory(
   root: ApprovedRoot,
   policy: WorkspacePathPolicy,
@@ -79,6 +91,7 @@ async function collectInventory(
   let skippedLinkCount = 0;
   let deniedPathCount = 0;
   let entryCount = 0;
+  const excludedDirectoryCounts: Record<string, number> = {};
 
   while (pending.length > 0) {
     const directory = pending.pop();
@@ -121,12 +134,15 @@ async function collectInventory(
         continue;
       }
       if (entry.isDirectory()) {
-        if (!EXCLUDED_DIRECTORIES.has(entry.name.toLowerCase())) {
-          if (directoryCount + pending.length + 1 > MAX_DIRECTORIES) {
-            throw new RepositoryInspectionError("Repository exceeds the supported directory count limit.");
-          }
-          pending.push({ path: candidate, depth: directory.depth + 1 });
+        const excludedCategory = excludedDirectoryCategory(entry.name);
+        if (excludedCategory !== undefined) {
+          excludedDirectoryCounts[excludedCategory] = (excludedDirectoryCounts[excludedCategory] ?? 0) + 1;
+          continue;
         }
+        if (directoryCount + pending.length + 1 > MAX_DIRECTORIES) {
+          throw new RepositoryInspectionError("Repository exceeds the supported directory count limit.");
+        }
+        pending.push({ path: candidate, depth: directory.depth + 1 });
         continue;
       }
       if (!entry.isFile()) continue;
@@ -157,11 +173,24 @@ async function collectInventory(
     }
   }
 
-  return { fileCount, directoryCount, sourceFileCount, testFileCount, skippedLinkCount, deniedPathCount, filesByExtension };
+  return {
+    fileCount,
+    directoryCount,
+    sourceFileCount,
+    testFileCount,
+    skippedLinkCount,
+    deniedPathCount,
+    excludedDirectoryCount: Object.values(excludedDirectoryCounts).reduce((total, count) => total + count, 0),
+    excludedDirectoryCategories: Object.keys(excludedDirectoryCounts).sort((left, right) => left.localeCompare(right, "en")),
+    filesByExtension,
+  };
 }
 
 function summarize(inventory: RepositoryInventory): string {
-  return `Repository inventory complete: ${inventory.fileCount} files; ${inventory.sourceFileCount} source files; ${inventory.testFileCount} test-named files; ${inventory.skippedLinkCount} links skipped.`;
+  const excludedCategories = inventory.excludedDirectoryCategories.length === 0
+    ? "none"
+    : inventory.excludedDirectoryCategories.join(", ");
+  return `Repository inventory complete: ${inventory.fileCount} files; ${inventory.directoryCount} directories inspected; ${inventory.sourceFileCount} source files; ${inventory.testFileCount} test-named files; ${inventory.excludedDirectoryCount} directories excluded before descent (${excludedCategories}); excluded subtree contents were not inspected; ${inventory.skippedLinkCount} links skipped.`;
 }
 
 export async function inspectRepository(
